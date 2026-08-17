@@ -102,7 +102,7 @@ jobs:
       - name: Inject release version
         env:
           RELEASE_VERSION: ${{ needs.plan-release.outputs.version }}
-        run: node .github/scripts/apply-release-version.mjs "$RELEASE_VERSION"
+        run: node .github/scripts/apply-release-version.mjs
 
       - name: Validate updater configuration
         shell: bash
