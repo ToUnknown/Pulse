@@ -26,23 +26,26 @@ Click the tray/menu-bar icon to open the native menu. Every available control is
 
 ## Releases and updates
 
-Pulse publishes signed updater artifacts through GitHub Releases. Before the first release:
+Pulse publishes signed updater artifacts through GitHub Releases. The updater
+public key is committed in `src-tauri/tauri.conf.json`. Before the first release:
 
-1. Generate the updater signing keys and keep the private key backed up somewhere secure:
+1. Keep the matching `~/.tauri/pulse.key` and its password backed up securely; replacing or losing them prevents updates to installed copies.
+2. In GitHub, open **Settings → Secrets and variables → Actions** and add the content of `~/.tauri/pulse.key` as `TAURI_SIGNING_PRIVATE_KEY`.
+3. If the key has a password, add it as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+4. Open **Settings → Actions → General** and allow GitHub Actions to create pull requests with read and write workflow permissions.
 
-   ```sh
-   pnpm tauri signer generate -w ~/.tauri/pulse.key
-   ```
+Release Please manages versions from PR titles:
 
-2. Replace `REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY` in `src-tauri/tauri.conf.json` with the one-line content of `~/.tauri/pulse.key.pub`.
-3. In GitHub, open **Settings → Secrets and variables → Actions** and add the content of `~/.tauri/pulse.key` as `TAURI_SIGNING_PRIVATE_KEY`.
-4. If the key has a password, add it as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+- `fix:` creates a patch release such as `0.1.1`;
+- `feat:` creates a minor release such as `0.2.0`;
+- `feat!:` creates a breaking release.
 
-To publish, update the version in `package.json`, `src-tauri/Cargo.toml`, and
-`src-tauri/tauri.conf.json`, then push a matching tag such as `v0.2.0`. The
-`release.yml` workflow builds macOS Apple Silicon, macOS Intel, and Windows
-installers, then attaches the updater signatures and `latest.json` to the GitHub
-Release.
+After normal PRs merge into `main`, Release Please creates or updates a separate
+Release PR. Merging that PR updates all version files, creates a draft GitHub
+Release, and builds macOS Apple Silicon, macOS Intel, and Windows installers.
+Wait for the workflow to attach the updater signatures and `latest.json`, then
+review and publish the draft release. Installed apps can discover it only after
+publication.
 
 Updater signatures prove that an update was produced with the Pulse updater key.
 They do not replace Apple notarization or Windows code signing, which should be

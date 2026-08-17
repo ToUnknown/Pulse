@@ -20,5 +20,5 @@ pnpm tauri build
 ## Validation and releases
 
 - Before opening a PR to `main`, run `cargo fmt -- --check`, `cargo clippy -- -D warnings`, and `cargo test` from `src-tauri`; report any supported platform not verified locally.
-- Releases are created by `.github/workflows/release.yml`. Read **Releases and updates** in `README.md` before changing versions, updater configuration, signing, or release automation.
-- For releases, keep versions aligned in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`; keep the updater private key out of the repository.
+- Use Conventional Commit PR titles such as `feat:`, `fix:`, or `feat!:`; Release Please uses them to choose the next version.
+- Releases are prepared by `.github/workflows/release.yml`. Read **Releases and updates** in `README.md` before changing updater configuration, signing, or release automation; keep the updater private key out of the repository.
