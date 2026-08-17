@@ -77,7 +77,7 @@ jobs:
           - name: macOS Apple Silicon
             platform: macos-latest
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - name: Windows
             platform: windows-latest
             target: x86_64-pc-windows-msvc

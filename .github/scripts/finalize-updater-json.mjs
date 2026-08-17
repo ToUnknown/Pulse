@@ -79,9 +79,13 @@ const updaterResponse = await request(updaterAsset.url, {
   headers: { Accept: "application/octet-stream" },
 });
 const updater = await updaterResponse.json();
-const publicUrls = new Map(
-  release.assets.map((asset) => [asset.url, asset.browser_download_url]),
+const assetsByUrl = new Map(
+  release.assets.flatMap((asset) => [
+    [asset.url, asset],
+    [asset.browser_download_url, asset],
+  ]),
 );
+const assetsByName = new Map(release.assets.map((asset) => [asset.name, asset]));
 
 for (const [name, platform] of Object.entries(updater.platforms ?? {})) {
   if (excludedPlatforms.has(name)) {
@@ -89,13 +93,14 @@ for (const [name, platform] of Object.entries(updater.platforms ?? {})) {
     continue;
   }
 
-  const publicUrl = publicUrls.get(platform.url);
+  const assetName = decodeURIComponent(new URL(platform.url).pathname.split("/").at(-1));
+  const asset = assetsByUrl.get(platform.url) ?? assetsByName.get(assetName);
 
-  if (publicUrl) {
-    platform.url = publicUrl;
-  } else if (!platform.url.startsWith("https://github.com/")) {
+  if (!asset) {
     throw new Error(`No public download URL found for ${platform.url}.`);
   }
+
+  platform.url = `https://github.com/${repository}/releases/download/${encodeURIComponent(release.tag_name)}/${encodeURIComponent(asset.name)}`;
 }
 
 const manifest = `${JSON.stringify(updater, null, 2)}\n`;
