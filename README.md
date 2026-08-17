@@ -43,9 +43,9 @@ merge publishes a new version:
 
 After an eligible PR is squash-merged into `main`, the release workflow calculates
 the next version from the latest `v*` tag. It temporarily injects that version only
-on the build runners, builds macOS Apple Silicon, macOS Intel, and Windows
-installers, and publishes the signed artifacts and `latest.json`. It does not add
-a release PR, version commit, or generated changelog to `main`.
+on the build runners, builds macOS Apple Silicon and Windows installers, and
+publishes the signed artifacts and `latest.json`. It does not add a release PR,
+version commit, or generated changelog to `main`.
 
 For recovery or an intentional version override, run **Build and publish release**
 from the GitHub Actions page and choose `auto`, `patch`, `minor`, or `major`. A
