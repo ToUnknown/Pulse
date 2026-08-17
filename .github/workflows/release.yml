@@ -77,9 +77,11 @@ jobs:
           - name: macOS Apple Silicon
             platform: macos-latest
             target: aarch64-apple-darwin
+            bundles: dmg
           - name: Windows
             platform: windows-latest
             target: x86_64-pc-windows-msvc
+            bundles: nsis
 
     runs-on: ${{ matrix.platform }}
 
@@ -155,9 +157,10 @@ jobs:
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
+          uploadUpdaterSignatures: false
           updaterJsonPreferNsis: true
           retryAttempts: 3
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
   publish-release:
     name: Publish release
@@ -177,6 +180,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.plan-release.outputs.release_id }}
+          EXCLUDED_PLATFORMS: windows-x86_64-msi
         run: node .github/scripts/finalize-updater-json.mjs
 
       - name: Publish completed release

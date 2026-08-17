@@ -3,6 +3,9 @@ const repository = process.env.GITHUB_REPOSITORY;
 const releaseId = process.env.RELEASE_ID;
 const apiUrl = process.env.GITHUB_API_URL ?? "https://api.github.com";
 const dryRun = process.env.DRY_RUN === "true";
+const excludedPlatforms = new Set(
+  (process.env.EXCLUDED_PLATFORMS ?? "").split(",").filter(Boolean),
+);
 
 if (!repository || !releaseId) {
   throw new Error("GITHUB_REPOSITORY and RELEASE_ID are required.");
@@ -80,7 +83,12 @@ const publicUrls = new Map(
   release.assets.map((asset) => [asset.url, asset.browser_download_url]),
 );
 
-for (const platform of Object.values(updater.platforms ?? {})) {
+for (const [name, platform] of Object.entries(updater.platforms ?? {})) {
+  if (excludedPlatforms.has(name)) {
+    delete updater.platforms[name];
+    continue;
+  }
+
   const publicUrl = publicUrls.get(platform.url);
 
   if (publicUrl) {

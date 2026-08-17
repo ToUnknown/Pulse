@@ -24,15 +24,3 @@ pnpm install
 pnpm tauri dev
 pnpm tauri build
 ```
-
-## Releases
-
-Releases are published automatically after eligible pull requests are
-squash-merged into `main`:
-
-- `fix:` or `perf:` publishes a patch release.
-- `feat:` publishes a minor release.
-- A breaking Conventional Commit publishes a major release.
-
-Other commit types do not publish a release. Pulse currently ships for macOS
-Apple Silicon and Windows x64 through [GitHub Releases](https://github.com/ToUnknown/Pulse/releases).
