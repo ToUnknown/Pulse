@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Condensed geometric pulse logo</title>
+  <desc id="desc">A subtly condensed circular mark crossed by a symmetrical pulse waveform.</desc>
+
+  <g
+    fill="none"
+    stroke="#000"
+    stroke-width="30"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M 288.77 484.26 A 331.2 338.4 0 0 1 911.23 484.26" />
+    <path d="M 288.77 715.74 A 331.2 338.4 0 0 0 911.23 715.74" />
+
+    <path
+      d="M 130.8 600
+         H 324
+         C 360.8 600, 383.8 581.2, 406.8 553
+         C 434.4 519.16, 462 532.32, 480.4 576.5
+         C 508 642.3, 512.6 722.2, 535.6 722.2
+         C 567.8 722.2, 574.24 562.4, 586.2 430.8
+         C 590.8 383.8, 594.48 360.3, 600 360.3
+         C 605.52 360.3, 609.2 383.8, 613.8 430.8
+         C 625.76 562.4, 632.2 722.2, 664.4 722.2
+         C 687.4 722.2, 692 642.3, 719.6 576.5
+         C 738 532.32, 765.6 519.16, 793.2 553
+         C 816.2 581.2, 839.2 600, 876 600
+         H 1069.2"
+    />
+  </g>
+</svg>
