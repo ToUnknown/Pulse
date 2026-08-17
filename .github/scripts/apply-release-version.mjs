@@ -18,7 +18,7 @@ updateJson("src-tauri/tauri.conf.json");
 const cargoTomlPath = "src-tauri/Cargo.toml";
 const cargoToml = readFileSync(cargoTomlPath, "utf8");
 const updatedCargoToml = cargoToml.replace(
-  /^(\[package\][\s\S]*?^version = ")[^"]+("$)/m,
+  /^(\[package\][\s\S]*?^version = ")[^"]+("(?=\r?$))/m,
   `$1${version}$2`,
 );
 
@@ -30,7 +30,7 @@ writeFileSync(cargoTomlPath, updatedCargoToml);
 const cargoLockPath = "src-tauri/Cargo.lock";
 const cargoLock = readFileSync(cargoLockPath, "utf8");
 const updatedCargoLock = cargoLock.replace(
-  /(\[\[package\]\]\nname = "pulse"\nversion = ")[^"]+("\n)/,
+  /(\[\[package\]\]\r?\nname = "pulse"\r?\nversion = ")[^"]+("(?=\r?\n))/,
   `$1${version}$2`,
 );
 
