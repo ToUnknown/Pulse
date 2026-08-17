@@ -15,6 +15,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["image-png", "tray-icon"] }
 
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tauri-plugin-autostart = "2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }

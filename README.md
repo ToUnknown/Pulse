@@ -6,6 +6,7 @@ The current prototype provides:
 
 - a native tray/menu-bar icon and pull-down menu;
 - no webview or application window;
+- a native Start at Login toggle on Windows and macOS;
 - a native `Appearance` submenu on Windows;
 - Windows-only Auto, Light, and Dark appearance choices;
 - automatic light mode at 07:00 and dark mode at 19:00, persisted across restarts.

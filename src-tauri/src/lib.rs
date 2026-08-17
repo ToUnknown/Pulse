@@ -3,6 +3,12 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use {
+    tauri::menu::CheckMenuItem,
+    tauri_plugin_autostart::{MacosLauncher, ManagerExt},
+};
+
 #[cfg(target_os = "macos")]
 const TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-iconTemplate@2x.png");
@@ -23,10 +29,7 @@ use {
         thread,
         time::Duration,
     },
-    tauri::{
-        menu::{CheckMenuItem, Submenu},
-        Manager,
-    },
+    tauri::{menu::Submenu, Manager},
     windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     },
@@ -145,10 +148,10 @@ fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>) {
             if let Ok(selected_mode) = mode.lock() {
                 if *selected_mode == ThemeMode::Auto {
                     let current_theme = scheduled_theme();
-                    if last_applied != Some(current_theme) {
-                        if apply_windows_theme(current_theme).is_ok() {
-                            last_applied = Some(current_theme);
-                        }
+                    if last_applied != Some(current_theme)
+                        && apply_windows_theme(current_theme).is_ok()
+                    {
+                        last_applied = Some(current_theme);
                     }
                 } else {
                     last_applied = None;
@@ -162,14 +165,33 @@ fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        MacosLauncher::LaunchAgent,
+        None,
+    ));
+
+    builder
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let tray_icon = tauri::image::Image::from_bytes(TRAY_ICON_BYTES)?;
             let separator = PredefinedMenuItem::separator(app)?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let quit_separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let start_at_login = CheckMenuItem::with_id(
+                app,
+                "start-at-login",
+                "Start at Login",
+                true,
+                app.autolaunch().is_enabled().unwrap_or(false),
+                None::<&str>,
+            )?;
 
             #[cfg(target_os = "windows")]
             let (menu, auto, light, dark, mode, config_path) = {
@@ -202,7 +224,16 @@ pub fn run() {
                 )?;
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
-                let menu = Menu::with_items(app, &[&appearance, &separator, &quit])?;
+                let menu = Menu::with_items(
+                    app,
+                    &[
+                        &appearance,
+                        &separator,
+                        &start_at_login,
+                        &quit_separator,
+                        &quit,
+                    ],
+                )?;
 
                 let _ = apply_windows_theme(selected_mode);
                 start_auto_scheduler(mode.clone());
@@ -210,7 +241,17 @@ pub fn run() {
                 (menu, auto, light, dark, mode, config_path)
             };
 
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
+            let menu = {
+                let status =
+                    MenuItem::with_id(app, "status", "Pulse is running", false, None::<&str>)?;
+                Menu::with_items(
+                    app,
+                    &[&status, &separator, &start_at_login, &quit_separator, &quit],
+                )?
+            };
+
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let menu = {
                 let status =
                     MenuItem::with_id(app, "status", "Pulse is running", false, None::<&str>)?;
@@ -224,6 +265,18 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| {
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if event.id().as_ref() == "start-at-login" {
+                        let autostart = app.autolaunch();
+                        let _ = if autostart.is_enabled().unwrap_or(false) {
+                            autostart.disable()
+                        } else {
+                            autostart.enable()
+                        };
+
+                        let _ = start_at_login.set_checked(autostart.is_enabled().unwrap_or(false));
+                    }
+
                     #[cfg(target_os = "windows")]
                     {
                         let next_mode = match event.id().as_ref() {
