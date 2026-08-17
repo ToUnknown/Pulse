@@ -5,9 +5,182 @@ use tauri::{
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use {
+    std::sync::{Arc, Mutex},
     tauri::menu::CheckMenuItem,
     tauri_plugin_autostart::{MacosLauncher, ManagerExt},
+    tauri_plugin_updater::{Update, UpdaterExt},
 };
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+struct DownloadedUpdate {
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+enum UpdateStatus {
+    Idle,
+    Checking,
+    Downloading,
+    Ready(Box<DownloadedUpdate>),
+    Installing,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+type SharedUpdateStatus = Arc<Mutex<UpdateStatus>>;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn set_update_menu(update_item: &MenuItem<tauri::Wry>, text: &str, enabled: bool) {
+    let _ = update_item.set_text(text);
+    let _ = update_item.set_enabled(enabled);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn begin_update_check(status: &SharedUpdateStatus) -> bool {
+    let Ok(mut status) = status.lock() else {
+        return false;
+    };
+
+    match &*status {
+        UpdateStatus::Idle => {
+            *status = UpdateStatus::Checking;
+            true
+        }
+        UpdateStatus::Checking
+        | UpdateStatus::Downloading
+        | UpdateStatus::Ready(_)
+        | UpdateStatus::Installing => false,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn reset_update_status(status: &SharedUpdateStatus) {
+    if let Ok(mut status) = status.lock() {
+        *status = UpdateStatus::Idle;
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+async fn check_for_updates(
+    app: tauri::AppHandle,
+    update_item: MenuItem<tauri::Wry>,
+    status: SharedUpdateStatus,
+) {
+    if !begin_update_check(&status) {
+        return;
+    }
+
+    set_update_menu(&update_item, "Checking for Updates…", false);
+
+    let updater = match app.updater() {
+        Ok(updater) => updater,
+        Err(error) => {
+            eprintln!("update setup failed: {error}");
+            reset_update_status(&status);
+            set_update_menu(&update_item, "Update Check Failed — Retry", true);
+            return;
+        }
+    };
+
+    let update = match updater.check().await {
+        Ok(update) => update,
+        Err(error) => {
+            eprintln!("update check failed: {error}");
+            reset_update_status(&status);
+            set_update_menu(&update_item, "Update Check Failed — Retry", true);
+            return;
+        }
+    };
+
+    let Some(update) = update else {
+        reset_update_status(&status);
+        set_update_menu(&update_item, "Up to Date — Check Again", true);
+        return;
+    };
+
+    if let Ok(mut status) = status.lock() {
+        *status = UpdateStatus::Downloading;
+    } else {
+        set_update_menu(&update_item, "Update Check Failed — Retry", true);
+        return;
+    }
+
+    let version = update.version.clone();
+    set_update_menu(
+        &update_item,
+        &format!("Downloading Update {version}…"),
+        false,
+    );
+
+    match update.download(|_, _| {}, || {}).await {
+        Ok(bytes) => {
+            let update_ready = if let Ok(mut status) = status.lock() {
+                *status = UpdateStatus::Ready(Box::new(DownloadedUpdate { update, bytes }));
+                true
+            } else {
+                false
+            };
+
+            if update_ready {
+                set_update_menu(&update_item, &format!("Restart to Update {version}"), true);
+            } else {
+                set_update_menu(&update_item, "Update Check Failed — Retry", true);
+            }
+        }
+        Err(error) => {
+            eprintln!("update download failed: {error}");
+            reset_update_status(&status);
+            set_update_menu(&update_item, "Update Download Failed — Retry", true);
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn handle_update_menu(
+    app: tauri::AppHandle,
+    update_item: MenuItem<tauri::Wry>,
+    status: SharedUpdateStatus,
+) {
+    if cfg!(debug_assertions) {
+        set_update_menu(&update_item, "Updates Require a Release Build", true);
+        return;
+    }
+
+    let ready_update = {
+        let Ok(mut status) = status.lock() else {
+            set_update_menu(&update_item, "Update Check Failed — Retry", true);
+            return;
+        };
+
+        match std::mem::replace(&mut *status, UpdateStatus::Installing) {
+            UpdateStatus::Ready(update) => Some(update),
+            UpdateStatus::Idle => {
+                *status = UpdateStatus::Idle;
+                None
+            }
+            current => {
+                *status = current;
+                return;
+            }
+        }
+    };
+
+    if let Some(downloaded) = ready_update {
+        set_update_menu(&update_item, "Installing Update…", false);
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) = downloaded.update.install(&downloaded.bytes) {
+                eprintln!("update install failed: {error}");
+                reset_update_status(&status);
+                set_update_menu(&update_item, "Update Install Failed — Retry", true);
+                return;
+            }
+
+            app.request_restart();
+        });
+    } else {
+        tauri::async_runtime::spawn(check_for_updates(app, update_item, status));
+    }
+}
 
 #[cfg(target_os = "macos")]
 const TRAY_ICON_BYTES: &[u8] =
@@ -22,13 +195,7 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded
 #[cfg(target_os = "windows")]
 use {
     chrono::{Local, Timelike},
-    std::{
-        fs,
-        path::Path,
-        sync::{Arc, Mutex},
-        thread,
-        time::Duration,
-    },
+    std::{fs, path::Path, thread, time::Duration},
     tauri::{menu::Submenu, Manager},
     windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
@@ -173,6 +340,9 @@ pub fn run() {
         None,
     ));
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
     builder
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -192,6 +362,16 @@ pub fn run() {
                 app.autolaunch().is_enabled().unwrap_or(false),
                 None::<&str>,
             )?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let update_item = MenuItem::with_id(
+                app,
+                "check-for-updates",
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
 
             #[cfg(target_os = "windows")]
             let (menu, auto, light, dark, mode, config_path) = {
@@ -230,6 +410,7 @@ pub fn run() {
                         &appearance,
                         &separator,
                         &start_at_login,
+                        &update_item,
                         &quit_separator,
                         &quit,
                     ],
@@ -247,7 +428,14 @@ pub fn run() {
                     MenuItem::with_id(app, "status", "Pulse is running", false, None::<&str>)?;
                 Menu::with_items(
                     app,
-                    &[&status, &separator, &start_at_login, &quit_separator, &quit],
+                    &[
+                        &status,
+                        &separator,
+                        &start_at_login,
+                        &update_item,
+                        &quit_separator,
+                        &quit,
+                    ],
                 )?
             };
 
@@ -257,6 +445,11 @@ pub fn run() {
                     MenuItem::with_id(app, "status", "Pulse is running", false, None::<&str>)?;
                 Menu::with_items(app, &[&status, &separator, &quit])?
             };
+
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let startup_update_item = update_item.clone();
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let startup_update_status = update_status.clone();
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
@@ -295,11 +488,25 @@ pub fn run() {
                         }
                     }
 
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if event.id().as_ref() == "check-for-updates" {
+                        handle_update_menu(app.clone(), update_item.clone(), update_status.clone());
+                    }
+
                     if event.id().as_ref() == "quit" {
                         app.exit(0);
                     }
                 })
                 .build(app)?;
+
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if !cfg!(debug_assertions) {
+                tauri::async_runtime::spawn(check_for_updates(
+                    app.handle().clone(),
+                    startup_update_item,
+                    startup_update_status,
+                ));
+            }
 
             Ok(())
         })
