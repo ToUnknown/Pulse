@@ -1,0 +1,112 @@
+name: Prepare and build release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+
+    steps:
+      - name: Create or update release PR
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-release:
+    name: Build ${{ matrix.name }}
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            target: aarch64-apple-darwin
+          - name: macOS Intel
+            platform: macos-latest
+            target: x86_64-apple-darwin
+          - name: Windows
+            platform: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate updater configuration
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const config = require("./src-tauri/tauri.conf.json");
+          const packageJson = require("./package.json");
+          const cargoToml = fs.readFileSync("./src-tauri/Cargo.toml", "utf8");
+          const cargoVersion = cargoToml.match(/^version = "([^"]+)"/m)?.[1];
+
+          if (!config.plugins.updater.pubkey || config.plugins.updater.pubkey.startsWith("REPLACE_")) {
+            throw new Error("Configure the updater public key before releasing.");
+          }
+          if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
+            throw new Error("Add the TAURI_SIGNING_PRIVATE_KEY repository secret before releasing.");
+          }
+          if (config.version !== packageJson.version || config.version !== cargoVersion) {
+            throw new Error("package.json, Cargo.toml, and tauri.conf.json must use the same version.");
+          }
+          if (process.env.RELEASE_TAG !== `v${config.version}`) {
+            throw new Error(`Tag ${process.env.RELEASE_TAG} does not match app version v${config.version}.`);
+          }
+          NODE
+
+      - name: Build and attach release files
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.release-please.outputs.tag_name }}
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --target ${{ matrix.target }}
