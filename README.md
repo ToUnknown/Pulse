@@ -32,20 +32,25 @@ public key is committed in `src-tauri/tauri.conf.json`. Before the first release
 1. Keep the matching `~/.tauri/pulse.key` and its password backed up securely; replacing or losing them prevents updates to installed copies.
 2. In GitHub, open **Settings → Secrets and variables → Actions** and add the content of `~/.tauri/pulse.key` as `TAURI_SIGNING_PRIVATE_KEY`.
 3. If the key has a password, add it as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
-4. Open **Settings → Actions → General** and allow GitHub Actions to create pull requests with read and write workflow permissions.
+4. Keep **Settings → Actions → General → Workflow permissions** set to **Read and write permissions** so the workflow can create tags and releases.
 
-Release Please manages versions from PR titles:
+Git tags are the release version source of truth. PR titles determine whether a
+merge publishes a new version:
 
 - `fix:` creates a patch release such as `0.1.1`;
 - `feat:` creates a minor release such as `0.2.0`;
 - `feat!:` creates a breaking release.
 
-After normal PRs merge into `main`, Release Please creates or updates a separate
-Release PR. Merging that PR updates all version files, creates a draft GitHub
-Release, and builds macOS Apple Silicon, macOS Intel, and Windows installers.
-Wait for the workflow to attach the updater signatures and `latest.json`, then
-review and publish the draft release. Installed apps can discover it only after
-publication.
+After an eligible PR is squash-merged into `main`, the release workflow calculates
+the next version from the latest `v*` tag. It temporarily injects that version only
+on the build runners, builds macOS Apple Silicon, macOS Intel, and Windows
+installers, and publishes the signed artifacts and `latest.json`. It does not add
+a release PR, version commit, or generated changelog to `main`.
+
+For recovery or an intentional version override, run **Build and publish release**
+from the GitHub Actions page and choose `auto`, `patch`, `minor`, or `major`. A
+failed build removes its incomplete draft release and tag so the same version can
+be retried safely.
 
 Updater signatures prove that an update was produced with the Pulse updater key.
 They do not replace Apple notarization or Windows code signing, which should be

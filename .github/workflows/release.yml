@@ -1,36 +1,68 @@
-name: Prepare and build release
+name: Build and publish release
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump to publish
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
-  issues: write
-  pull-requests: write
+
+concurrency:
+  group: pulse-release
+  cancel-in-progress: false
 
 jobs:
-  release-please:
-    name: Prepare release
+  plan-release:
+    name: Plan release
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      should_release: ${{ steps.plan.outputs.should_release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag_name: ${{ steps.plan.outputs.tag_name }}
+      source_sha: ${{ github.sha }}
 
     steps:
-      - name: Create or update release PR
-        id: release
-        uses: googleapis/release-please-action@v4
+      - name: Check out main with tags
+        uses: actions/checkout@v4
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Calculate next version
+        id: plan
+        env:
+          RELEASE_BUMP: ${{ inputs.bump || 'auto' }}
+        run: node .github/scripts/plan-release.mjs
+
+      - name: Create draft release
+        if: ${{ steps.plan.outputs.should_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.plan.outputs.tag_name }}
+        run: >-
+          gh release create "$TAG_NAME"
+          --draft
+          --generate-notes
+          --target "$GITHUB_SHA"
+          --title "Pulse $TAG_NAME"
 
   build-release:
     name: Build ${{ matrix.name }}
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    needs: plan-release
+    if: ${{ needs.plan-release.outputs.should_release == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -48,10 +80,10 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Check out release
+      - name: Check out release source
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.plan-release.outputs.source_sha }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -70,10 +102,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Inject release version
+        env:
+          RELEASE_VERSION: ${{ needs.plan-release.outputs.version }}
+        run: node .github/scripts/apply-release-version.mjs "$RELEASE_VERSION"
+
       - name: Validate updater configuration
         shell: bash
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_TAG: ${{ needs.plan-release.outputs.tag_name }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           node <<'NODE'
@@ -90,7 +127,7 @@ jobs:
             throw new Error("Add the TAURI_SIGNING_PRIVATE_KEY repository secret before releasing.");
           }
           if (config.version !== packageJson.version || config.version !== cargoVersion) {
-            throw new Error("package.json, Cargo.toml, and tauri.conf.json must use the same version.");
+            throw new Error("Injected package.json, Cargo.toml, and tauri.conf.json versions must match.");
           }
           if (process.env.RELEASE_TAG !== `v${config.version}`) {
             throw new Error(`Tag ${process.env.RELEASE_TAG} does not match app version v${config.version}.`);
@@ -104,9 +141,46 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ needs.release-please.outputs.tag_name }}
+          tagName: ${{ needs.plan-release.outputs.tag_name }}
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+          retryAttempts: 3
           args: --target ${{ matrix.target }}
+
+  publish-release:
+    name: Publish release
+    needs:
+      - plan-release
+      - build-release
+    if: ${{ needs.plan-release.outputs.should_release == 'true' && needs.build-release.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.plan-release.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false
+
+  cleanup-failed-release:
+    name: Clean up failed release
+    needs:
+      - plan-release
+      - build-release
+      - publish-release
+    if: >-
+      ${{ always() &&
+          needs.plan-release.outputs.should_release == 'true' &&
+          needs.publish-release.result != 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Remove incomplete draft and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.plan-release.outputs.tag_name }}
+        run: gh release delete "$TAG_NAME" --cleanup-tag --yes
