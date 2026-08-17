@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
-const version = process.argv[2];
+const version = process.env.RELEASE_VERSION ?? process.argv[2];
 
 if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) {
   throw new Error(`Expected a stable semantic version, received: ${version}`);
