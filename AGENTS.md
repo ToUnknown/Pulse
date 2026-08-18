@@ -1,8 +1,3 @@
-# Pulse
-
-Pulse is a windowless Rust/Tauri tray utility for macOS and Windows. Keep every
-control in the native tray menu; do not add a webview or application window.
-
 ## Structure
 
 - Runtime and native menus: `src-tauri/src/lib.rs`
@@ -11,7 +6,7 @@ control in the native tray menu; do not add a webview or application window.
 - Release workflow and scripts: `.github/workflows/release.yml` and `.github/scripts/`
 
 Windows owns the Appearance submenu (Auto, Light, and Dark); Auto uses Light
-from 07:00–19:00. macOS uses the system appearance controls.
+from 07:00–19:00.
 
 ## Build and validation
 
@@ -33,7 +28,4 @@ platform not verified locally.
 - The workflow builds a macOS Apple Silicon DMG and Windows x64 NSIS executable, caches `src-tauri/target`, signs updater artifacts, finalizes public updater URLs, and publishes `latest.json`.
 - Keep release assets minimal: DMG plus updater archive for macOS, NSIS executable for Windows, and `latest.json`. Do not upload MSI or standalone `.sig` files; signatures are embedded in the manifest.
 - Draft releases must be published and cleaned up by numeric release ID. Do not replace this with tag-based draft lookup.
-- Keep `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in GitHub Actions secrets. Never commit the private key, and keep its backup safe.
 - Before changing release or updater code, verify the public `latest.json`, platform downloads, signatures, tag target, and GitHub Actions permissions. Use manual workflow dispatch only for recovery or an intentional version override.
-
-Updater signatures do not replace Apple notarization or Windows code signing.
