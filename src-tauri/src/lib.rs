@@ -189,6 +189,9 @@ const TRAY_ICON_BYTES: &[u8] =
 #[cfg(target_os = "windows")]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
 
+#[cfg(target_os = "windows")]
+const RED_TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-red-32.png");
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
 
@@ -209,6 +212,55 @@ enum ThemeMode {
     Auto,
     Light,
     Dark,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrayIconMode {
+    Black,
+    Red,
+}
+
+#[cfg(target_os = "windows")]
+impl TrayIconMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "black" => Some(Self::Black),
+            "red" => Some(Self::Red),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Black => "black",
+            Self::Red => "red",
+        }
+    }
+
+    fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Black => TRAY_ICON_BYTES,
+            Self::Red => RED_TRAY_ICON_BYTES,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn load_tray_icon_mode(path: &Path) -> TrayIconMode {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| TrayIconMode::parse(value.trim()))
+        .unwrap_or(TrayIconMode::Red)
+}
+
+#[cfg(target_os = "windows")]
+fn save_tray_icon_mode(path: &Path, mode: TrayIconMode) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    fs::write(path, mode.as_str()).map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -307,6 +359,26 @@ fn select_theme(
 }
 
 #[cfg(target_os = "windows")]
+fn select_tray_icon(
+    app: &tauri::AppHandle,
+    next_mode: TrayIconMode,
+    mode: &Arc<Mutex<TrayIconMode>>,
+    config_path: &Path,
+) -> Result<(), String> {
+    let mut selected_mode = mode.lock().map_err(|error| error.to_string())?;
+    let tray = app
+        .tray_by_id("pulse-tray")
+        .ok_or_else(|| "pulse tray not found".to_string())?;
+    let icon =
+        tauri::image::Image::from_bytes(next_mode.bytes()).map_err(|error| error.to_string())?;
+    tray.set_icon(Some(icon))
+        .map_err(|error| error.to_string())?;
+    save_tray_icon_mode(config_path, next_mode)?;
+    *selected_mode = next_mode;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>) {
     thread::spawn(move || {
         let mut last_applied = None;
@@ -348,6 +420,17 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            #[cfg(target_os = "windows")]
+            let (tray_icon, initial_tray_icon_mode, tray_icon_config_path) = {
+                let config_path = app.path().app_config_dir()?.join("tray-icon");
+                let selected_mode = load_tray_icon_mode(&config_path);
+                (
+                    tauri::image::Image::from_bytes(selected_mode.bytes())?,
+                    selected_mode,
+                    config_path,
+                )
+            };
+            #[cfg(not(target_os = "windows"))]
             let tray_icon = tauri::image::Image::from_bytes(TRAY_ICON_BYTES)?;
             let separator = PredefinedMenuItem::separator(app)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -374,7 +457,18 @@ pub fn run() {
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
 
             #[cfg(target_os = "windows")]
-            let (menu, auto, light, dark, mode, config_path) = {
+            let (
+                menu,
+                auto,
+                light,
+                dark,
+                mode,
+                config_path,
+                tray_icon_mode,
+                tray_icon_config_path,
+                black,
+                red,
+            ) = {
                 let config_path = app.path().app_config_dir()?.join("theme-mode");
                 let selected_mode = load_theme_mode(&config_path);
                 let mode = Arc::new(Mutex::new(selected_mode));
@@ -404,10 +498,32 @@ pub fn run() {
                 )?;
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
+                let tray_icon_submenu = {
+                    let black = CheckMenuItem::with_id(
+                        app,
+                        "tray-icon-black",
+                        "Black",
+                        true,
+                        initial_tray_icon_mode == TrayIconMode::Black,
+                        None::<&str>,
+                    )?;
+                    let red = CheckMenuItem::with_id(
+                        app,
+                        "tray-icon-red",
+                        "Red",
+                        true,
+                        initial_tray_icon_mode == TrayIconMode::Red,
+                        None::<&str>,
+                    )?;
+                    let submenu = Submenu::with_items(app, "Tray Icon", true, &[&black, &red])?;
+                    (submenu, black, red)
+                };
+                let tray_icon_mode = Arc::new(Mutex::new(initial_tray_icon_mode));
                 let menu = Menu::with_items(
                     app,
                     &[
                         &appearance,
+                        &tray_icon_submenu.0,
                         &separator,
                         &start_at_login,
                         &update_item,
@@ -419,7 +535,18 @@ pub fn run() {
                 let _ = apply_windows_theme(selected_mode);
                 start_auto_scheduler(mode.clone());
 
-                (menu, auto, light, dark, mode, config_path)
+                (
+                    menu,
+                    auto,
+                    light,
+                    dark,
+                    mode,
+                    config_path,
+                    tray_icon_mode,
+                    tray_icon_config_path,
+                    tray_icon_submenu.1,
+                    tray_icon_submenu.2,
+                )
             };
 
             #[cfg(target_os = "macos")]
@@ -484,6 +611,26 @@ pub fn run() {
                                 let _ = auto.set_checked(next_mode == ThemeMode::Auto);
                                 let _ = light.set_checked(next_mode == ThemeMode::Light);
                                 let _ = dark.set_checked(next_mode == ThemeMode::Dark);
+                            }
+                        }
+
+                        let next_tray_icon = match event.id().as_ref() {
+                            "tray-icon-black" => Some(TrayIconMode::Black),
+                            "tray-icon-red" => Some(TrayIconMode::Red),
+                            _ => None,
+                        };
+
+                        if let Some(next_mode) = next_tray_icon {
+                            if let Err(error) = select_tray_icon(
+                                app,
+                                next_mode,
+                                &tray_icon_mode,
+                                &tray_icon_config_path,
+                            ) {
+                                eprintln!("tray icon selection failed: {error}");
+                            } else {
+                                let _ = black.set_checked(next_mode == TrayIconMode::Black);
+                                let _ = red.set_checked(next_mode == TrayIconMode::Red);
                             }
                         }
                     }

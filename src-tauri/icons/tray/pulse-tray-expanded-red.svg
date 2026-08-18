@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title desc">
+  <title id="title">Expanded red pulse tray icon</title>
+  <desc id="desc">A large compact red pulse mark without horizontal side lines.</desc>
+  <path
+    d="M 2.5 12.5
+       L 6.2 9
+       L 9.3 18
+       L 12 4
+       L 14.7 18
+       L 17.8 9
+       L 21.5 12.5"
+    fill="none"
+    stroke="#ff0000"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
