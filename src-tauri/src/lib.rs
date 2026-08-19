@@ -175,7 +175,10 @@ fn handle_update_menu(
                 return;
             }
 
-            app.request_restart();
+            // Do not return after installing: on macOS the updater has already
+            // replaced the running app bundle, so the process must stay in the
+            // restart path until Tauri exits and launches the updated binary.
+            app.restart();
         });
     } else {
         tauri::async_runtime::spawn(check_for_updates(app, update_item, status));
