@@ -217,7 +217,7 @@ enum ThemeMode {
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrayIconMode {
-    Black,
+    Default,
     Red,
 }
 
@@ -225,7 +225,7 @@ enum TrayIconMode {
 impl TrayIconMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
-            "black" => Some(Self::Black),
+            "default" | "black" => Some(Self::Default),
             "red" => Some(Self::Red),
             _ => None,
         }
@@ -233,14 +233,14 @@ impl TrayIconMode {
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::Black => "black",
+            Self::Default => "default",
             Self::Red => "red",
         }
     }
 
     fn bytes(self) -> &'static [u8] {
         match self {
-            Self::Black => TRAY_ICON_BYTES,
+            Self::Default => TRAY_ICON_BYTES,
             Self::Red => RED_TRAY_ICON_BYTES,
         }
     }
@@ -251,7 +251,7 @@ fn load_tray_icon_mode(path: &Path) -> TrayIconMode {
     fs::read_to_string(path)
         .ok()
         .and_then(|value| TrayIconMode::parse(value.trim()))
-        .unwrap_or(TrayIconMode::Red)
+        .unwrap_or(TrayIconMode::Default)
 }
 
 #[cfg(target_os = "windows")]
@@ -466,7 +466,7 @@ pub fn run() {
                 config_path,
                 tray_icon_mode,
                 tray_icon_config_path,
-                black,
+                default_icon,
                 red,
             ) = {
                 let config_path = app.path().app_config_dir()?.join("theme-mode");
@@ -499,12 +499,12 @@ pub fn run() {
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
                 let tray_icon_submenu = {
-                    let black = CheckMenuItem::with_id(
+                    let default_icon = CheckMenuItem::with_id(
                         app,
-                        "tray-icon-black",
-                        "Black",
+                        "tray-icon-default",
+                        "Default",
                         true,
-                        initial_tray_icon_mode == TrayIconMode::Black,
+                        initial_tray_icon_mode == TrayIconMode::Default,
                         None::<&str>,
                     )?;
                     let red = CheckMenuItem::with_id(
@@ -515,8 +515,9 @@ pub fn run() {
                         initial_tray_icon_mode == TrayIconMode::Red,
                         None::<&str>,
                     )?;
-                    let submenu = Submenu::with_items(app, "Tray Icon", true, &[&black, &red])?;
-                    (submenu, black, red)
+                    let submenu =
+                        Submenu::with_items(app, "Tray Icon", true, &[&default_icon, &red])?;
+                    (submenu, default_icon, red)
                 };
                 let tray_icon_mode = Arc::new(Mutex::new(initial_tray_icon_mode));
                 let menu = Menu::with_items(
@@ -615,7 +616,7 @@ pub fn run() {
                         }
 
                         let next_tray_icon = match event.id().as_ref() {
-                            "tray-icon-black" => Some(TrayIconMode::Black),
+                            "tray-icon-default" => Some(TrayIconMode::Default),
                             "tray-icon-red" => Some(TrayIconMode::Red),
                             _ => None,
                         };
@@ -629,7 +630,8 @@ pub fn run() {
                             ) {
                                 eprintln!("tray icon selection failed: {error}");
                             } else {
-                                let _ = black.set_checked(next_mode == TrayIconMode::Black);
+                                let _ =
+                                    default_icon.set_checked(next_mode == TrayIconMode::Default);
                                 let _ = red.set_checked(next_mode == TrayIconMode::Red);
                             }
                         }
