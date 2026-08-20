@@ -193,6 +193,10 @@ const TRAY_ICON_BYTES: &[u8] =
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
 
 #[cfg(target_os = "windows")]
+const WHITE_TRAY_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/tray/pulse-tray-expanded-white-32.png");
+
+#[cfg(target_os = "windows")]
 const RED_TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-red-32.png");
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -203,11 +207,21 @@ use {
     chrono::{Local, Timelike},
     std::{fs, path::Path, thread, time::Duration},
     tauri::{menu::Submenu, Manager},
-    windows_sys::Win32::UI::WindowsAndMessaging::{
-        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    windows_sys::Win32::{
+        System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
+        UI::WindowsAndMessaging::{
+            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+        },
     },
-    winreg::{enums::HKEY_CURRENT_USER, RegKey},
+    winreg::{
+        enums::{HKEY_CURRENT_USER, KEY_NOTIFY, KEY_READ},
+        RegKey,
+    },
 };
+
+#[cfg(target_os = "windows")]
+const PERSONALIZE_REGISTRY_PATH: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -217,10 +231,32 @@ enum ThemeMode {
     Dark,
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsTheme {
+    Light,
+    Dark,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DefaultTrayIconVariant {
+    Black,
+    White,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn default_tray_icon_variant(theme: WindowsTheme) -> DefaultTrayIconVariant {
+    match theme {
+        WindowsTheme::Light => DefaultTrayIconVariant::Black,
+        WindowsTheme::Dark => DefaultTrayIconVariant::White,
+    }
+}
+
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrayIconMode {
-    Black,
+    Default,
     Red,
 }
 
@@ -228,7 +264,7 @@ enum TrayIconMode {
 impl TrayIconMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
-            "black" => Some(Self::Black),
+            "default" | "black" => Some(Self::Default),
             "red" => Some(Self::Red),
             _ => None,
         }
@@ -236,14 +272,17 @@ impl TrayIconMode {
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::Black => "black",
+            Self::Default => "default",
             Self::Red => "red",
         }
     }
 
-    fn bytes(self) -> &'static [u8] {
+    fn bytes(self, theme: WindowsTheme) -> &'static [u8] {
         match self {
-            Self::Black => TRAY_ICON_BYTES,
+            Self::Default => match default_tray_icon_variant(theme) {
+                DefaultTrayIconVariant::Black => TRAY_ICON_BYTES,
+                DefaultTrayIconVariant::White => WHITE_TRAY_ICON_BYTES,
+            },
             Self::Red => RED_TRAY_ICON_BYTES,
         }
     }
@@ -254,7 +293,7 @@ fn load_tray_icon_mode(path: &Path) -> TrayIconMode {
     fs::read_to_string(path)
         .ok()
         .and_then(|value| TrayIconMode::parse(value.trim()))
-        .unwrap_or(TrayIconMode::Red)
+        .unwrap_or(TrayIconMode::Default)
 }
 
 #[cfg(target_os = "windows")]
@@ -304,25 +343,30 @@ fn save_theme_mode(path: &Path, mode: ThemeMode) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn scheduled_theme() -> ThemeMode {
+fn scheduled_theme() -> WindowsTheme {
     if (7..19).contains(&Local::now().hour()) {
-        ThemeMode::Light
+        WindowsTheme::Light
     } else {
-        ThemeMode::Dark
+        WindowsTheme::Dark
     }
 }
 
 #[cfg(target_os = "windows")]
-fn apply_windows_theme(mode: ThemeMode) -> Result<(), String> {
-    let resolved_mode = if mode == ThemeMode::Auto {
-        scheduled_theme()
-    } else {
-        mode
-    };
-    let use_light_theme = u32::from(resolved_mode == ThemeMode::Light);
+fn resolve_theme(mode: ThemeMode) -> WindowsTheme {
+    match mode {
+        ThemeMode::Auto => scheduled_theme(),
+        ThemeMode::Light => WindowsTheme::Light,
+        ThemeMode::Dark => WindowsTheme::Dark,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_theme(mode: ThemeMode) -> Result<WindowsTheme, String> {
+    let resolved_theme = resolve_theme(mode);
+    let use_light_theme = u32::from(resolved_theme == WindowsTheme::Light);
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     let (personalize, _) = current_user
-        .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
+        .create_subkey(PERSONALIZE_REGISTRY_PATH)
         .map_err(|error| error.to_string())?;
 
     personalize
@@ -345,7 +389,28 @@ fn apply_windows_theme(mode: ThemeMode) -> Result<(), String> {
         );
     }
 
-    Ok(())
+    Ok(resolved_theme)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_theme_from_registry(personalize: &RegKey) -> Result<WindowsTheme, String> {
+    let uses_light_theme: u32 = personalize
+        .get_value("SystemUsesLightTheme")
+        .map_err(|error| error.to_string())?;
+    if uses_light_theme == 0 {
+        Ok(WindowsTheme::Dark)
+    } else {
+        Ok(WindowsTheme::Light)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn current_windows_theme() -> Result<WindowsTheme, String> {
+    let current_user = RegKey::predef(HKEY_CURRENT_USER);
+    let personalize = current_user
+        .open_subkey(PERSONALIZE_REGISTRY_PATH)
+        .map_err(|error| error.to_string())?;
+    windows_theme_from_registry(&personalize)
 }
 
 #[cfg(target_os = "windows")]
@@ -362,6 +427,20 @@ fn select_theme(
 }
 
 #[cfg(target_os = "windows")]
+fn set_tray_icon(
+    app: &tauri::AppHandle,
+    mode: TrayIconMode,
+    theme: WindowsTheme,
+) -> Result<(), String> {
+    let tray = app
+        .tray_by_id("pulse-tray")
+        .ok_or_else(|| "pulse tray not found".to_string())?;
+    let icon =
+        tauri::image::Image::from_bytes(mode.bytes(theme)).map_err(|error| error.to_string())?;
+    tray.set_icon(Some(icon)).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
 fn select_tray_icon(
     app: &tauri::AppHandle,
     next_mode: TrayIconMode,
@@ -369,16 +448,65 @@ fn select_tray_icon(
     config_path: &Path,
 ) -> Result<(), String> {
     let mut selected_mode = mode.lock().map_err(|error| error.to_string())?;
-    let tray = app
-        .tray_by_id("pulse-tray")
-        .ok_or_else(|| "pulse tray not found".to_string())?;
-    let icon =
-        tauri::image::Image::from_bytes(next_mode.bytes()).map_err(|error| error.to_string())?;
-    tray.set_icon(Some(icon))
-        .map_err(|error| error.to_string())?;
+    set_tray_icon(app, next_mode, current_windows_theme()?)?;
     save_tray_icon_mode(config_path, next_mode)?;
     *selected_mode = next_mode;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_default_tray_icon(
+    app: &tauri::AppHandle,
+    mode: &Arc<Mutex<TrayIconMode>>,
+    theme: WindowsTheme,
+) -> Result<(), String> {
+    let selected_mode = *mode.lock().map_err(|error| error.to_string())?;
+    if selected_mode == TrayIconMode::Default {
+        set_tray_icon(app, selected_mode, theme)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn start_windows_theme_watcher(app: tauri::AppHandle, tray_icon_mode: Arc<Mutex<TrayIconMode>>) {
+    thread::spawn(move || loop {
+        let current_user = RegKey::predef(HKEY_CURRENT_USER);
+        let personalize = match current_user
+            .open_subkey_with_flags(PERSONALIZE_REGISTRY_PATH, KEY_READ | KEY_NOTIFY)
+        {
+            Ok(personalize) => personalize,
+            Err(error) => {
+                eprintln!("Windows theme watcher setup failed: {error}");
+                thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        };
+
+        loop {
+            match windows_theme_from_registry(&personalize)
+                .and_then(|theme| refresh_default_tray_icon(&app, &tray_icon_mode, theme))
+            {
+                Ok(()) => {}
+                Err(error) => eprintln!("Windows theme tray icon update failed: {error}"),
+            }
+
+            let status = unsafe {
+                RegNotifyChangeKeyValue(
+                    personalize.raw_handle(),
+                    0,
+                    REG_NOTIFY_CHANGE_LAST_SET,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if status != 0 {
+                eprintln!("Windows theme watcher failed with status {status}");
+                break;
+            }
+        }
+
+        thread::sleep(Duration::from_secs(1));
+    });
 }
 
 #[cfg(target_os = "windows")]
@@ -387,17 +515,20 @@ fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>) {
         let mut last_applied = None;
 
         loop {
-            if let Ok(selected_mode) = mode.lock() {
-                if *selected_mode == ThemeMode::Auto {
-                    let current_theme = scheduled_theme();
-                    if last_applied != Some(current_theme)
-                        && apply_windows_theme(current_theme).is_ok()
-                    {
+            let selected_mode = mode.lock().map(|mode| *mode).ok();
+            if selected_mode == Some(ThemeMode::Auto) {
+                let current_theme = scheduled_theme();
+                if last_applied != Some(current_theme) {
+                    let explicit_mode = match current_theme {
+                        WindowsTheme::Light => ThemeMode::Light,
+                        WindowsTheme::Dark => ThemeMode::Dark,
+                    };
+                    if apply_windows_theme(explicit_mode).is_ok() {
                         last_applied = Some(current_theme);
                     }
-                } else {
-                    last_applied = None;
                 }
+            } else {
+                last_applied = None;
             }
 
             thread::sleep(Duration::from_secs(30));
@@ -424,11 +555,23 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             #[cfg(target_os = "windows")]
+            let (initial_theme_mode, theme_config_path) = {
+                let config_path = app.path().app_config_dir()?.join("theme-mode");
+                (load_theme_mode(&config_path), config_path)
+            };
+            #[cfg(target_os = "windows")]
+            let applied_theme = apply_windows_theme(initial_theme_mode).unwrap_or_else(|error| {
+                eprintln!("initial Windows theme update failed: {error}");
+                resolve_theme(initial_theme_mode)
+            });
+
+            #[cfg(target_os = "windows")]
             let (tray_icon, initial_tray_icon_mode, tray_icon_config_path) = {
                 let config_path = app.path().app_config_dir()?.join("tray-icon");
                 let selected_mode = load_tray_icon_mode(&config_path);
+                let windows_theme = current_windows_theme().unwrap_or(applied_theme);
                 (
-                    tauri::image::Image::from_bytes(selected_mode.bytes())?,
+                    tauri::image::Image::from_bytes(selected_mode.bytes(windows_theme))?,
                     selected_mode,
                     config_path,
                 )
@@ -469,11 +612,11 @@ pub fn run() {
                 config_path,
                 tray_icon_mode,
                 tray_icon_config_path,
-                black,
+                default_icon,
                 red,
             ) = {
-                let config_path = app.path().app_config_dir()?.join("theme-mode");
-                let selected_mode = load_theme_mode(&config_path);
+                let config_path = theme_config_path;
+                let selected_mode = initial_theme_mode;
                 let mode = Arc::new(Mutex::new(selected_mode));
                 let auto = CheckMenuItem::with_id(
                     app,
@@ -502,12 +645,12 @@ pub fn run() {
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
                 let tray_icon_submenu = {
-                    let black = CheckMenuItem::with_id(
+                    let default_icon = CheckMenuItem::with_id(
                         app,
-                        "tray-icon-black",
-                        "Black",
+                        "tray-icon-default",
+                        "Default",
                         true,
-                        initial_tray_icon_mode == TrayIconMode::Black,
+                        initial_tray_icon_mode == TrayIconMode::Default,
                         None::<&str>,
                     )?;
                     let red = CheckMenuItem::with_id(
@@ -518,8 +661,9 @@ pub fn run() {
                         initial_tray_icon_mode == TrayIconMode::Red,
                         None::<&str>,
                     )?;
-                    let submenu = Submenu::with_items(app, "Tray Icon", true, &[&black, &red])?;
-                    (submenu, black, red)
+                    let submenu =
+                        Submenu::with_items(app, "Tray Icon", true, &[&default_icon, &red])?;
+                    (submenu, default_icon, red)
                 };
                 let tray_icon_mode = Arc::new(Mutex::new(initial_tray_icon_mode));
                 let menu = Menu::with_items(
@@ -534,9 +678,6 @@ pub fn run() {
                         &quit,
                     ],
                 )?;
-
-                let _ = apply_windows_theme(selected_mode);
-                start_auto_scheduler(mode.clone());
 
                 (
                     menu,
@@ -580,6 +721,10 @@ pub fn run() {
             let startup_update_item = update_item.clone();
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let startup_update_status = update_status.clone();
+            #[cfg(target_os = "windows")]
+            let scheduler_mode = mode.clone();
+            #[cfg(target_os = "windows")]
+            let watcher_tray_icon_mode = tray_icon_mode.clone();
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
@@ -610,15 +755,18 @@ pub fn run() {
                         };
 
                         if let Some(next_mode) = next_mode {
-                            if select_theme(next_mode, &mode, &config_path).is_ok() {
-                                let _ = auto.set_checked(next_mode == ThemeMode::Auto);
-                                let _ = light.set_checked(next_mode == ThemeMode::Light);
-                                let _ = dark.set_checked(next_mode == ThemeMode::Dark);
+                            match select_theme(next_mode, &mode, &config_path) {
+                                Ok(()) => {
+                                    let _ = auto.set_checked(next_mode == ThemeMode::Auto);
+                                    let _ = light.set_checked(next_mode == ThemeMode::Light);
+                                    let _ = dark.set_checked(next_mode == ThemeMode::Dark);
+                                }
+                                Err(error) => eprintln!("theme selection failed: {error}"),
                             }
                         }
 
                         let next_tray_icon = match event.id().as_ref() {
-                            "tray-icon-black" => Some(TrayIconMode::Black),
+                            "tray-icon-default" => Some(TrayIconMode::Default),
                             "tray-icon-red" => Some(TrayIconMode::Red),
                             _ => None,
                         };
@@ -632,7 +780,8 @@ pub fn run() {
                             ) {
                                 eprintln!("tray icon selection failed: {error}");
                             } else {
-                                let _ = black.set_checked(next_mode == TrayIconMode::Black);
+                                let _ =
+                                    default_icon.set_checked(next_mode == TrayIconMode::Default);
                                 let _ = red.set_checked(next_mode == TrayIconMode::Red);
                             }
                         }
@@ -649,6 +798,11 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            #[cfg(target_os = "windows")]
+            start_auto_scheduler(scheduler_mode);
+            #[cfg(target_os = "windows")]
+            start_windows_theme_watcher(app.handle().clone(), watcher_tray_icon_mode);
+
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if !cfg!(debug_assertions) {
                 tauri::async_runtime::spawn(check_for_updates(
@@ -662,4 +816,25 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Pulse");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_tray_icon_variant, DefaultTrayIconVariant, WindowsTheme};
+
+    #[test]
+    fn default_tray_icon_is_white_for_dark_windows_theme() {
+        assert_eq!(
+            default_tray_icon_variant(WindowsTheme::Dark),
+            DefaultTrayIconVariant::White
+        );
+    }
+
+    #[test]
+    fn default_tray_icon_is_black_for_light_windows_theme() {
+        assert_eq!(
+            default_tray_icon_variant(WindowsTheme::Light),
+            DefaultTrayIconVariant::Black
+        );
+    }
 }
