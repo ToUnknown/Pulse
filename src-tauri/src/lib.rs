@@ -36,6 +36,31 @@ fn set_update_menu(update_item: &MenuItem<tauri::Wry>, text: &str, enabled: bool
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+fn reveal_update_menu(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(tray) = app.tray_by_id("pulse-tray") else {
+            return;
+        };
+
+        let _ = tray.with_inner_tray_icon(|tray| tray.show_menu());
+    });
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn set_update_result(
+    app: &tauri::AppHandle,
+    update_item: &MenuItem<tauri::Wry>,
+    text: &str,
+    reveal_result: bool,
+) {
+    set_update_menu(update_item, text, true);
+    if reveal_result {
+        reveal_update_menu(app);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn begin_update_check(status: &SharedUpdateStatus) -> bool {
     let Ok(mut status) = status.lock() else {
         return false;
@@ -65,6 +90,7 @@ async fn check_for_updates(
     app: tauri::AppHandle,
     update_item: MenuItem<tauri::Wry>,
     status: SharedUpdateStatus,
+    reveal_result: bool,
 ) {
     if !begin_update_check(&status) {
         return;
@@ -77,7 +103,12 @@ async fn check_for_updates(
         Err(error) => {
             eprintln!("update setup failed: {error}");
             reset_update_status(&status);
-            set_update_menu(&update_item, "Update Check Failed — Retry", true);
+            set_update_result(
+                &app,
+                &update_item,
+                "Update Check Failed — Retry",
+                reveal_result,
+            );
             return;
         }
     };
@@ -87,21 +118,36 @@ async fn check_for_updates(
         Err(error) => {
             eprintln!("update check failed: {error}");
             reset_update_status(&status);
-            set_update_menu(&update_item, "Update Check Failed — Retry", true);
+            set_update_result(
+                &app,
+                &update_item,
+                "Update Check Failed — Retry",
+                reveal_result,
+            );
             return;
         }
     };
 
     let Some(update) = update else {
         reset_update_status(&status);
-        set_update_menu(&update_item, "Up to Date — Check Again", true);
+        set_update_result(
+            &app,
+            &update_item,
+            "Up to Date — Check Again",
+            reveal_result,
+        );
         return;
     };
 
     if let Ok(mut status) = status.lock() {
         *status = UpdateStatus::Downloading;
     } else {
-        set_update_menu(&update_item, "Update Check Failed — Retry", true);
+        set_update_result(
+            &app,
+            &update_item,
+            "Update Check Failed — Retry",
+            reveal_result,
+        );
         return;
     }
 
@@ -122,15 +168,30 @@ async fn check_for_updates(
             };
 
             if update_ready {
-                set_update_menu(&update_item, &format!("Restart to Update {version}"), true);
+                set_update_result(
+                    &app,
+                    &update_item,
+                    &format!("Restart to Update {version}"),
+                    reveal_result,
+                );
             } else {
-                set_update_menu(&update_item, "Update Check Failed — Retry", true);
+                set_update_result(
+                    &app,
+                    &update_item,
+                    "Update Check Failed — Retry",
+                    reveal_result,
+                );
             }
         }
         Err(error) => {
             eprintln!("update download failed: {error}");
             reset_update_status(&status);
-            set_update_menu(&update_item, "Update Download Failed — Retry", true);
+            set_update_result(
+                &app,
+                &update_item,
+                "Update Download Failed — Retry",
+                reveal_result,
+            );
         }
     }
 }
@@ -142,13 +203,13 @@ fn handle_update_menu(
     status: SharedUpdateStatus,
 ) {
     if cfg!(debug_assertions) {
-        set_update_menu(&update_item, "Updates Require a Release Build", true);
+        set_update_result(&app, &update_item, "Updates Require a Release Build", true);
         return;
     }
 
     let ready_update = {
         let Ok(mut status) = status.lock() else {
-            set_update_menu(&update_item, "Update Check Failed — Retry", true);
+            set_update_result(&app, &update_item, "Update Check Failed — Retry", true);
             return;
         };
 
@@ -171,7 +232,7 @@ fn handle_update_menu(
             if let Err(error) = downloaded.update.install(&downloaded.bytes) {
                 eprintln!("update install failed: {error}");
                 reset_update_status(&status);
-                set_update_menu(&update_item, "Update Install Failed — Retry", true);
+                set_update_result(&app, &update_item, "Update Install Failed — Retry", true);
                 return;
             }
 
@@ -181,7 +242,7 @@ fn handle_update_menu(
             app.restart();
         });
     } else {
-        tauri::async_runtime::spawn(check_for_updates(app, update_item, status));
+        tauri::async_runtime::spawn(check_for_updates(app, update_item, status, true));
     }
 }
 
@@ -809,6 +870,7 @@ pub fn run() {
                     app.handle().clone(),
                     startup_update_item,
                     startup_update_status,
+                    false,
                 ));
             }
 
