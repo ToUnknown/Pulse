@@ -5,14 +5,20 @@ use tauri::{
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use {
-    std::sync::{Arc, Mutex},
-    tauri::menu::CheckMenuItem,
+    std::{
+        fs,
+        path::Path,
+        sync::{Arc, Mutex},
+    },
     tauri_plugin_autostart::{MacosLauncher, ManagerExt},
     tauri_plugin_updater::{Update, UpdaterExt},
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use tauri::{Manager as _, WebviewUrl, WebviewWindowBuilder};
+use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+#[cfg(target_os = "macos")]
+use tauri::Manager as _;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct DownloadedUpdate {
@@ -260,7 +266,7 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded
 const WHITE_TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-white-32.png");
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const RED_TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-red-32.png");
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -269,12 +275,16 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded
 #[cfg(target_os = "windows")]
 use {
     chrono::{Local, Timelike},
-    std::{fs, path::Path, thread, time::Duration},
-    tauri::{menu::Submenu, Manager},
+    std::{thread, time::Duration},
+    tauri::{
+        menu::{ContextMenu, Submenu},
+        Manager,
+    },
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
-            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+            CheckMenuRadioItem, SendMessageTimeoutW, HWND_BROADCAST, MF_BYPOSITION,
+            SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
         },
     },
     winreg::{
@@ -287,12 +297,63 @@ use {
 const PERSONALIZE_REGISTRY_PATH: &str =
     "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThemeMode {
     Auto,
     Light,
     Dark,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn appearance_menu_position(mode: ThemeMode) -> u32 {
+    match mode {
+        ThemeMode::Auto => 0,
+        ThemeMode::Light => 1,
+        ThemeMode::Dark => 2,
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AutoSchedule {
+    light_start: u8,
+    dark_start: u8,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl AutoSchedule {
+    const DEFAULT: Self = Self {
+        light_start: 7,
+        dark_start: 19,
+    };
+
+    fn new(light_start: u8, dark_start: u8) -> Option<Self> {
+        (light_start < 24 && dark_start < 24 && light_start != dark_start).then_some(Self {
+            light_start,
+            dark_start,
+        })
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        let (light_start, dark_start) = value.trim().split_once('-')?;
+        Self::new(light_start.parse().ok()?, dark_start.parse().ok()?)
+    }
+
+    fn theme_at_hour(self, hour: u32) -> WindowsTheme {
+        let hour = hour as u8;
+        let uses_light_theme = if self.light_start < self.dark_start {
+            (self.light_start..self.dark_start).contains(&hour)
+        } else {
+            hour >= self.light_start || hour < self.dark_start
+        };
+
+        if uses_light_theme {
+            WindowsTheme::Light
+        } else {
+            WindowsTheme::Dark
+        }
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -317,16 +378,23 @@ fn default_tray_icon_variant(theme: WindowsTheme) -> DefaultTrayIconVariant {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrayIconMode {
     Default,
     Red,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct TrayIconSettings {
     mode: Arc<Mutex<TrayIconMode>>,
+    config_path: std::path::PathBuf,
+}
+
+#[cfg(target_os = "windows")]
+struct AutoScheduleSettings {
+    mode: Arc<Mutex<ThemeMode>>,
+    schedule: Arc<Mutex<AutoSchedule>>,
     config_path: std::path::PathBuf,
 }
 
@@ -335,16 +403,28 @@ struct TrayIconSettings {
 fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
     let start_at_login = app.autolaunch().is_enabled().unwrap_or(false);
 
-    #[cfg(target_os = "windows")]
     let tray_icon = app
         .try_state::<TrayIconSettings>()
         .and_then(|settings| settings.mode.lock().ok().map(|mode| mode.as_str()));
+
+    #[cfg(target_os = "windows")]
+    let auto_schedule = app
+        .try_state::<AutoScheduleSettings>()
+        .and_then(|settings| settings.schedule.lock().ok().map(|schedule| *schedule))
+        .map(|schedule| {
+            serde_json::json!({
+                "lightStart": schedule.light_start,
+                "darkStart": schedule.dark_start,
+            })
+        });
     #[cfg(target_os = "macos")]
-    let tray_icon: Option<&str> = None;
+    let auto_schedule: Option<serde_json::Value> = None;
 
     serde_json::json!({
+        "platform": std::env::consts::OS,
         "startAtLogin": start_at_login,
         "trayIcon": tray_icon,
+        "autoSchedule": auto_schedule,
     })
 }
 
@@ -359,7 +439,7 @@ fn set_start_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String
     .map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn set_tray_icon_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
     let next_mode =
@@ -368,25 +448,51 @@ fn set_tray_icon_mode(app: tauri::AppHandle, mode: String) -> Result<(), String>
     select_tray_icon(&app, next_mode, &settings.mode, &settings.config_path)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window("settings") {
-        window.show()?;
-        window.set_focus()?;
-        return Ok(());
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn set_auto_schedule(app: tauri::AppHandle, light_start: u8, dark_start: u8) -> Result<(), String> {
+    let next_schedule = AutoSchedule::new(light_start, dark_start)
+        .ok_or_else(|| "choose two different hours between 00:00 and 23:00".to_string())?;
+    let settings = app.state::<AutoScheduleSettings>();
+
+    save_auto_schedule(&settings.config_path, next_schedule)?;
+    *settings
+        .schedule
+        .lock()
+        .map_err(|error| error.to_string())? = next_schedule;
+
+    let selected_mode = *settings.mode.lock().map_err(|error| error.to_string())?;
+    if selected_mode == ThemeMode::Auto {
+        apply_windows_theme(selected_mode, next_schedule)?;
     }
 
-    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("Pulse Settings")
-        .inner_size(360.0, 300.0)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .build()?;
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let window = if let Some(window) = app.get_webview_window("settings") {
+        window.show()?;
+        window
+    } else {
+        #[cfg(target_os = "windows")]
+        let window_height = 440.0;
+        #[cfg(target_os = "macos")]
+        let window_height = 288.0;
+
+        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+            .title("Pulse Settings")
+            .inner_size(420.0, window_height)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .build()?
+    };
+
+    window.set_focus()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl TrayIconMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
@@ -403,6 +509,7 @@ impl TrayIconMode {
         }
     }
 
+    #[cfg(target_os = "windows")]
     fn bytes(self, theme: WindowsTheme) -> &'static [u8] {
         match self {
             Self::Default => match default_tray_icon_variant(theme) {
@@ -412,9 +519,17 @@ impl TrayIconMode {
             Self::Red => RED_TRAY_ICON_BYTES,
         }
     }
+
+    #[cfg(target_os = "macos")]
+    fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Default => TRAY_ICON_BYTES,
+            Self::Red => RED_TRAY_ICON_BYTES,
+        }
+    }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn load_tray_icon_mode(path: &Path) -> TrayIconMode {
     fs::read_to_string(path)
         .ok()
@@ -422,7 +537,7 @@ fn load_tray_icon_mode(path: &Path) -> TrayIconMode {
         .unwrap_or(TrayIconMode::Default)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn save_tray_icon_mode(path: &Path, mode: TrayIconMode) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -469,26 +584,43 @@ fn save_theme_mode(path: &Path, mode: ThemeMode) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn scheduled_theme() -> WindowsTheme {
-    if (7..19).contains(&Local::now().hour()) {
-        WindowsTheme::Light
-    } else {
-        WindowsTheme::Dark
-    }
+fn load_auto_schedule(path: &Path) -> AutoSchedule {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| AutoSchedule::parse(&value))
+        .unwrap_or(AutoSchedule::DEFAULT)
 }
 
 #[cfg(target_os = "windows")]
-fn resolve_theme(mode: ThemeMode) -> WindowsTheme {
+fn save_auto_schedule(path: &Path, schedule: AutoSchedule) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    fs::write(
+        path,
+        format!("{}-{}", schedule.light_start, schedule.dark_start),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn scheduled_theme(schedule: AutoSchedule) -> WindowsTheme {
+    schedule.theme_at_hour(Local::now().hour())
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_theme(mode: ThemeMode, schedule: AutoSchedule) -> WindowsTheme {
     match mode {
-        ThemeMode::Auto => scheduled_theme(),
+        ThemeMode::Auto => scheduled_theme(schedule),
         ThemeMode::Light => WindowsTheme::Light,
         ThemeMode::Dark => WindowsTheme::Dark,
     }
 }
 
 #[cfg(target_os = "windows")]
-fn apply_windows_theme(mode: ThemeMode) -> Result<WindowsTheme, String> {
-    let resolved_theme = resolve_theme(mode);
+fn apply_windows_theme(mode: ThemeMode, schedule: AutoSchedule) -> Result<WindowsTheme, String> {
+    let resolved_theme = resolve_theme(mode, schedule);
     let use_light_theme = u32::from(resolved_theme == WindowsTheme::Light);
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     let (personalize, _) = current_user
@@ -544,11 +676,28 @@ fn select_theme(
     next_mode: ThemeMode,
     mode: &Arc<Mutex<ThemeMode>>,
     config_path: &Path,
+    schedule: &Arc<Mutex<AutoSchedule>>,
 ) -> Result<(), String> {
     let mut selected_mode = mode.lock().map_err(|error| error.to_string())?;
-    apply_windows_theme(next_mode)?;
+    let schedule = *schedule.lock().map_err(|error| error.to_string())?;
+    apply_windows_theme(next_mode, schedule)?;
     save_theme_mode(config_path, next_mode)?;
     *selected_mode = next_mode;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn sync_appearance_menu(
+    selected_mode: ThemeMode,
+    appearance: &Submenu<tauri::Wry>,
+) -> Result<(), String> {
+    let menu = appearance.hpopupmenu().map_err(|error| error.to_string())?;
+    let selected_position = appearance_menu_position(selected_mode);
+    let updated = unsafe { CheckMenuRadioItem(menu as _, 0, 2, selected_position, MF_BYPOSITION) };
+    if updated == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
     Ok(())
 }
 
@@ -566,7 +715,17 @@ fn set_tray_icon(
     tray.set_icon(Some(icon)).map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "macos")]
+fn set_tray_icon(app: &tauri::AppHandle, mode: TrayIconMode) -> Result<(), String> {
+    let tray = app
+        .tray_by_id("pulse-tray")
+        .ok_or_else(|| "pulse tray not found".to_string())?;
+    let icon = tauri::image::Image::from_bytes(mode.bytes()).map_err(|error| error.to_string())?;
+    tray.set_icon_with_as_template(Some(icon), mode == TrayIconMode::Default)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn select_tray_icon(
     app: &tauri::AppHandle,
     next_mode: TrayIconMode,
@@ -574,7 +733,12 @@ fn select_tray_icon(
     config_path: &Path,
 ) -> Result<(), String> {
     let mut selected_mode = mode.lock().map_err(|error| error.to_string())?;
+
+    #[cfg(target_os = "windows")]
     set_tray_icon(app, next_mode, current_windows_theme()?)?;
+    #[cfg(target_os = "macos")]
+    set_tray_icon(app, next_mode)?;
+
     save_tray_icon_mode(config_path, next_mode)?;
     *selected_mode = next_mode;
     Ok(())
@@ -636,20 +800,21 @@ fn start_windows_theme_watcher(app: tauri::AppHandle, tray_icon_mode: Arc<Mutex<
 }
 
 #[cfg(target_os = "windows")]
-fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>) {
+fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>, schedule: Arc<Mutex<AutoSchedule>>) {
     thread::spawn(move || {
         let mut last_applied = None;
 
         loop {
             let selected_mode = mode.lock().map(|mode| *mode).ok();
-            if selected_mode == Some(ThemeMode::Auto) {
-                let current_theme = scheduled_theme();
+            let auto_schedule = schedule.lock().map(|schedule| *schedule).ok();
+            if let (Some(ThemeMode::Auto), Some(auto_schedule)) = (selected_mode, auto_schedule) {
+                let current_theme = scheduled_theme(auto_schedule);
                 if last_applied != Some(current_theme) {
                     let explicit_mode = match current_theme {
                         WindowsTheme::Light => ThemeMode::Light,
                         WindowsTheme::Dark => ThemeMode::Dark,
                     };
-                    if apply_windows_theme(explicit_mode).is_ok() {
+                    if apply_windows_theme(explicit_mode, auto_schedule).is_ok() {
                         last_applied = Some(current_theme);
                     }
                 }
@@ -670,12 +835,16 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
         set_start_at_login,
-        set_tray_icon_mode
+        set_tray_icon_mode,
+        set_auto_schedule
     ]);
 
     #[cfg(target_os = "macos")]
-    let builder =
-        builder.invoke_handler(tauri::generate_handler![settings_state, set_start_at_login]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        settings_state,
+        set_start_at_login,
+        set_tray_icon_mode
+    ]);
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.plugin(tauri_plugin_autostart::init(
@@ -686,50 +855,72 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.on_window_event(|window, event| {
+        if window.label() == "settings" {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Err(error) = window.hide() {
+                    eprintln!("failed to hide settings: {error}");
+                }
+            }
+        }
+    });
+
     builder
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            #[cfg(target_os = "windows")]
-            let (initial_theme_mode, theme_config_path) = {
-                let config_path = app.path().app_config_dir()?.join("theme-mode");
-                (load_theme_mode(&config_path), config_path)
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let (initial_tray_icon_mode, tray_icon_config_path) = {
+                let config_path = app.path().app_config_dir()?.join("tray-icon");
+                (load_tray_icon_mode(&config_path), config_path)
             };
-            #[cfg(target_os = "windows")]
-            let applied_theme = apply_windows_theme(initial_theme_mode).unwrap_or_else(|error| {
-                eprintln!("initial Windows theme update failed: {error}");
-                resolve_theme(initial_theme_mode)
-            });
 
             #[cfg(target_os = "windows")]
-            let (tray_icon, initial_tray_icon_mode, tray_icon_config_path) = {
-                let config_path = app.path().app_config_dir()?.join("tray-icon");
-                let selected_mode = load_tray_icon_mode(&config_path);
-                let windows_theme = current_windows_theme().unwrap_or(applied_theme);
+            let (
+                initial_theme_mode,
+                theme_config_path,
+                initial_auto_schedule,
+                auto_schedule_config_path,
+            ) = {
+                let app_config_dir = app.path().app_config_dir()?;
+                let theme_config_path = app_config_dir.join("theme-mode");
+                let auto_schedule_config_path = app_config_dir.join("auto-schedule");
                 (
-                    tauri::image::Image::from_bytes(selected_mode.bytes(windows_theme))?,
-                    selected_mode,
-                    config_path,
+                    load_theme_mode(&theme_config_path),
+                    theme_config_path,
+                    load_auto_schedule(&auto_schedule_config_path),
+                    auto_schedule_config_path,
                 )
             };
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "windows")]
+            let applied_theme = apply_windows_theme(initial_theme_mode, initial_auto_schedule)
+                .unwrap_or_else(|error| {
+                    eprintln!("initial Windows theme update failed: {error}");
+                    resolve_theme(initial_theme_mode, initial_auto_schedule)
+                });
+
+            #[cfg(target_os = "windows")]
+            let tray_icon = {
+                let windows_theme = current_windows_theme().unwrap_or(applied_theme);
+                tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(windows_theme))?
+            };
+            #[cfg(target_os = "macos")]
+            let tray_icon = tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes())?;
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let tray_icon = tauri::image::Image::from_bytes(TRAY_ICON_BYTES)?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let tray_icon_is_template = initial_tray_icon_mode == TrayIconMode::Default;
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let tray_icon_is_template = true;
             let separator = PredefinedMenuItem::separator(app)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let quit_separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let start_at_login = CheckMenuItem::with_id(
-                app,
-                "start-at-login",
-                "Start at Login",
-                true,
-                app.autolaunch().is_enabled().unwrap_or(false),
-                None::<&str>,
-            )?;
+            let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let update_item = MenuItem::with_id(
                 app,
@@ -742,51 +933,37 @@ pub fn run() {
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
 
             #[cfg(target_os = "windows")]
-            let (menu, auto, light, dark, mode, config_path, tray_icon_mode) = {
+            let (menu, appearance, mode, config_path, auto_schedule, auto_schedule_config_path) = {
                 let config_path = theme_config_path;
                 let selected_mode = initial_theme_mode;
                 let mode = Arc::new(Mutex::new(selected_mode));
-                let auto = CheckMenuItem::with_id(
-                    app,
-                    "theme-auto",
-                    "Auto (07:00–19:00)",
-                    true,
-                    selected_mode == ThemeMode::Auto,
-                    None::<&str>,
-                )?;
-                let light = CheckMenuItem::with_id(
-                    app,
-                    "theme-light",
-                    "Light",
-                    true,
-                    selected_mode == ThemeMode::Light,
-                    None::<&str>,
-                )?;
-                let dark = CheckMenuItem::with_id(
-                    app,
-                    "theme-dark",
-                    "Dark",
-                    true,
-                    selected_mode == ThemeMode::Dark,
-                    None::<&str>,
-                )?;
+                let auto_schedule = Arc::new(Mutex::new(initial_auto_schedule));
+                let auto = MenuItem::with_id(app, "theme-auto", "Auto", true, None::<&str>)?;
+                let light = MenuItem::with_id(app, "theme-light", "Light", true, None::<&str>)?;
+                let dark = MenuItem::with_id(app, "theme-dark", "Dark", true, None::<&str>)?;
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
-                let tray_icon_mode = Arc::new(Mutex::new(initial_tray_icon_mode));
+                sync_appearance_menu(selected_mode, &appearance)?;
                 let menu = Menu::with_items(
                     app,
                     &[
                         &appearance,
                         &separator,
                         &settings,
-                        &start_at_login,
                         &update_item,
                         &quit_separator,
                         &quit,
                     ],
                 )?;
 
-                (menu, auto, light, dark, mode, config_path, tray_icon_mode)
+                (
+                    menu,
+                    appearance,
+                    mode,
+                    config_path,
+                    auto_schedule,
+                    auto_schedule_config_path,
+                )
             };
 
             #[cfg(target_os = "macos")]
@@ -799,7 +976,6 @@ pub fn run() {
                         &status,
                         &separator,
                         &settings,
-                        &start_at_login,
                         &update_item,
                         &quit_separator,
                         &quit,
@@ -821,8 +997,18 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let scheduler_mode = mode.clone();
             #[cfg(target_os = "windows")]
-            let watcher_tray_icon_mode = tray_icon_mode.clone();
+            let scheduler_auto_schedule = auto_schedule.clone();
             #[cfg(target_os = "windows")]
+            app.manage(AutoScheduleSettings {
+                mode: mode.clone(),
+                schedule: auto_schedule.clone(),
+                config_path: auto_schedule_config_path,
+            });
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let tray_icon_mode = Arc::new(Mutex::new(initial_tray_icon_mode));
+            #[cfg(target_os = "windows")]
+            let watcher_tray_icon_mode = tray_icon_mode.clone();
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             app.manage(TrayIconSettings {
                 mode: tray_icon_mode.clone(),
                 config_path: tray_icon_config_path,
@@ -830,23 +1016,11 @@ pub fn run() {
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
-                .icon_as_template(true)
+                .icon_as_template(tray_icon_is_template)
                 .tooltip("Pulse")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| {
-                    #[cfg(any(target_os = "macos", target_os = "windows"))]
-                    if event.id().as_ref() == "start-at-login" {
-                        let autostart = app.autolaunch();
-                        let _ = if autostart.is_enabled().unwrap_or(false) {
-                            autostart.disable()
-                        } else {
-                            autostart.enable()
-                        };
-
-                        let _ = start_at_login.set_checked(autostart.is_enabled().unwrap_or(false));
-                    }
-
                     #[cfg(target_os = "windows")]
                     {
                         let next_mode = match event.id().as_ref() {
@@ -857,13 +1031,25 @@ pub fn run() {
                         };
 
                         if let Some(next_mode) = next_mode {
-                            match select_theme(next_mode, &mode, &config_path) {
-                                Ok(()) => {
-                                    let _ = auto.set_checked(next_mode == ThemeMode::Auto);
-                                    let _ = light.set_checked(next_mode == ThemeMode::Light);
-                                    let _ = dark.set_checked(next_mode == ThemeMode::Dark);
+                            let previous_mode = mode
+                                .lock()
+                                .map(|selected_mode| *selected_mode)
+                                .unwrap_or(initial_theme_mode);
+                            let selected_mode = match select_theme(
+                                next_mode,
+                                &mode,
+                                &config_path,
+                                &auto_schedule,
+                            ) {
+                                Ok(()) => next_mode,
+                                Err(error) => {
+                                    eprintln!("theme selection failed: {error}");
+                                    previous_mode
                                 }
-                                Err(error) => eprintln!("theme selection failed: {error}"),
+                            };
+
+                            if let Err(error) = sync_appearance_menu(selected_mode, &appearance) {
+                                eprintln!("appearance menu sync failed: {error}");
                             }
                         }
                     }
@@ -887,7 +1073,7 @@ pub fn run() {
                 .build(app)?;
 
             #[cfg(target_os = "windows")]
-            start_auto_scheduler(scheduler_mode);
+            start_auto_scheduler(scheduler_mode, scheduler_auto_schedule);
             #[cfg(target_os = "windows")]
             start_windows_theme_watcher(app.handle().clone(), watcher_tray_icon_mode);
 
@@ -909,7 +1095,43 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_tray_icon_variant, DefaultTrayIconVariant, WindowsTheme};
+    use super::{
+        appearance_menu_position, default_tray_icon_variant, AutoSchedule, DefaultTrayIconVariant,
+        ThemeMode, WindowsTheme,
+    };
+
+    #[test]
+    fn appearance_modes_map_to_distinct_radio_positions() {
+        assert_eq!(appearance_menu_position(ThemeMode::Auto), 0);
+        assert_eq!(appearance_menu_position(ThemeMode::Light), 1);
+        assert_eq!(appearance_menu_position(ThemeMode::Dark), 2);
+    }
+
+    #[test]
+    fn default_auto_schedule_uses_light_between_seven_and_nineteen() {
+        let schedule = AutoSchedule::DEFAULT;
+
+        assert_eq!(schedule.theme_at_hour(7), WindowsTheme::Light);
+        assert_eq!(schedule.theme_at_hour(18), WindowsTheme::Light);
+        assert_eq!(schedule.theme_at_hour(19), WindowsTheme::Dark);
+        assert_eq!(schedule.theme_at_hour(6), WindowsTheme::Dark);
+    }
+
+    #[test]
+    fn auto_schedule_supports_a_light_period_across_midnight() {
+        let schedule = AutoSchedule::new(20, 6).expect("valid schedule");
+
+        assert_eq!(schedule.theme_at_hour(23), WindowsTheme::Light);
+        assert_eq!(schedule.theme_at_hour(2), WindowsTheme::Light);
+        assert_eq!(schedule.theme_at_hour(12), WindowsTheme::Dark);
+    }
+
+    #[test]
+    fn auto_schedule_rejects_equal_or_out_of_range_hours() {
+        assert_eq!(AutoSchedule::new(7, 7), None);
+        assert_eq!(AutoSchedule::new(24, 19), None);
+        assert_eq!(AutoSchedule::parse("7-19"), Some(AutoSchedule::DEFAULT));
+    }
 
     #[test]
     fn default_tray_icon_is_white_for_dark_windows_theme() {
