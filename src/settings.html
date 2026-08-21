@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pulse Settings</title>
+    <link rel="stylesheet" href="settings.css" />
+    <script src="settings.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <section class="settings-group" aria-labelledby="general-heading">
+        <h2 id="general-heading">General</h2>
+        <label class="setting-row">
+          <span>
+            <strong>Start at login</strong>
+            <small>Launch Pulse when you sign in.</small>
+          </span>
+          <input id="start-at-login" type="checkbox" />
+        </label>
+      </section>
+      <section
+        id="appearance-section"
+        class="settings-group"
+        aria-labelledby="appearance-heading"
+        hidden
+      >
+        <h2 id="appearance-heading">Appearance</h2>
+        <div class="setting-row schedule-row">
+          <span>
+            <strong>Auto schedule</strong>
+            <small>Choose when light and dark mode begin.</small>
+          </span>
+          <div class="schedule-controls">
+            <div class="time-selector">
+              <span class="time-icon time-icon-light" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="img">
+                  <circle cx="12" cy="12" r="3.25"></circle>
+                  <path d="M12 2.75v2M12 19.25v2M2.75 12h2M19.25 12h2M5.46 5.46l1.42 1.42M17.12 17.12l1.42 1.42M18.54 5.46l-1.42 1.42M6.88 17.12l-1.42 1.42"></path>
+                </svg>
+              </span>
+              <select
+                id="auto-light-start"
+                data-custom-select="time"
+                aria-label="Light mode start hour"
+              ></select>
+            </div>
+            <div class="time-selector">
+              <span class="time-icon time-icon-dark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="img">
+                  <path d="M19.25 15.1A7.6 7.6 0 0 1 8.9 4.75a7.6 7.6 0 1 0 10.35 10.35Z"></path>
+                </svg>
+              </span>
+              <select
+                id="auto-dark-start"
+                data-custom-select="time"
+                aria-label="Dark mode start hour"
+              ></select>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="tray-icon-section" class="settings-group" aria-labelledby="icon-heading" hidden>
+        <h2 id="icon-heading">Tray icon</h2>
+        <div class="setting-row">
+          <span>
+            <strong>Icon style</strong>
+            <small id="icon-description">Choose how Pulse appears in the system tray.</small>
+          </span>
+          <select id="tray-icon" data-custom-select="icon" aria-label="Tray icon style">
+            <option value="default">Default</option>
+            <option value="red">Red</option>
+          </select>
+        </div>
+      </section>
+      <p id="error" role="alert" hidden></p>
+    </main>
+  </body>
+</html>
