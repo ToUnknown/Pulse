@@ -283,8 +283,8 @@ use {
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
-            CheckMenuRadioItem, SendMessageTimeoutW, HWND_BROADCAST, MF_BYPOSITION,
-            SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+            CheckMenuItem, SendMessageTimeoutW, HWND_BROADCAST, MF_BYPOSITION, MF_CHECKED,
+            MF_UNCHECKED, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
         },
     },
     winreg::{
@@ -693,9 +693,17 @@ fn sync_appearance_menu(
 ) -> Result<(), String> {
     let menu = appearance.hpopupmenu().map_err(|error| error.to_string())?;
     let selected_position = appearance_menu_position(selected_mode);
-    let updated = unsafe { CheckMenuRadioItem(menu as _, 0, 2, selected_position, MF_BYPOSITION) };
-    if updated == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
+
+    for position in 0..3 {
+        let checked = if position == selected_position {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
+        let previous_state = unsafe { CheckMenuItem(menu as _, position, MF_BYPOSITION | checked) };
+        if previous_state == u32::MAX {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
     }
 
     Ok(())
@@ -1101,7 +1109,7 @@ mod tests {
     };
 
     #[test]
-    fn appearance_modes_map_to_distinct_radio_positions() {
+    fn appearance_modes_map_to_distinct_menu_positions() {
         assert_eq!(appearance_menu_position(ThemeMode::Auto), 0);
         assert_eq!(appearance_menu_position(ThemeMode::Light), 1);
         assert_eq!(appearance_menu_position(ThemeMode::Dark), 2);
