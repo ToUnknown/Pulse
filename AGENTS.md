@@ -5,8 +5,8 @@
 - Tray assets: `src-tauri/icons/tray/`
 - Release workflow and scripts: `.github/workflows/release.yml` and `.github/scripts/`
 
-Windows owns the Appearance submenu (Auto, Light, and Dark); Auto uses Light
-from 07:00–19:00.
+Windows owns the Appearance submenu (Auto, Light, and Dark). Users can configure
+when Auto uses Light; the default interval is 07:00–19:00.
 
 ## Build and validation
 
