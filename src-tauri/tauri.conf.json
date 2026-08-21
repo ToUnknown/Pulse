@@ -3,9 +3,12 @@
   "productName": "Pulse",
   "version": "0.1.0",
   "identifier": "app.pulse.desktop",
-  "build": {},
+  "build": {
+    "frontendDist": "../src"
+  },
   "app": {
-    "windows": []
+    "windows": [],
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,
