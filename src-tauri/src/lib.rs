@@ -12,6 +12,9 @@ use {
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri::{Manager as _, WebviewUrl, WebviewWindowBuilder};
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct DownloadedUpdate {
     update: Update,
     bytes: Vec<u8>,
@@ -322,6 +325,68 @@ enum TrayIconMode {
 }
 
 #[cfg(target_os = "windows")]
+struct TrayIconSettings {
+    mode: Arc<Mutex<TrayIconMode>>,
+    config_path: std::path::PathBuf,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
+    let start_at_login = app.autolaunch().is_enabled().unwrap_or(false);
+
+    #[cfg(target_os = "windows")]
+    let tray_icon = app
+        .try_state::<TrayIconSettings>()
+        .and_then(|settings| settings.mode.lock().ok().map(|mode| mode.as_str()));
+    #[cfg(target_os = "macos")]
+    let tray_icon: Option<&str> = None;
+
+    serde_json::json!({
+        "startAtLogin": start_at_login,
+        "trayIcon": tray_icon,
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn set_start_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    }
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn set_tray_icon_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    let next_mode =
+        TrayIconMode::parse(&mode).ok_or_else(|| "invalid tray icon mode".to_string())?;
+    let settings = app.state::<TrayIconSettings>();
+    select_tray_icon(&app, next_mode, &settings.mode, &settings.config_path)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("settings") {
+        window.show()?;
+        window.set_focus()?;
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("Pulse Settings")
+        .inner_size(360.0, 300.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .build()?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 impl TrayIconMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
@@ -601,6 +666,17 @@ fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>) {
 pub fn run() {
     let builder = tauri::Builder::default();
 
+    #[cfg(target_os = "windows")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        settings_state,
+        set_start_at_login,
+        set_tray_icon_mode
+    ]);
+
+    #[cfg(target_os = "macos")]
+    let builder =
+        builder.invoke_handler(tauri::generate_handler![settings_state, set_start_at_login]);
+
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.plugin(tauri_plugin_autostart::init(
         MacosLauncher::LaunchAgent,
@@ -644,6 +720,8 @@ pub fn run() {
             let quit_separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             let start_at_login = CheckMenuItem::with_id(
                 app,
                 "start-at-login",
@@ -664,18 +742,7 @@ pub fn run() {
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
 
             #[cfg(target_os = "windows")]
-            let (
-                menu,
-                auto,
-                light,
-                dark,
-                mode,
-                config_path,
-                tray_icon_mode,
-                tray_icon_config_path,
-                default_icon,
-                red,
-            ) = {
+            let (menu, auto, light, dark, mode, config_path, tray_icon_mode) = {
                 let config_path = theme_config_path;
                 let selected_mode = initial_theme_mode;
                 let mode = Arc::new(Mutex::new(selected_mode));
@@ -705,34 +772,13 @@ pub fn run() {
                 )?;
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
-                let tray_icon_submenu = {
-                    let default_icon = CheckMenuItem::with_id(
-                        app,
-                        "tray-icon-default",
-                        "Default",
-                        true,
-                        initial_tray_icon_mode == TrayIconMode::Default,
-                        None::<&str>,
-                    )?;
-                    let red = CheckMenuItem::with_id(
-                        app,
-                        "tray-icon-red",
-                        "Red",
-                        true,
-                        initial_tray_icon_mode == TrayIconMode::Red,
-                        None::<&str>,
-                    )?;
-                    let submenu =
-                        Submenu::with_items(app, "Tray Icon", true, &[&default_icon, &red])?;
-                    (submenu, default_icon, red)
-                };
                 let tray_icon_mode = Arc::new(Mutex::new(initial_tray_icon_mode));
                 let menu = Menu::with_items(
                     app,
                     &[
                         &appearance,
-                        &tray_icon_submenu.0,
                         &separator,
+                        &settings,
                         &start_at_login,
                         &update_item,
                         &quit_separator,
@@ -740,18 +786,7 @@ pub fn run() {
                     ],
                 )?;
 
-                (
-                    menu,
-                    auto,
-                    light,
-                    dark,
-                    mode,
-                    config_path,
-                    tray_icon_mode,
-                    tray_icon_config_path,
-                    tray_icon_submenu.1,
-                    tray_icon_submenu.2,
-                )
+                (menu, auto, light, dark, mode, config_path, tray_icon_mode)
             };
 
             #[cfg(target_os = "macos")]
@@ -763,6 +798,7 @@ pub fn run() {
                     &[
                         &status,
                         &separator,
+                        &settings,
                         &start_at_login,
                         &update_item,
                         &quit_separator,
@@ -786,6 +822,11 @@ pub fn run() {
             let scheduler_mode = mode.clone();
             #[cfg(target_os = "windows")]
             let watcher_tray_icon_mode = tray_icon_mode.clone();
+            #[cfg(target_os = "windows")]
+            app.manage(TrayIconSettings {
+                mode: tray_icon_mode.clone(),
+                config_path: tray_icon_config_path,
+            });
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
@@ -825,26 +866,12 @@ pub fn run() {
                                 Err(error) => eprintln!("theme selection failed: {error}"),
                             }
                         }
+                    }
 
-                        let next_tray_icon = match event.id().as_ref() {
-                            "tray-icon-default" => Some(TrayIconMode::Default),
-                            "tray-icon-red" => Some(TrayIconMode::Red),
-                            _ => None,
-                        };
-
-                        if let Some(next_mode) = next_tray_icon {
-                            if let Err(error) = select_tray_icon(
-                                app,
-                                next_mode,
-                                &tray_icon_mode,
-                                &tray_icon_config_path,
-                            ) {
-                                eprintln!("tray icon selection failed: {error}");
-                            } else {
-                                let _ =
-                                    default_icon.set_checked(next_mode == TrayIconMode::Default);
-                                let _ = red.set_checked(next_mode == TrayIconMode::Red);
-                            }
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if event.id().as_ref() == "settings" {
+                        if let Err(error) = open_settings(app) {
+                            eprintln!("failed to open settings: {error}");
                         }
                     }
 

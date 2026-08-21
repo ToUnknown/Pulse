@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pulse Settings</title>
+    <link rel="stylesheet" href="settings.css" />
+    <script src="settings.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1>Settings</h1>
+      <section class="settings-group" aria-labelledby="general-heading">
+        <h2 id="general-heading">General</h2>
+        <label class="setting-row">
+          <span>
+            <strong>Start at login</strong>
+            <small>Launch Pulse when you sign in.</small>
+          </span>
+          <input id="start-at-login" type="checkbox" />
+        </label>
+      </section>
+      <section id="tray-icon-section" class="settings-group" aria-labelledby="icon-heading" hidden>
+        <h2 id="icon-heading">Tray icon</h2>
+        <label class="setting-row">
+          <span>
+            <strong>Icon style</strong>
+            <small>Choose how Pulse appears in the system tray.</small>
+          </span>
+          <select id="tray-icon">
+            <option value="default">Default</option>
+            <option value="red">Red</option>
+          </select>
+        </label>
+      </section>
+      <p id="error" role="alert" hidden></p>
+    </main>
+  </body>
+</html>
