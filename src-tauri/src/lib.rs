@@ -277,13 +277,14 @@ use {
     chrono::{Local, Timelike},
     std::{thread, time::Duration},
     tauri::{
-        menu::{CheckMenuItem, Submenu},
+        menu::{CheckMenuItem, ContextMenu, Submenu},
         Manager,
     },
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
-            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+            CheckMenuRadioItem, SendMessageTimeoutW, HWND_BROADCAST, MF_BYPOSITION,
+            SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
         },
     },
     winreg::{
@@ -688,6 +689,7 @@ fn select_theme(
 #[cfg(target_os = "windows")]
 fn sync_appearance_menu(
     selected_mode: ThemeMode,
+    appearance: &Submenu<tauri::Wry>,
     auto: &CheckMenuItem<tauri::Wry>,
     light: &CheckMenuItem<tauri::Wry>,
     dark: &CheckMenuItem<tauri::Wry>,
@@ -699,6 +701,14 @@ fn sync_appearance_menu(
         .map_err(|error| error.to_string())?;
     dark.set_checked(selected_mode == ThemeMode::Dark)
         .map_err(|error| error.to_string())?;
+
+    let menu = appearance.hpopupmenu().map_err(|error| error.to_string())?;
+    let selected_position = appearance_menu_position(selected_mode);
+    let updated = unsafe { CheckMenuRadioItem(menu as _, 0, 2, selected_position, MF_BYPOSITION) };
+    if updated == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
     Ok(())
 }
 
@@ -936,6 +946,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let (
                 menu,
+                appearance,
                 auto,
                 light,
                 dark,
@@ -985,9 +996,11 @@ pub fn run() {
                         &quit,
                     ],
                 )?;
+                sync_appearance_menu(selected_mode, &appearance, &auto, &light, &dark)?;
 
                 (
                     menu,
+                    appearance,
                     auto,
                     light,
                     dark,
@@ -1080,9 +1093,13 @@ pub fn run() {
                                 }
                             };
 
-                            if let Err(error) =
-                                sync_appearance_menu(selected_mode, &auto, &light, &dark)
-                            {
+                            if let Err(error) = sync_appearance_menu(
+                                selected_mode,
+                                &appearance,
+                                &auto,
+                                &light,
+                                &dark,
+                            ) {
                                 eprintln!("appearance menu sync failed: {error}");
                             }
                         }
