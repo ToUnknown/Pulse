@@ -166,6 +166,10 @@ input:focus-visible,
   border-color: var(--focus);
 }
 
+.time-selector:has(.custom-select[data-open="true"]) {
+  border-color: var(--control-border);
+}
+
 .time-icon {
   display: grid;
   width: 28px;
@@ -271,7 +275,8 @@ input:focus-visible,
 }
 
 .custom-select-trigger[aria-expanded="true"] {
-  border-color: var(--focus);
+  border-color: var(--control-border);
+  outline: none;
 }
 
 .custom-select-trigger:disabled {
