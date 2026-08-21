@@ -274,8 +274,10 @@ const TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-iconTemplate@2x.png");
 
 #[cfg(target_os = "macos")]
+// The contrast outline stays visible in either menu-bar appearance while the
+// non-template image preserves the blue update badge.
 const UPDATE_TRAY_ICON_BYTES: &[u8] =
-    include_bytes!("../icons/tray/pulse-tray-expanded-update-white@2x.png");
+    include_bytes!("../icons/tray/pulse-tray-expanded-update-macos@2x.png");
 
 #[cfg(target_os = "windows")]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");

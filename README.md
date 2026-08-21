@@ -22,7 +22,11 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
-The Codex environment adds two Play actions:
+### Build installers in Codex
 
-- `Build macOS DMG` runs on macOS and saves the DMG to the local Desktop.
-- `Build Windows EXE` runs on Windows and saves the NSIS installer to the local Desktop.
+After the Codex environment setup finishes, open the Play menu and run the action for the current computer:
+
+- `Build macOS DMG` creates the Apple Silicon DMG on macOS and copies it to the local Desktop.
+- `Build Windows EXE` creates the Windows x64 NSIS installer on Windows and copies it to the local Desktop.
+
+Each action disables updater artifacts because local builds do not have the release signing key. The release workflow still creates and signs updater artifacts.
