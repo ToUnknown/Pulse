@@ -10,7 +10,7 @@
        L 17.8 9
        L 21.5 12.5"
     fill="none"
-    stroke="#fff"
+    stroke="#000"
     stroke-width="2.8"
     stroke-linecap="round"
     stroke-linejoin="round"
@@ -24,8 +24,8 @@
        L 17.8 9
        L 21.5 12.5"
     fill="none"
-    stroke="#000"
-    stroke-width="1.4"
+    stroke="#fff"
+    stroke-width="1.6"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
