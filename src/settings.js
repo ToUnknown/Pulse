@@ -99,11 +99,12 @@ function enhanceSelect(select) {
     root.dataset.open = "true";
     trigger.setAttribute("aria-expanded", "true");
     menu.hidden = false;
-    const availableBelow = window.innerHeight - trigger.getBoundingClientRect().bottom;
+    const triggerRect = trigger.getBoundingClientRect();
+    const availableBelow = window.innerHeight - triggerRect.bottom;
+    const menuHeight = menu.getBoundingClientRect().height;
     root.classList.toggle(
       "dropdown-up",
-      availableBelow < Math.min(menu.scrollHeight, 208) + 8 &&
-        trigger.getBoundingClientRect().top > availableBelow,
+      availableBelow < menuHeight + 8 && triggerRect.top > availableBelow,
     );
     openCustomSelect = root;
     const selectedButton = optionButtons.find((button) => button.dataset.value === select.value);
