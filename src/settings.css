@@ -154,6 +154,7 @@ input:focus-visible,
   background: var(--control-background);
   border: 1px solid var(--control-border);
   border-radius: 999px;
+  cursor: pointer;
   transition: border-color 120ms ease, background-color 120ms ease;
 }
 

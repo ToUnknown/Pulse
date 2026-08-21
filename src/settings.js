@@ -178,6 +178,14 @@ function enhanceSelect(select) {
   select.setAttribute("aria-hidden", "true");
   select.after(root);
   root.append(trigger, menu);
+  if (kind === "time") {
+    select.closest(".time-selector")?.addEventListener("click", (event) => {
+      if (!root.contains(event.target)) {
+        trigger.focus();
+        trigger.click();
+      }
+    });
+  }
   root.close = close;
   customSelects.set(select, { refresh, close });
   new MutationObserver(refresh).observe(select, {
