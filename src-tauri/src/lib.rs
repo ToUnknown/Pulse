@@ -309,13 +309,13 @@ use {
     chrono::{Local, Timelike},
     std::{thread, time::Duration},
     tauri::{
-        menu::{ContextMenu, Submenu},
+        menu::{CheckMenuItem, ContextMenu, Submenu},
         Manager,
     },
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
-            CheckMenuRadioItem, SendMessageTimeoutW, HWND_BROADCAST, MF_BYPOSITION,
+            CheckMenuRadioItem, GetSubMenu, SendMessageTimeoutW, HWND_BROADCAST, MF_BYPOSITION,
             SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
         },
     },
@@ -763,11 +763,27 @@ fn select_theme(
 #[cfg(target_os = "windows")]
 fn sync_appearance_menu(
     selected_mode: ThemeMode,
-    appearance: &Submenu<tauri::Wry>,
+    tray_menu: &Menu<tauri::Wry>,
+    auto: &CheckMenuItem<tauri::Wry>,
+    light: &CheckMenuItem<tauri::Wry>,
+    dark: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    let menu = appearance.hpopupmenu().map_err(|error| error.to_string())?;
+    auto.set_checked(selected_mode == ThemeMode::Auto)
+        .map_err(|error| error.to_string())?;
+    light
+        .set_checked(selected_mode == ThemeMode::Light)
+        .map_err(|error| error.to_string())?;
+    dark.set_checked(selected_mode == ThemeMode::Dark)
+        .map_err(|error| error.to_string())?;
+
+    let menu = tray_menu.hpopupmenu().map_err(|error| error.to_string())?;
+    let appearance = unsafe { GetSubMenu(menu as _, 0) };
+    if appearance.is_null() {
+        return Err("appearance submenu not found".to_string());
+    }
+
     let selected_position = appearance_menu_position(selected_mode);
-    let updated = unsafe { CheckMenuRadioItem(menu as _, 0, 2, selected_position, MF_BYPOSITION) };
+    let updated = unsafe { CheckMenuRadioItem(appearance, 0, 2, selected_position, MF_BYPOSITION) };
     if updated == 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
@@ -1046,17 +1062,46 @@ pub fn run() {
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
 
             #[cfg(target_os = "windows")]
-            let (menu, appearance, mode, config_path, auto_schedule, auto_schedule_config_path) = {
+            let (
+                menu,
+                auto,
+                light,
+                dark,
+                mode,
+                config_path,
+                auto_schedule,
+                auto_schedule_config_path,
+            ) = {
                 let config_path = theme_config_path;
                 let selected_mode = initial_theme_mode;
                 let mode = Arc::new(Mutex::new(selected_mode));
                 let auto_schedule = Arc::new(Mutex::new(initial_auto_schedule));
-                let auto = MenuItem::with_id(app, "theme-auto", "Auto", true, None::<&str>)?;
-                let light = MenuItem::with_id(app, "theme-light", "Light", true, None::<&str>)?;
-                let dark = MenuItem::with_id(app, "theme-dark", "Dark", true, None::<&str>)?;
+                let auto = CheckMenuItem::with_id(
+                    app,
+                    "theme-auto",
+                    "Auto",
+                    true,
+                    selected_mode == ThemeMode::Auto,
+                    None::<&str>,
+                )?;
+                let light = CheckMenuItem::with_id(
+                    app,
+                    "theme-light",
+                    "Light",
+                    true,
+                    selected_mode == ThemeMode::Light,
+                    None::<&str>,
+                )?;
+                let dark = CheckMenuItem::with_id(
+                    app,
+                    "theme-dark",
+                    "Dark",
+                    true,
+                    selected_mode == ThemeMode::Dark,
+                    None::<&str>,
+                )?;
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
-                sync_appearance_menu(selected_mode, &appearance)?;
                 let menu = Menu::with_items(
                     app,
                     &[
@@ -1068,10 +1113,13 @@ pub fn run() {
                         &quit,
                     ],
                 )?;
+                sync_appearance_menu(selected_mode, &menu, &auto, &light, &dark)?;
 
                 (
                     menu,
-                    appearance,
+                    auto,
+                    light,
+                    dark,
                     mode,
                     config_path,
                     auto_schedule,
@@ -1164,7 +1212,9 @@ pub fn run() {
                                 }
                             };
 
-                            if let Err(error) = sync_appearance_menu(selected_mode, &appearance) {
+                            if let Err(error) =
+                                sync_appearance_menu(selected_mode, &menu, &auto, &light, &dark)
+                            {
                                 eprintln!("appearance menu sync failed: {error}");
                             }
                         }
@@ -1227,7 +1277,7 @@ mod tests {
     };
 
     #[test]
-    fn appearance_modes_map_to_distinct_radio_positions() {
+    fn appearance_modes_map_to_distinct_menu_positions() {
         assert_eq!(appearance_menu_position(ThemeMode::Auto), 0);
         assert_eq!(appearance_menu_position(ThemeMode::Light), 1);
         assert_eq!(appearance_menu_position(ThemeMode::Dark), 2);
