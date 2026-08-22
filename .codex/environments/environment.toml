@@ -6,13 +6,13 @@ name = "Pulse"
 script = "pnpm install --frozen-lockfile"
 
 [[actions]]
-name = "Build macOS DMG"
+name = "Build DMG"
 icon = "run"
 command = "node ./scripts/codex/build-desktop-installer.mjs macos"
 platform = "darwin"
 
 [[actions]]
-name = "Build Windows EXE"
+name = "Build EXE"
 icon = "run"
 command = "node ./scripts/codex/build-desktop-installer.mjs windows"
 platform = "win32"

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-labelledby="title">
+  <title id="title">Dark appearance</title>
+  <circle cx="16" cy="16" r="13" fill="#5856D6"/>
+  <path d="M21.8 19.9a8 8 0 0 1-9.7-9.7 8 8 0 1 0 9.7 9.7z" fill="#FFF" transform="translate(1.8 -2)"/>
+</svg>

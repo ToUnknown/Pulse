@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-labelledby="title">
+  <title id="title">Quit Pulse</title>
+  <circle cx="16" cy="16" r="13" fill="#FF3B30"/>
+  <path d="M16 8.5v7" fill="none" stroke="#FFF" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="M9.87 10.86A8 8 0 1 0 22.13 10.86" fill="none" stroke="#FFF" stroke-width="2.8" stroke-linecap="round"/>
+</svg>

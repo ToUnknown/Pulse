@@ -111,6 +111,10 @@ input[type="checkbox"] {
   height: 18px;
 }
 
+:root[data-platform="macos"] input[type="checkbox"] {
+  accent-color: #0a84ff;
+}
+
 select {
   min-width: 104px;
   padding: 6px 28px 6px 12px;

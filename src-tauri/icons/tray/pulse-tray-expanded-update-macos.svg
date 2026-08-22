@@ -1,20 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title desc">
   <title id="title">Expanded pulse tray icon with update available for macOS</title>
-  <desc id="desc">A contrast-safe pulse mark with a blue update badge in the top-right corner.</desc>
-  <path
-    d="M 2.5 12.5
-       L 6.2 9
-       L 9.3 18
-       L 12 4
-       L 14.7 18
-       L 17.8 9
-       L 21.5 12.5"
-    fill="none"
-    stroke="#000"
-    stroke-width="2.8"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+  <desc id="desc">A white pulse mark with a blue update badge in the top-right corner.</desc>
   <path
     d="M 2.5 12.5
        L 6.2 9

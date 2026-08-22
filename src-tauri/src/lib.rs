@@ -1,7 +1,10 @@
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{IconMenuItem, Menu, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+use tauri::menu::MenuItem;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use {
@@ -39,8 +42,47 @@ enum UpdateStatus {
 type SharedUpdateStatus = Arc<Mutex<UpdateStatus>>;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn set_update_menu(update_item: &MenuItem<tauri::Wry>, text: &str, enabled: bool) {
+const CHECK_FOR_UPDATES_MENU_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/menu/check-for-updates.png");
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const RESTART_TO_UPDATE_MENU_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/menu/restart-to-update.png");
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const SETTINGS_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/settings.png");
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const QUIT_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/quit.png");
+
+#[cfg(target_os = "windows")]
+const APPEARANCE_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/appearance.png");
+#[cfg(target_os = "windows")]
+const AUTO_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/auto.png");
+#[cfg(target_os = "windows")]
+const AUTO_SELECTED_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/auto-selected.png");
+#[cfg(target_os = "windows")]
+const LIGHT_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/light.png");
+#[cfg(target_os = "windows")]
+const LIGHT_SELECTED_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/light-selected.png");
+#[cfg(target_os = "windows")]
+const DARK_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/dark.png");
+#[cfg(target_os = "windows")]
+const DARK_SELECTED_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/dark-selected.png");
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn set_update_menu(update_item: &IconMenuItem<tauri::Wry>, update_ready: bool, enabled: bool) {
+    let text = if update_ready {
+        "Restart to Update"
+    } else {
+        "Check for Updates"
+    };
+    let icon_bytes = if update_ready {
+        RESTART_TO_UPDATE_MENU_ICON_BYTES
+    } else {
+        CHECK_FOR_UPDATES_MENU_ICON_BYTES
+    };
+    let icon = tauri::image::Image::from_bytes(icon_bytes).ok();
+
     let _ = update_item.set_text(text);
+    let _ = update_item.set_icon(icon);
     let _ = update_item.set_enabled(enabled);
 }
 
@@ -59,11 +101,11 @@ fn reveal_update_menu(app: &tauri::AppHandle) {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn set_update_result(
     app: &tauri::AppHandle,
-    update_item: &MenuItem<tauri::Wry>,
-    text: &str,
+    update_item: &IconMenuItem<tauri::Wry>,
+    update_ready: bool,
     reveal_result: bool,
 ) {
-    set_update_menu(update_item, text, true);
+    set_update_menu(update_item, update_ready, true);
     if reveal_result {
         reveal_update_menu(app);
     }
@@ -97,7 +139,7 @@ fn reset_update_status(status: &SharedUpdateStatus) {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn check_for_updates(
     app: tauri::AppHandle,
-    update_item: MenuItem<tauri::Wry>,
+    update_item: IconMenuItem<tauri::Wry>,
     status: SharedUpdateStatus,
     tray_icon_mode: Arc<Mutex<TrayIconMode>>,
     reveal_result: bool,
@@ -106,19 +148,14 @@ async fn check_for_updates(
         return;
     }
 
-    set_update_menu(&update_item, "Checking for Updates…", false);
+    set_update_menu(&update_item, false, false);
 
     let updater = match app.updater() {
         Ok(updater) => updater,
         Err(error) => {
             eprintln!("update setup failed: {error}");
             reset_update_status(&status);
-            set_update_result(
-                &app,
-                &update_item,
-                "Update Check Failed — Retry",
-                reveal_result,
-            );
+            set_update_result(&app, &update_item, false, reveal_result);
             return;
         }
     };
@@ -128,45 +165,25 @@ async fn check_for_updates(
         Err(error) => {
             eprintln!("update check failed: {error}");
             reset_update_status(&status);
-            set_update_result(
-                &app,
-                &update_item,
-                "Update Check Failed — Retry",
-                reveal_result,
-            );
+            set_update_result(&app, &update_item, false, reveal_result);
             return;
         }
     };
 
     let Some(update) = update else {
         reset_update_status(&status);
-        set_update_result(
-            &app,
-            &update_item,
-            "Up to Date — Check Again",
-            reveal_result,
-        );
+        set_update_result(&app, &update_item, false, reveal_result);
         return;
     };
 
     if let Ok(mut status) = status.lock() {
         *status = UpdateStatus::Downloading;
     } else {
-        set_update_result(
-            &app,
-            &update_item,
-            "Update Check Failed — Retry",
-            reveal_result,
-        );
+        set_update_result(&app, &update_item, false, reveal_result);
         return;
     }
 
-    let version = update.version.clone();
-    set_update_menu(
-        &update_item,
-        &format!("Downloading Update {version}…"),
-        false,
-    );
+    set_update_menu(&update_item, false, false);
 
     match update.download(|_, _| {}, || {}).await {
         Ok(bytes) => {
@@ -181,30 +198,15 @@ async fn check_for_updates(
                 if let Err(error) = refresh_tray_icon(&app, &tray_icon_mode, &status) {
                     eprintln!("update-ready tray icon failed: {error}");
                 }
-                set_update_result(
-                    &app,
-                    &update_item,
-                    &format!("Restart to Update {version}"),
-                    reveal_result,
-                );
+                set_update_result(&app, &update_item, true, reveal_result);
             } else {
-                set_update_result(
-                    &app,
-                    &update_item,
-                    "Update Check Failed — Retry",
-                    reveal_result,
-                );
+                set_update_result(&app, &update_item, false, reveal_result);
             }
         }
         Err(error) => {
             eprintln!("update download failed: {error}");
             reset_update_status(&status);
-            set_update_result(
-                &app,
-                &update_item,
-                "Update Download Failed — Retry",
-                reveal_result,
-            );
+            set_update_result(&app, &update_item, false, reveal_result);
         }
     }
 }
@@ -212,18 +214,18 @@ async fn check_for_updates(
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn handle_update_menu(
     app: tauri::AppHandle,
-    update_item: MenuItem<tauri::Wry>,
+    update_item: IconMenuItem<tauri::Wry>,
     status: SharedUpdateStatus,
     tray_icon_mode: Arc<Mutex<TrayIconMode>>,
 ) {
     if cfg!(debug_assertions) {
-        set_update_result(&app, &update_item, "Updates Require a Release Build", true);
+        set_update_result(&app, &update_item, false, true);
         return;
     }
 
     let ready_update = {
         let Ok(mut status) = status.lock() else {
-            set_update_result(&app, &update_item, "Update Check Failed — Retry", true);
+            set_update_result(&app, &update_item, false, true);
             return;
         };
 
@@ -241,7 +243,7 @@ fn handle_update_menu(
     };
 
     if let Some(downloaded) = ready_update {
-        set_update_menu(&update_item, "Installing Update…", false);
+        set_update_menu(&update_item, true, false);
         tauri::async_runtime::spawn_blocking(move || {
             if let Err(error) = downloaded.update.install(&downloaded.bytes) {
                 eprintln!("update install failed: {error}");
@@ -249,7 +251,7 @@ fn handle_update_menu(
                 if let Err(error) = refresh_tray_icon(&app, &tray_icon_mode, &status) {
                     eprintln!("default tray icon restore failed: {error}");
                 }
-                set_update_result(&app, &update_item, "Update Install Failed — Retry", true);
+                set_update_result(&app, &update_item, false, true);
                 return;
             }
 
@@ -308,15 +310,11 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded
 use {
     chrono::{Local, Timelike},
     std::{thread, time::Duration},
-    tauri::{
-        menu::{CheckMenuItem, ContextMenu, Submenu},
-        Manager,
-    },
+    tauri::{menu::Submenu, Manager},
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
-            CheckMenuRadioItem, GetSubMenu, SendMessageTimeoutW, HWND_BROADCAST, MF_BYPOSITION,
-            SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
         },
     },
     winreg::{
@@ -329,21 +327,12 @@ use {
 const PERSONALIZE_REGISTRY_PATH: &str =
     "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThemeMode {
     Auto,
     Light,
     Dark,
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn appearance_menu_position(mode: ThemeMode) -> u32 {
-    match mode {
-        ThemeMode::Auto => 0,
-        ThemeMode::Light => 1,
-        ThemeMode::Dark => 2,
-    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -761,33 +750,37 @@ fn select_theme(
 }
 
 #[cfg(target_os = "windows")]
+fn appearance_menu_icon_bytes(mode: ThemeMode, selected: bool) -> &'static [u8] {
+    match (mode, selected) {
+        (ThemeMode::Auto, false) => AUTO_MENU_ICON_BYTES,
+        (ThemeMode::Auto, true) => AUTO_SELECTED_MENU_ICON_BYTES,
+        (ThemeMode::Light, false) => LIGHT_MENU_ICON_BYTES,
+        (ThemeMode::Light, true) => LIGHT_SELECTED_MENU_ICON_BYTES,
+        (ThemeMode::Dark, false) => DARK_MENU_ICON_BYTES,
+        (ThemeMode::Dark, true) => DARK_SELECTED_MENU_ICON_BYTES,
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn sync_appearance_menu(
     selected_mode: ThemeMode,
-    tray_menu: &Menu<tauri::Wry>,
-    auto: &CheckMenuItem<tauri::Wry>,
-    light: &CheckMenuItem<tauri::Wry>,
-    dark: &CheckMenuItem<tauri::Wry>,
+    auto: &IconMenuItem<tauri::Wry>,
+    light: &IconMenuItem<tauri::Wry>,
+    dark: &IconMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    auto.set_checked(selected_mode == ThemeMode::Auto)
+    for (item, mode) in [
+        (auto, ThemeMode::Auto),
+        (light, ThemeMode::Light),
+        (dark, ThemeMode::Dark),
+    ] {
+        let icon = tauri::image::Image::from_bytes(appearance_menu_icon_bytes(
+            mode,
+            mode == selected_mode,
+        ))
         .map_err(|error| error.to_string())?;
-    light
-        .set_checked(selected_mode == ThemeMode::Light)
-        .map_err(|error| error.to_string())?;
-    dark.set_checked(selected_mode == ThemeMode::Dark)
-        .map_err(|error| error.to_string())?;
-
-    let menu = tray_menu.hpopupmenu().map_err(|error| error.to_string())?;
-    let appearance = unsafe { GetSubMenu(menu as _, 0) };
-    if appearance.is_null() {
-        return Err("appearance submenu not found".to_string());
+        item.set_icon(Some(icon))
+            .map_err(|error| error.to_string())?;
     }
-
-    let selected_position = appearance_menu_position(selected_mode);
-    let updated = unsafe { CheckMenuRadioItem(appearance, 0, 2, selected_position, MF_BYPOSITION) };
-    if updated == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-
     Ok(())
 }
 
@@ -1044,18 +1037,39 @@ pub fn run() {
             let tray_icon_is_template = initial_tray_icon_mode == TrayIconMode::Default;
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let tray_icon_is_template = true;
+            #[cfg(not(target_os = "macos"))]
             let separator = PredefinedMenuItem::separator(app)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let quit_separator = PredefinedMenuItem::separator(app)?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let quit = IconMenuItem::with_id(
+                app,
+                "quit",
+                "Quit Pulse",
+                true,
+                Some(tauri::image::Image::from_bytes(QUIT_MENU_ICON_BYTES)?),
+                None::<&str>,
+            )?;
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let settings = IconMenuItem::with_id(
+                app,
+                "settings",
+                "Settings",
+                true,
+                Some(tauri::image::Image::from_bytes(SETTINGS_MENU_ICON_BYTES)?),
+                None::<&str>,
+            )?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let update_item = MenuItem::with_id(
+            let update_item = IconMenuItem::with_id(
                 app,
                 "check-for-updates",
-                "Check for Updates…",
+                "Check for Updates",
                 true,
+                Some(tauri::image::Image::from_bytes(
+                    CHECK_FOR_UPDATES_MENU_ICON_BYTES,
+                )?),
                 None::<&str>,
             )?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1076,32 +1090,50 @@ pub fn run() {
                 let selected_mode = initial_theme_mode;
                 let mode = Arc::new(Mutex::new(selected_mode));
                 let auto_schedule = Arc::new(Mutex::new(initial_auto_schedule));
-                let auto = CheckMenuItem::with_id(
+                let auto = IconMenuItem::with_id(
                     app,
                     "theme-auto",
                     "Auto",
                     true,
-                    selected_mode == ThemeMode::Auto,
+                    Some(tauri::image::Image::from_bytes(
+                        appearance_menu_icon_bytes(
+                            ThemeMode::Auto,
+                            selected_mode == ThemeMode::Auto,
+                        ),
+                    )?),
                     None::<&str>,
                 )?;
-                let light = CheckMenuItem::with_id(
+                let light = IconMenuItem::with_id(
                     app,
                     "theme-light",
                     "Light",
                     true,
-                    selected_mode == ThemeMode::Light,
+                    Some(tauri::image::Image::from_bytes(
+                        appearance_menu_icon_bytes(
+                            ThemeMode::Light,
+                            selected_mode == ThemeMode::Light,
+                        ),
+                    )?),
                     None::<&str>,
                 )?;
-                let dark = CheckMenuItem::with_id(
+                let dark = IconMenuItem::with_id(
                     app,
                     "theme-dark",
                     "Dark",
                     true,
-                    selected_mode == ThemeMode::Dark,
+                    Some(tauri::image::Image::from_bytes(
+                        appearance_menu_icon_bytes(
+                            ThemeMode::Dark,
+                            selected_mode == ThemeMode::Dark,
+                        ),
+                    )?),
                     None::<&str>,
                 )?;
                 let appearance =
                     Submenu::with_items(app, "Appearance", true, &[&auto, &light, &dark])?;
+                appearance.set_icon(Some(tauri::image::Image::from_bytes(
+                    APPEARANCE_MENU_ICON_BYTES,
+                )?))?;
                 let menu = Menu::with_items(
                     app,
                     &[
@@ -1113,7 +1145,7 @@ pub fn run() {
                         &quit,
                     ],
                 )?;
-                sync_appearance_menu(selected_mode, &menu, &auto, &light, &dark)?;
+                sync_appearance_menu(selected_mode, &auto, &light, &dark)?;
 
                 (
                     menu,
@@ -1128,21 +1160,7 @@ pub fn run() {
             };
 
             #[cfg(target_os = "macos")]
-            let menu = {
-                let status =
-                    MenuItem::with_id(app, "status", "Pulse is running", false, None::<&str>)?;
-                Menu::with_items(
-                    app,
-                    &[
-                        &status,
-                        &separator,
-                        &settings,
-                        &update_item,
-                        &quit_separator,
-                        &quit,
-                    ],
-                )?
-            };
+            let menu = Menu::with_items(app, &[&settings, &update_item, &quit_separator, &quit])?;
 
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let menu = {
@@ -1213,7 +1231,7 @@ pub fn run() {
                             };
 
                             if let Err(error) =
-                                sync_appearance_menu(selected_mode, &menu, &auto, &light, &dark)
+                                sync_appearance_menu(selected_mode, &auto, &light, &dark)
                             {
                                 eprintln!("appearance menu sync failed: {error}");
                             }
@@ -1272,16 +1290,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        appearance_menu_position, default_tray_icon_variant, AutoSchedule, DefaultTrayIconVariant,
-        ThemeMode, TrayIconAsset, TrayIconMode, WindowsTheme,
+        default_tray_icon_variant, AutoSchedule, DefaultTrayIconVariant, TrayIconAsset,
+        TrayIconMode, WindowsTheme,
     };
-
-    #[test]
-    fn appearance_modes_map_to_distinct_menu_positions() {
-        assert_eq!(appearance_menu_position(ThemeMode::Auto), 0);
-        assert_eq!(appearance_menu_position(ThemeMode::Light), 1);
-        assert_eq!(appearance_menu_position(ThemeMode::Dark), 2);
-    }
 
     #[test]
     fn default_auto_schedule_uses_light_between_seven_and_nineteen() {
