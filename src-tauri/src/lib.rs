@@ -99,6 +99,7 @@ async fn check_for_updates(
     app: tauri::AppHandle,
     update_item: MenuItem<tauri::Wry>,
     status: SharedUpdateStatus,
+    tray_icon_mode: Arc<Mutex<TrayIconMode>>,
     reveal_result: bool,
 ) {
     if !begin_update_check(&status) {
@@ -177,6 +178,9 @@ async fn check_for_updates(
             };
 
             if update_ready {
+                if let Err(error) = refresh_tray_icon(&app, &tray_icon_mode, &status) {
+                    eprintln!("update-ready tray icon failed: {error}");
+                }
                 set_update_result(
                     &app,
                     &update_item,
@@ -210,6 +214,7 @@ fn handle_update_menu(
     app: tauri::AppHandle,
     update_item: MenuItem<tauri::Wry>,
     status: SharedUpdateStatus,
+    tray_icon_mode: Arc<Mutex<TrayIconMode>>,
 ) {
     if cfg!(debug_assertions) {
         set_update_result(&app, &update_item, "Updates Require a Release Build", true);
@@ -241,6 +246,9 @@ fn handle_update_menu(
             if let Err(error) = downloaded.update.install(&downloaded.bytes) {
                 eprintln!("update install failed: {error}");
                 reset_update_status(&status);
+                if let Err(error) = refresh_tray_icon(&app, &tray_icon_mode, &status) {
+                    eprintln!("default tray icon restore failed: {error}");
+                }
                 set_update_result(&app, &update_item, "Update Install Failed — Retry", true);
                 return;
             }
@@ -251,7 +259,13 @@ fn handle_update_menu(
             app.restart();
         });
     } else {
-        tauri::async_runtime::spawn(check_for_updates(app, update_item, status, true));
+        tauri::async_runtime::spawn(check_for_updates(
+            app,
+            update_item,
+            status,
+            tray_icon_mode,
+            true,
+        ));
     }
 }
 
@@ -259,15 +273,33 @@ fn handle_update_menu(
 const TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-iconTemplate@2x.png");
 
+#[cfg(target_os = "macos")]
+// The contrast outline stays visible in either menu-bar appearance while the
+// non-template image preserves the blue update badge.
+const UPDATE_TRAY_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/tray/pulse-tray-expanded-update-macos@2x.png");
+
 #[cfg(target_os = "windows")]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
+
+#[cfg(target_os = "windows")]
+const UPDATE_TRAY_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/tray/pulse-tray-expanded-update-icon-32.png");
 
 #[cfg(target_os = "windows")]
 const WHITE_TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-white-32.png");
 
+#[cfg(target_os = "windows")]
+const UPDATE_WHITE_TRAY_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/tray/pulse-tray-expanded-update-white-32.png");
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const RED_TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-red-32.png");
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const UPDATE_RED_TRAY_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/tray/pulse-tray-expanded-update-red-32.png");
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
@@ -371,6 +403,17 @@ enum DefaultTrayIconVariant {
 }
 
 #[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayIconAsset {
+    Black,
+    White,
+    Red,
+    UpdateBlack,
+    UpdateWhite,
+    UpdateRed,
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn default_tray_icon_variant(theme: WindowsTheme) -> DefaultTrayIconVariant {
     match theme {
         WindowsTheme::Light => DefaultTrayIconVariant::Black,
@@ -389,6 +432,7 @@ enum TrayIconMode {
 struct TrayIconSettings {
     mode: Arc<Mutex<TrayIconMode>>,
     config_path: std::path::PathBuf,
+    update_status: SharedUpdateStatus,
 }
 
 #[cfg(target_os = "windows")]
@@ -445,7 +489,13 @@ fn set_tray_icon_mode(app: tauri::AppHandle, mode: String) -> Result<(), String>
     let next_mode =
         TrayIconMode::parse(&mode).ok_or_else(|| "invalid tray icon mode".to_string())?;
     let settings = app.state::<TrayIconSettings>();
-    select_tray_icon(&app, next_mode, &settings.mode, &settings.config_path)
+    select_tray_icon(
+        &app,
+        next_mode,
+        &settings.mode,
+        &settings.config_path,
+        &settings.update_status,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -509,24 +559,48 @@ impl TrayIconMode {
         }
     }
 
+    #[cfg(any(target_os = "windows", test))]
+    fn asset(self, theme: WindowsTheme, update_ready: bool) -> TrayIconAsset {
+        match (self, default_tray_icon_variant(theme), update_ready) {
+            (Self::Default, DefaultTrayIconVariant::Black, false) => TrayIconAsset::Black,
+            (Self::Default, DefaultTrayIconVariant::White, false) => TrayIconAsset::White,
+            (Self::Red, _, false) => TrayIconAsset::Red,
+            (Self::Default, DefaultTrayIconVariant::Black, true) => TrayIconAsset::UpdateBlack,
+            (Self::Default, DefaultTrayIconVariant::White, true) => TrayIconAsset::UpdateWhite,
+            (Self::Red, _, true) => TrayIconAsset::UpdateRed,
+        }
+    }
+
     #[cfg(target_os = "windows")]
-    fn bytes(self, theme: WindowsTheme) -> &'static [u8] {
-        match self {
-            Self::Default => match default_tray_icon_variant(theme) {
-                DefaultTrayIconVariant::Black => TRAY_ICON_BYTES,
-                DefaultTrayIconVariant::White => WHITE_TRAY_ICON_BYTES,
-            },
-            Self::Red => RED_TRAY_ICON_BYTES,
+    fn bytes(self, theme: WindowsTheme, update_ready: bool) -> &'static [u8] {
+        match self.asset(theme, update_ready) {
+            TrayIconAsset::Black => TRAY_ICON_BYTES,
+            TrayIconAsset::White => WHITE_TRAY_ICON_BYTES,
+            TrayIconAsset::Red => RED_TRAY_ICON_BYTES,
+            TrayIconAsset::UpdateBlack => UPDATE_TRAY_ICON_BYTES,
+            TrayIconAsset::UpdateWhite => UPDATE_WHITE_TRAY_ICON_BYTES,
+            TrayIconAsset::UpdateRed => UPDATE_RED_TRAY_ICON_BYTES,
         }
     }
 
     #[cfg(target_os = "macos")]
-    fn bytes(self) -> &'static [u8] {
-        match self {
-            Self::Default => TRAY_ICON_BYTES,
-            Self::Red => RED_TRAY_ICON_BYTES,
+    fn bytes(self, update_ready: bool) -> &'static [u8] {
+        match (self, update_ready) {
+            (Self::Default, false) => TRAY_ICON_BYTES,
+            (Self::Red, false) => RED_TRAY_ICON_BYTES,
+            (Self::Default, true) => UPDATE_TRAY_ICON_BYTES,
+            (Self::Red, true) => UPDATE_RED_TRAY_ICON_BYTES,
         }
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn update_icon_is_active(status: &SharedUpdateStatus) -> Result<bool, String> {
+    let status = status.lock().map_err(|error| error.to_string())?;
+    Ok(matches!(
+        &*status,
+        UpdateStatus::Ready(_) | UpdateStatus::Installing
+    ))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -706,23 +780,46 @@ fn set_tray_icon(
     app: &tauri::AppHandle,
     mode: TrayIconMode,
     theme: WindowsTheme,
+    update_ready: bool,
 ) -> Result<(), String> {
     let tray = app
         .tray_by_id("pulse-tray")
         .ok_or_else(|| "pulse tray not found".to_string())?;
-    let icon =
-        tauri::image::Image::from_bytes(mode.bytes(theme)).map_err(|error| error.to_string())?;
+    let icon = tauri::image::Image::from_bytes(mode.bytes(theme, update_ready))
+        .map_err(|error| error.to_string())?;
     tray.set_icon(Some(icon)).map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "macos")]
-fn set_tray_icon(app: &tauri::AppHandle, mode: TrayIconMode) -> Result<(), String> {
+fn set_tray_icon(
+    app: &tauri::AppHandle,
+    mode: TrayIconMode,
+    update_ready: bool,
+) -> Result<(), String> {
     let tray = app
         .tray_by_id("pulse-tray")
         .ok_or_else(|| "pulse tray not found".to_string())?;
-    let icon = tauri::image::Image::from_bytes(mode.bytes()).map_err(|error| error.to_string())?;
-    tray.set_icon_with_as_template(Some(icon), mode == TrayIconMode::Default)
+    let icon = tauri::image::Image::from_bytes(mode.bytes(update_ready))
+        .map_err(|error| error.to_string())?;
+    tray.set_icon_with_as_template(Some(icon), mode == TrayIconMode::Default && !update_ready)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn refresh_tray_icon(
+    app: &tauri::AppHandle,
+    mode: &Arc<Mutex<TrayIconMode>>,
+    update_status: &SharedUpdateStatus,
+) -> Result<(), String> {
+    let selected_mode = *mode.lock().map_err(|error| error.to_string())?;
+    let update_ready = update_icon_is_active(update_status)?;
+
+    #[cfg(target_os = "windows")]
+    set_tray_icon(app, selected_mode, current_windows_theme()?, update_ready)?;
+    #[cfg(target_os = "macos")]
+    set_tray_icon(app, selected_mode, update_ready)?;
+
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -731,13 +828,19 @@ fn select_tray_icon(
     next_mode: TrayIconMode,
     mode: &Arc<Mutex<TrayIconMode>>,
     config_path: &Path,
+    update_status: &SharedUpdateStatus,
 ) -> Result<(), String> {
     let mut selected_mode = mode.lock().map_err(|error| error.to_string())?;
 
     #[cfg(target_os = "windows")]
-    set_tray_icon(app, next_mode, current_windows_theme()?)?;
+    set_tray_icon(
+        app,
+        next_mode,
+        current_windows_theme()?,
+        update_icon_is_active(update_status)?,
+    )?;
     #[cfg(target_os = "macos")]
-    set_tray_icon(app, next_mode)?;
+    set_tray_icon(app, next_mode, update_icon_is_active(update_status)?)?;
 
     save_tray_icon_mode(config_path, next_mode)?;
     *selected_mode = next_mode;
@@ -749,16 +852,26 @@ fn refresh_default_tray_icon(
     app: &tauri::AppHandle,
     mode: &Arc<Mutex<TrayIconMode>>,
     theme: WindowsTheme,
+    update_status: &SharedUpdateStatus,
 ) -> Result<(), String> {
     let selected_mode = *mode.lock().map_err(|error| error.to_string())?;
     if selected_mode == TrayIconMode::Default {
-        set_tray_icon(app, selected_mode, theme)?;
+        set_tray_icon(
+            app,
+            selected_mode,
+            theme,
+            update_icon_is_active(update_status)?,
+        )?;
     }
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
-fn start_windows_theme_watcher(app: tauri::AppHandle, tray_icon_mode: Arc<Mutex<TrayIconMode>>) {
+fn start_windows_theme_watcher(
+    app: tauri::AppHandle,
+    tray_icon_mode: Arc<Mutex<TrayIconMode>>,
+    update_status: SharedUpdateStatus,
+) {
     thread::spawn(move || loop {
         let current_user = RegKey::predef(HKEY_CURRENT_USER);
         let personalize = match current_user
@@ -773,9 +886,9 @@ fn start_windows_theme_watcher(app: tauri::AppHandle, tray_icon_mode: Arc<Mutex<
         };
 
         loop {
-            match windows_theme_from_registry(&personalize)
-                .and_then(|theme| refresh_default_tray_icon(&app, &tray_icon_mode, theme))
-            {
+            match windows_theme_from_registry(&personalize).and_then(|theme| {
+                refresh_default_tray_icon(&app, &tray_icon_mode, theme, &update_status)
+            }) {
                 Ok(()) => {}
                 Err(error) => eprintln!("Windows theme tray icon update failed: {error}"),
             }
@@ -905,10 +1018,10 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let tray_icon = {
                 let windows_theme = current_windows_theme().unwrap_or(applied_theme);
-                tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(windows_theme))?
+                tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(windows_theme, false))?
             };
             #[cfg(target_os = "macos")]
-            let tray_icon = tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes())?;
+            let tray_icon = tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(false))?;
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let tray_icon = tauri::image::Image::from_bytes(TRAY_ICON_BYTES)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -990,10 +1103,6 @@ pub fn run() {
                 Menu::with_items(app, &[&status, &separator, &quit])?
             };
 
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let startup_update_item = update_item.clone();
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let startup_update_status = update_status.clone();
             #[cfg(target_os = "windows")]
             let scheduler_mode = mode.clone();
             #[cfg(target_os = "windows")]
@@ -1009,9 +1118,16 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let watcher_tray_icon_mode = tray_icon_mode.clone();
             #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let startup_update_item = update_item.clone();
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let startup_update_status = update_status.clone();
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let startup_tray_icon_mode = tray_icon_mode.clone();
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             app.manage(TrayIconSettings {
                 mode: tray_icon_mode.clone(),
                 config_path: tray_icon_config_path,
+                update_status: update_status.clone(),
             });
 
             TrayIconBuilder::with_id("pulse-tray")
@@ -1063,7 +1179,12 @@ pub fn run() {
 
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     if event.id().as_ref() == "check-for-updates" {
-                        handle_update_menu(app.clone(), update_item.clone(), update_status.clone());
+                        handle_update_menu(
+                            app.clone(),
+                            update_item.clone(),
+                            update_status.clone(),
+                            tray_icon_mode.clone(),
+                        );
                     }
 
                     if event.id().as_ref() == "quit" {
@@ -1075,7 +1196,11 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             start_auto_scheduler(scheduler_mode, scheduler_auto_schedule);
             #[cfg(target_os = "windows")]
-            start_windows_theme_watcher(app.handle().clone(), watcher_tray_icon_mode);
+            start_windows_theme_watcher(
+                app.handle().clone(),
+                watcher_tray_icon_mode,
+                startup_update_status.clone(),
+            );
 
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if !cfg!(debug_assertions) {
@@ -1083,6 +1208,7 @@ pub fn run() {
                     app.handle().clone(),
                     startup_update_item,
                     startup_update_status,
+                    startup_tray_icon_mode,
                     false,
                 ));
             }
@@ -1097,7 +1223,7 @@ pub fn run() {
 mod tests {
     use super::{
         appearance_menu_position, default_tray_icon_variant, AutoSchedule, DefaultTrayIconVariant,
-        ThemeMode, WindowsTheme,
+        ThemeMode, TrayIconAsset, TrayIconMode, WindowsTheme,
     };
 
     #[test]
@@ -1146,6 +1272,30 @@ mod tests {
         assert_eq!(
             default_tray_icon_variant(WindowsTheme::Light),
             DefaultTrayIconVariant::Black
+        );
+    }
+
+    #[test]
+    fn update_default_tray_icon_follows_windows_theme() {
+        assert_eq!(
+            TrayIconMode::Default.asset(WindowsTheme::Light, true),
+            TrayIconAsset::UpdateBlack
+        );
+        assert_eq!(
+            TrayIconMode::Default.asset(WindowsTheme::Dark, true),
+            TrayIconAsset::UpdateWhite
+        );
+    }
+
+    #[test]
+    fn update_red_tray_icon_ignores_windows_theme() {
+        assert_eq!(
+            TrayIconMode::Red.asset(WindowsTheme::Light, true),
+            TrayIconAsset::UpdateRed
+        );
+        assert_eq!(
+            TrayIconMode::Red.asset(WindowsTheme::Dark, true),
+            TrayIconAsset::UpdateRed
         );
     }
 }
