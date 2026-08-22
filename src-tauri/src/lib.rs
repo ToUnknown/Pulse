@@ -309,12 +309,13 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded
 #[cfg(target_os = "windows")]
 use {
     chrono::{Local, Timelike},
-    std::{thread, time::Duration},
+    std::{path::PathBuf, thread, time::Duration},
     tauri::{menu::Submenu, Manager},
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
-            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+            MessageBoxW, SendMessageTimeoutW, HWND_BROADCAST, MB_ICONERROR, MB_ICONWARNING, MB_OK,
+            SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
         },
     },
     winreg::{
@@ -327,7 +328,7 @@ use {
 const PERSONALIZE_REGISTRY_PATH: &str =
     "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThemeMode {
     Auto,
@@ -386,6 +387,123 @@ enum WindowsTheme {
 
 #[cfg(any(target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AppearanceSnapshot {
+    mode: ThemeMode,
+    theme: WindowsTheme,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AppearanceTransition {
+    id: u64,
+    displayed_before: ThemeMode,
+    previous: AppearanceSnapshot,
+    next: AppearanceSnapshot,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug)]
+struct AppearanceState {
+    confirmed: AppearanceSnapshot,
+    displayed_mode: ThemeMode,
+    visual_theme: WindowsTheme,
+    generation: u64,
+    pending: Option<u64>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl AppearanceState {
+    fn new(mode: ThemeMode, theme: WindowsTheme) -> Self {
+        Self {
+            confirmed: AppearanceSnapshot { mode, theme },
+            displayed_mode: mode,
+            visual_theme: theme,
+            generation: 0,
+            pending: None,
+        }
+    }
+
+    fn begin(
+        &mut self,
+        next_mode: ThemeMode,
+        next_theme: WindowsTheme,
+    ) -> Option<AppearanceTransition> {
+        if self.displayed_mode == next_mode && self.visual_theme == next_theme {
+            return None;
+        }
+
+        self.generation = self.generation.wrapping_add(1);
+        let transition = AppearanceTransition {
+            id: self.generation,
+            displayed_before: self.displayed_mode,
+            previous: self.confirmed,
+            next: AppearanceSnapshot {
+                mode: next_mode,
+                theme: next_theme,
+            },
+        };
+        self.displayed_mode = next_mode;
+        self.visual_theme = next_theme;
+        self.pending = Some(transition.id);
+        Some(transition)
+    }
+
+    fn is_current(&self, transition_id: u64) -> bool {
+        self.pending == Some(transition_id)
+    }
+
+    fn commit(&mut self, transition: AppearanceTransition) -> bool {
+        if !self.is_current(transition.id) {
+            return false;
+        }
+
+        self.confirmed = transition.next;
+        self.displayed_mode = transition.next.mode;
+        self.visual_theme = transition.next.theme;
+        self.pending = None;
+        true
+    }
+
+    fn rollback(&mut self, transition: AppearanceTransition, actual_theme: WindowsTheme) -> bool {
+        if !self.is_current(transition.id) {
+            return false;
+        }
+
+        self.confirmed = AppearanceSnapshot {
+            mode: transition.previous.mode,
+            theme: actual_theme,
+        };
+        self.displayed_mode = transition.previous.mode;
+        self.visual_theme = actual_theme;
+        self.pending = None;
+        true
+    }
+
+    fn observe_external(&mut self, theme: WindowsTheme) -> Option<(ThemeMode, AppearanceSnapshot)> {
+        if self.pending.is_some() || self.confirmed.theme == theme {
+            return None;
+        }
+
+        let previous_mode = self.displayed_mode;
+        let mode = if self.confirmed.mode == ThemeMode::Auto {
+            ThemeMode::Auto
+        } else {
+            match theme {
+                WindowsTheme::Light => ThemeMode::Light,
+                WindowsTheme::Dark => ThemeMode::Dark,
+            }
+        };
+        let next = AppearanceSnapshot { mode, theme };
+        self.confirmed = next;
+        self.displayed_mode = mode;
+        self.visual_theme = theme;
+        self.generation = self.generation.wrapping_add(1);
+        Some((previous_mode, next))
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DefaultTrayIconVariant {
     Black,
     White,
@@ -425,10 +543,26 @@ struct TrayIconSettings {
 }
 
 #[cfg(target_os = "windows")]
-struct AutoScheduleSettings {
-    mode: Arc<Mutex<ThemeMode>>,
+#[derive(Clone)]
+struct AppearanceMenuItems {
+    auto: IconMenuItem<tauri::Wry>,
+    light: IconMenuItem<tauri::Wry>,
+    dark: IconMenuItem<tauri::Wry>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+struct WindowsAppearanceController {
+    app: tauri::AppHandle,
+    state: Arc<Mutex<AppearanceState>>,
     schedule: Arc<Mutex<AutoSchedule>>,
-    config_path: std::path::PathBuf,
+    mode_config_path: PathBuf,
+    schedule_config_path: PathBuf,
+    menu_items: AppearanceMenuItems,
+    tray_icon_mode: Arc<Mutex<TrayIconMode>>,
+    update_status: SharedUpdateStatus,
+    transition_lock: Arc<Mutex<()>>,
+    apply_lock: Arc<Mutex<()>>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -442,8 +576,8 @@ fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
 
     #[cfg(target_os = "windows")]
     let auto_schedule = app
-        .try_state::<AutoScheduleSettings>()
-        .and_then(|settings| settings.schedule.lock().ok().map(|schedule| *schedule))
+        .try_state::<WindowsAppearanceController>()
+        .and_then(|controller| controller.schedule.lock().ok().map(|schedule| *schedule))
         .map(|schedule| {
             serde_json::json!({
                 "lightStart": schedule.light_start,
@@ -492,17 +626,16 @@ fn set_tray_icon_mode(app: tauri::AppHandle, mode: String) -> Result<(), String>
 fn set_auto_schedule(app: tauri::AppHandle, light_start: u8, dark_start: u8) -> Result<(), String> {
     let next_schedule = AutoSchedule::new(light_start, dark_start)
         .ok_or_else(|| "choose two different hours between 00:00 and 23:00".to_string())?;
-    let settings = app.state::<AutoScheduleSettings>();
+    let controller = app.state::<WindowsAppearanceController>();
 
-    save_auto_schedule(&settings.config_path, next_schedule)?;
-    *settings
+    save_auto_schedule(&controller.schedule_config_path, next_schedule)?;
+    *controller
         .schedule
         .lock()
         .map_err(|error| error.to_string())? = next_schedule;
 
-    let selected_mode = *settings.mode.lock().map_err(|error| error.to_string())?;
-    if selected_mode == ThemeMode::Auto {
-        apply_windows_theme(selected_mode, next_schedule)?;
+    if controller.displayed_mode()? == ThemeMode::Auto {
+        controller.request_mode(ThemeMode::Auto)?;
     }
 
     Ok(())
@@ -609,7 +742,7 @@ fn save_tray_icon_mode(path: &Path, mode: TrayIconMode) -> Result<(), String> {
     fs::write(path, mode.as_str()).map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 impl ThemeMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
@@ -682,9 +815,8 @@ fn resolve_theme(mode: ThemeMode, schedule: AutoSchedule) -> WindowsTheme {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_windows_theme(mode: ThemeMode, schedule: AutoSchedule) -> Result<WindowsTheme, String> {
-    let resolved_theme = resolve_theme(mode, schedule);
-    let use_light_theme = u32::from(resolved_theme == WindowsTheme::Light);
+fn apply_windows_theme_value(theme: WindowsTheme) -> Result<(), String> {
+    let use_light_theme = u32::from(theme == WindowsTheme::Light);
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     let (personalize, _) = current_user
         .create_subkey(PERSONALIZE_REGISTRY_PATH)
@@ -697,8 +829,17 @@ fn apply_windows_theme(mode: ThemeMode, schedule: AutoSchedule) -> Result<Window
         .set_value("SystemUsesLightTheme", &use_light_theme)
         .map_err(|error| error.to_string())?;
 
+    for value_name in ["AppsUseLightTheme", "SystemUsesLightTheme"] {
+        let saved_value: u32 = personalize
+            .get_value(value_name)
+            .map_err(|error| error.to_string())?;
+        if saved_value != use_light_theme {
+            return Err(format!("Windows did not save {value_name}"));
+        }
+    }
+
     let setting_name: Vec<u16> = "ImmersiveColorSet\0".encode_utf16().collect();
-    unsafe {
+    let notified = unsafe {
         SendMessageTimeoutW(
             HWND_BROADCAST,
             WM_SETTINGCHANGE,
@@ -707,10 +848,13 @@ fn apply_windows_theme(mode: ThemeMode, schedule: AutoSchedule) -> Result<Window
             SMTO_ABORTIFHUNG,
             5_000,
             std::ptr::null_mut(),
-        );
+        )
+    };
+    if notified == 0 {
+        return Err("Windows did not acknowledge the appearance change".to_string());
     }
 
-    Ok(resolved_theme)
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -735,21 +879,6 @@ fn current_windows_theme() -> Result<WindowsTheme, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn select_theme(
-    next_mode: ThemeMode,
-    mode: &Arc<Mutex<ThemeMode>>,
-    config_path: &Path,
-    schedule: &Arc<Mutex<AutoSchedule>>,
-) -> Result<(), String> {
-    let mut selected_mode = mode.lock().map_err(|error| error.to_string())?;
-    let schedule = *schedule.lock().map_err(|error| error.to_string())?;
-    apply_windows_theme(next_mode, schedule)?;
-    save_theme_mode(config_path, next_mode)?;
-    *selected_mode = next_mode;
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
 fn appearance_menu_icon_bytes(mode: ThemeMode, selected: bool) -> &'static [u8] {
     match (mode, selected) {
         (ThemeMode::Auto, false) => AUTO_MENU_ICON_BYTES,
@@ -762,26 +891,275 @@ fn appearance_menu_icon_bytes(mode: ThemeMode, selected: bool) -> &'static [u8] 
 }
 
 #[cfg(target_os = "windows")]
-fn sync_appearance_menu(
-    selected_mode: ThemeMode,
-    auto: &IconMenuItem<tauri::Wry>,
-    light: &IconMenuItem<tauri::Wry>,
-    dark: &IconMenuItem<tauri::Wry>,
-) -> Result<(), String> {
-    for (item, mode) in [
-        (auto, ThemeMode::Auto),
-        (light, ThemeMode::Light),
-        (dark, ThemeMode::Dark),
-    ] {
-        let icon = tauri::image::Image::from_bytes(appearance_menu_icon_bytes(
-            mode,
-            mode == selected_mode,
-        ))
-        .map_err(|error| error.to_string())?;
-        item.set_icon(Some(icon))
-            .map_err(|error| error.to_string())?;
+fn appearance_menu_item(items: &AppearanceMenuItems, mode: ThemeMode) -> &IconMenuItem<tauri::Wry> {
+    match mode {
+        ThemeMode::Auto => &items.auto,
+        ThemeMode::Light => &items.light,
+        ThemeMode::Dark => &items.dark,
     }
+}
+
+#[cfg(target_os = "windows")]
+fn set_appearance_menu_item_icon(
+    item: &IconMenuItem<tauri::Wry>,
+    mode: ThemeMode,
+    selected: bool,
+) -> Result<(), String> {
+    let icon = tauri::image::Image::from_bytes(appearance_menu_icon_bytes(mode, selected))
+        .map_err(|error| error.to_string())?;
+    item.set_icon(Some(icon)).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn set_appearance_selection(
+    items: &AppearanceMenuItems,
+    previous_mode: ThemeMode,
+    next_mode: ThemeMode,
+) -> Result<(), String> {
+    if previous_mode == next_mode {
+        return Ok(());
+    }
+
+    set_appearance_menu_item_icon(
+        appearance_menu_item(items, previous_mode),
+        previous_mode,
+        false,
+    )?;
+    set_appearance_menu_item_icon(appearance_menu_item(items, next_mode), next_mode, true)?;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn show_windows_message(title: &str, message: &str, style: u32) {
+    let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let message: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | style,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsAppearanceController {
+    fn displayed_mode(&self) -> Result<ThemeMode, String> {
+        self.state
+            .lock()
+            .map(|state| state.displayed_mode)
+            .map_err(|error| error.to_string())
+    }
+
+    fn status(&self) -> Result<(ThemeMode, WindowsTheme, bool), String> {
+        self.state
+            .lock()
+            .map(|state| {
+                (
+                    state.displayed_mode,
+                    state.confirmed.theme,
+                    state.pending.is_some(),
+                )
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn visual_theme(&self) -> Result<WindowsTheme, String> {
+        self.state
+            .lock()
+            .map(|state| state.visual_theme)
+            .map_err(|error| error.to_string())
+    }
+
+    fn request_mode(&self, next_mode: ThemeMode) -> Result<bool, String> {
+        let schedule = *self.schedule.lock().map_err(|error| error.to_string())?;
+        self.request_mode_with_theme(next_mode, resolve_theme(next_mode, schedule))
+    }
+
+    fn request_mode_with_theme(
+        &self,
+        next_mode: ThemeMode,
+        next_theme: WindowsTheme,
+    ) -> Result<bool, String> {
+        let _transition_guard = self
+            .transition_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let transition = {
+            let mut state = self.state.lock().map_err(|error| error.to_string())?;
+            state.begin(next_mode, next_theme)
+        };
+        let Some(transition) = transition else {
+            return Ok(false);
+        };
+
+        self.update_visuals(
+            transition.displayed_before,
+            transition.next.mode,
+            transition.next.theme,
+        );
+
+        let controller = self.clone();
+        thread::spawn(move || controller.finish_transition(transition));
+        Ok(true)
+    }
+
+    fn update_visuals(&self, previous_mode: ThemeMode, next_mode: ThemeMode, theme: WindowsTheme) {
+        if let Err(error) = set_appearance_selection(&self.menu_items, previous_mode, next_mode) {
+            eprintln!("appearance menu icon update failed: {error}");
+        }
+
+        let tray_result = (|| {
+            let tray_mode = *self
+                .tray_icon_mode
+                .lock()
+                .map_err(|error| error.to_string())?;
+            set_tray_icon(
+                &self.app,
+                tray_mode,
+                theme,
+                update_icon_is_active(&self.update_status)?,
+            )
+        })();
+        if let Err(error) = tray_result {
+            eprintln!("appearance tray icon update failed: {error}");
+        }
+    }
+
+    fn is_current(&self, transition_id: u64) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.is_current(transition_id))
+            .unwrap_or(false)
+    }
+
+    fn finish_transition(&self, transition: AppearanceTransition) {
+        let _apply_guard = match self.apply_lock.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                eprintln!("Windows appearance transition lock failed: {error}");
+                return;
+            }
+        };
+        if !self.is_current(transition.id) {
+            return;
+        }
+
+        if let Err(error) = apply_windows_theme_value(transition.next.theme) {
+            if self.is_current(transition.id) {
+                self.rollback_transition(transition, error);
+            }
+            return;
+        }
+        if !self.is_current(transition.id) {
+            return;
+        }
+
+        let committed = self
+            .state
+            .lock()
+            .map(|mut state| state.commit(transition))
+            .unwrap_or(false);
+        if !committed {
+            return;
+        }
+
+        let save_result = save_theme_mode(&self.mode_config_path, transition.next.mode);
+        drop(_apply_guard);
+        if let Err(error) = save_result {
+            eprintln!("Windows appearance preference save failed: {error}");
+            show_windows_message(
+                "Pulse",
+                "Appearance changed, but Pulse couldn't save it for the next restart.",
+                MB_ICONWARNING,
+            );
+        }
+    }
+
+    fn rollback_transition(&self, transition: AppearanceTransition, apply_error: String) {
+        let rollback_error = apply_windows_theme_value(transition.previous.theme).err();
+        let actual_theme = current_windows_theme().unwrap_or(transition.previous.theme);
+        let _transition_guard = match self.transition_lock.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                eprintln!("Windows appearance rollback lock failed: {error}");
+                return;
+            }
+        };
+        let rolled_back = self
+            .state
+            .lock()
+            .map(|mut state| state.rollback(transition, actual_theme))
+            .unwrap_or(false);
+        if !rolled_back {
+            return;
+        }
+
+        self.update_visuals(transition.next.mode, transition.previous.mode, actual_theme);
+        drop(_transition_guard);
+        eprintln!("Windows appearance change failed: {apply_error}");
+
+        let message = if let Some(rollback_error) = rollback_error {
+            eprintln!("Windows appearance rollback failed: {rollback_error}");
+            "Pulse couldn't change Windows appearance or fully restore the previous appearance."
+        } else {
+            "Pulse couldn't change Windows appearance. The previous appearance was restored."
+        };
+        show_windows_message("Pulse", message, MB_ICONERROR);
+    }
+
+    fn observe_windows_theme(&self, theme: WindowsTheme) {
+        let change = {
+            let _transition_guard = match self.transition_lock.lock() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    eprintln!("Windows appearance watcher lock failed: {error}");
+                    return;
+                }
+            };
+            let change = self
+                .state
+                .lock()
+                .ok()
+                .and_then(|mut state| state.observe_external(theme));
+            if let Some((previous_mode, next)) = change {
+                self.update_visuals(previous_mode, next.mode, next.theme);
+            }
+            change
+        };
+        let Some((_, next)) = change else {
+            return;
+        };
+
+        if next.mode != ThemeMode::Auto {
+            let _apply_guard = match self.apply_lock.lock() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    eprintln!("external Windows appearance save lock failed: {error}");
+                    return;
+                }
+            };
+            let still_current = self
+                .state
+                .lock()
+                .map(|state| state.confirmed == next && state.pending.is_none())
+                .unwrap_or(false);
+            if !still_current {
+                return;
+            }
+            let save_result = save_theme_mode(&self.mode_config_path, next.mode);
+            drop(_apply_guard);
+            if let Err(error) = save_result {
+                eprintln!("external Windows appearance preference save failed: {error}");
+                show_windows_message(
+                    "Pulse",
+                    "Appearance changed, but Pulse couldn't save it for the next restart.",
+                    MB_ICONWARNING,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -797,6 +1175,15 @@ fn set_tray_icon(
     let icon = tauri::image::Image::from_bytes(mode.bytes(theme, update_ready))
         .map_err(|error| error.to_string())?;
     tray.set_icon(Some(icon)).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn visual_windows_theme(app: &tauri::AppHandle) -> Result<WindowsTheme, String> {
+    if let Some(controller) = app.try_state::<WindowsAppearanceController>() {
+        controller.visual_theme()
+    } else {
+        current_windows_theme()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -824,7 +1211,7 @@ fn refresh_tray_icon(
     let update_ready = update_icon_is_active(update_status)?;
 
     #[cfg(target_os = "windows")]
-    set_tray_icon(app, selected_mode, current_windows_theme()?, update_ready)?;
+    set_tray_icon(app, selected_mode, visual_windows_theme(app)?, update_ready)?;
     #[cfg(target_os = "macos")]
     set_tray_icon(app, selected_mode, update_ready)?;
 
@@ -845,7 +1232,7 @@ fn select_tray_icon(
     set_tray_icon(
         app,
         next_mode,
-        current_windows_theme()?,
+        visual_windows_theme(app)?,
         update_icon_is_active(update_status)?,
     )?;
     #[cfg(target_os = "macos")]
@@ -857,30 +1244,7 @@ fn select_tray_icon(
 }
 
 #[cfg(target_os = "windows")]
-fn refresh_default_tray_icon(
-    app: &tauri::AppHandle,
-    mode: &Arc<Mutex<TrayIconMode>>,
-    theme: WindowsTheme,
-    update_status: &SharedUpdateStatus,
-) -> Result<(), String> {
-    let selected_mode = *mode.lock().map_err(|error| error.to_string())?;
-    if selected_mode == TrayIconMode::Default {
-        set_tray_icon(
-            app,
-            selected_mode,
-            theme,
-            update_icon_is_active(update_status)?,
-        )?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn start_windows_theme_watcher(
-    app: tauri::AppHandle,
-    tray_icon_mode: Arc<Mutex<TrayIconMode>>,
-    update_status: SharedUpdateStatus,
-) {
+fn start_windows_theme_watcher(controller: WindowsAppearanceController) {
     thread::spawn(move || loop {
         let current_user = RegKey::predef(HKEY_CURRENT_USER);
         let personalize = match current_user
@@ -895,11 +1259,9 @@ fn start_windows_theme_watcher(
         };
 
         loop {
-            match windows_theme_from_registry(&personalize).and_then(|theme| {
-                refresh_default_tray_icon(&app, &tray_icon_mode, theme, &update_status)
-            }) {
-                Ok(()) => {}
-                Err(error) => eprintln!("Windows theme tray icon update failed: {error}"),
+            match windows_theme_from_registry(&personalize) {
+                Ok(theme) => controller.observe_windows_theme(theme),
+                Err(error) => eprintln!("Windows theme watcher read failed: {error}"),
             }
 
             let status = unsafe {
@@ -922,26 +1284,40 @@ fn start_windows_theme_watcher(
 }
 
 #[cfg(target_os = "windows")]
-fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>, schedule: Arc<Mutex<AutoSchedule>>) {
+fn start_auto_scheduler(controller: WindowsAppearanceController) {
     thread::spawn(move || {
-        let mut last_applied = None;
+        let mut active_schedule_target = None;
 
         loop {
-            let selected_mode = mode.lock().map(|mode| *mode).ok();
-            let auto_schedule = schedule.lock().map(|schedule| *schedule).ok();
-            if let (Some(ThemeMode::Auto), Some(auto_schedule)) = (selected_mode, auto_schedule) {
-                let current_theme = scheduled_theme(auto_schedule);
-                if last_applied != Some(current_theme) {
-                    let explicit_mode = match current_theme {
-                        WindowsTheme::Light => ThemeMode::Light,
-                        WindowsTheme::Dark => ThemeMode::Dark,
-                    };
-                    if apply_windows_theme(explicit_mode, auto_schedule).is_ok() {
-                        last_applied = Some(current_theme);
+            let status = controller.status();
+            let schedule = controller
+                .schedule
+                .lock()
+                .map(|schedule| *schedule)
+                .map_err(|error| error.to_string());
+            match (status, schedule) {
+                (Ok((ThemeMode::Auto, confirmed_theme, pending)), Ok(schedule)) => {
+                    let target = scheduled_theme(schedule);
+                    match active_schedule_target {
+                        None if !pending && confirmed_theme != target => {
+                            let _ = controller.request_mode_with_theme(ThemeMode::Auto, target);
+                        }
+                        None if !pending => active_schedule_target = Some(target),
+                        None => {}
+                        Some(previous_target) if previous_target != target => {
+                            if confirmed_theme == target && !pending {
+                                active_schedule_target = Some(target);
+                            } else if !pending {
+                                let _ = controller.request_mode_with_theme(ThemeMode::Auto, target);
+                            }
+                        }
+                        Some(_) => {}
                     }
                 }
-            } else {
-                last_applied = None;
+                (Ok(_), Ok(_)) => active_schedule_target = None,
+                (Err(error), _) | (_, Err(error)) => {
+                    eprintln!("Windows appearance scheduler read failed: {error}");
+                }
             }
 
             thread::sleep(Duration::from_secs(30));
@@ -1018,17 +1394,14 @@ pub fn run() {
                 )
             };
             #[cfg(target_os = "windows")]
-            let applied_theme = apply_windows_theme(initial_theme_mode, initial_auto_schedule)
-                .unwrap_or_else(|error| {
-                    eprintln!("initial Windows theme update failed: {error}");
-                    resolve_theme(initial_theme_mode, initial_auto_schedule)
-                });
+            let initial_resolved_theme = resolve_theme(initial_theme_mode, initial_auto_schedule);
+            #[cfg(target_os = "windows")]
+            let initial_windows_theme = current_windows_theme().unwrap_or(initial_resolved_theme);
 
             #[cfg(target_os = "windows")]
-            let tray_icon = {
-                let windows_theme = current_windows_theme().unwrap_or(applied_theme);
-                tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(windows_theme, false))?
-            };
+            let tray_icon = tauri::image::Image::from_bytes(
+                initial_tray_icon_mode.bytes(initial_windows_theme, false),
+            )?;
             #[cfg(target_os = "macos")]
             let tray_icon = tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(false))?;
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -1076,19 +1449,8 @@ pub fn run() {
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
 
             #[cfg(target_os = "windows")]
-            let (
-                menu,
-                auto,
-                light,
-                dark,
-                mode,
-                config_path,
-                auto_schedule,
-                auto_schedule_config_path,
-            ) = {
-                let config_path = theme_config_path;
+            let (menu, appearance_menu_items, auto_schedule) = {
                 let selected_mode = initial_theme_mode;
-                let mode = Arc::new(Mutex::new(selected_mode));
                 let auto_schedule = Arc::new(Mutex::new(initial_auto_schedule));
                 let auto = IconMenuItem::with_id(
                     app,
@@ -1145,17 +1507,10 @@ pub fn run() {
                         &quit,
                     ],
                 )?;
-                sync_appearance_menu(selected_mode, &auto, &light, &dark)?;
-
                 (
                     menu,
-                    auto,
-                    light,
-                    dark,
-                    mode,
-                    config_path,
+                    AppearanceMenuItems { auto, light, dark },
                     auto_schedule,
-                    auto_schedule_config_path,
                 )
             };
 
@@ -1169,20 +1524,8 @@ pub fn run() {
                 Menu::with_items(app, &[&status, &separator, &quit])?
             };
 
-            #[cfg(target_os = "windows")]
-            let scheduler_mode = mode.clone();
-            #[cfg(target_os = "windows")]
-            let scheduler_auto_schedule = auto_schedule.clone();
-            #[cfg(target_os = "windows")]
-            app.manage(AutoScheduleSettings {
-                mode: mode.clone(),
-                schedule: auto_schedule.clone(),
-                config_path: auto_schedule_config_path,
-            });
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_icon_mode = Arc::new(Mutex::new(initial_tray_icon_mode));
-            #[cfg(target_os = "windows")]
-            let watcher_tray_icon_mode = tray_icon_mode.clone();
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let startup_update_item = update_item.clone();
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1195,6 +1538,26 @@ pub fn run() {
                 config_path: tray_icon_config_path,
                 update_status: update_status.clone(),
             });
+            #[cfg(target_os = "windows")]
+            let appearance_controller = WindowsAppearanceController {
+                app: app.handle().clone(),
+                state: Arc::new(Mutex::new(AppearanceState::new(
+                    initial_theme_mode,
+                    initial_windows_theme,
+                ))),
+                schedule: auto_schedule,
+                mode_config_path: theme_config_path,
+                schedule_config_path: auto_schedule_config_path,
+                menu_items: appearance_menu_items,
+                tray_icon_mode: tray_icon_mode.clone(),
+                update_status: update_status.clone(),
+                transition_lock: Arc::new(Mutex::new(())),
+                apply_lock: Arc::new(Mutex::new(())),
+            };
+            #[cfg(target_os = "windows")]
+            app.manage(appearance_controller.clone());
+            #[cfg(target_os = "windows")]
+            let menu_appearance_controller = appearance_controller.clone();
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
@@ -1213,27 +1576,8 @@ pub fn run() {
                         };
 
                         if let Some(next_mode) = next_mode {
-                            let previous_mode = mode
-                                .lock()
-                                .map(|selected_mode| *selected_mode)
-                                .unwrap_or(initial_theme_mode);
-                            let selected_mode = match select_theme(
-                                next_mode,
-                                &mode,
-                                &config_path,
-                                &auto_schedule,
-                            ) {
-                                Ok(()) => next_mode,
-                                Err(error) => {
-                                    eprintln!("theme selection failed: {error}");
-                                    previous_mode
-                                }
-                            };
-
-                            if let Err(error) =
-                                sync_appearance_menu(selected_mode, &auto, &light, &dark)
-                            {
-                                eprintln!("appearance menu sync failed: {error}");
+                            if let Err(error) = menu_appearance_controller.request_mode(next_mode) {
+                                eprintln!("Windows appearance request failed: {error}");
                             }
                         }
                     }
@@ -1262,13 +1606,13 @@ pub fn run() {
                 .build(app)?;
 
             #[cfg(target_os = "windows")]
-            start_auto_scheduler(scheduler_mode, scheduler_auto_schedule);
+            if let Err(error) = appearance_controller.request_mode(initial_theme_mode) {
+                eprintln!("initial Windows appearance request failed: {error}");
+            }
             #[cfg(target_os = "windows")]
-            start_windows_theme_watcher(
-                app.handle().clone(),
-                watcher_tray_icon_mode,
-                startup_update_status.clone(),
-            );
+            start_auto_scheduler(appearance_controller.clone());
+            #[cfg(target_os = "windows")]
+            start_windows_theme_watcher(appearance_controller);
 
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if !cfg!(debug_assertions) {
@@ -1290,8 +1634,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_tray_icon_variant, AutoSchedule, DefaultTrayIconVariant, TrayIconAsset,
-        TrayIconMode, WindowsTheme,
+        default_tray_icon_variant, AppearanceSnapshot, AppearanceState, AutoSchedule,
+        DefaultTrayIconVariant, ThemeMode, TrayIconAsset, TrayIconMode, WindowsTheme,
     };
 
     #[test]
@@ -1358,5 +1702,110 @@ mod tests {
             TrayIconMode::Red.asset(WindowsTheme::Dark, true),
             TrayIconAsset::UpdateRed
         );
+    }
+
+    #[test]
+    fn a_stale_transition_cannot_override_the_latest_selection() {
+        let mut state = AppearanceState::new(ThemeMode::Auto, WindowsTheme::Light);
+        let stale = state
+            .begin(ThemeMode::Dark, WindowsTheme::Dark)
+            .expect("first transition");
+        let latest = state
+            .begin(ThemeMode::Light, WindowsTheme::Light)
+            .expect("newer transition");
+
+        assert!(!state.commit(stale));
+        assert!(!state.rollback(stale, WindowsTheme::Light));
+        assert!(state.commit(latest));
+        assert_eq!(
+            state.confirmed,
+            AppearanceSnapshot {
+                mode: ThemeMode::Light,
+                theme: WindowsTheme::Light,
+            }
+        );
+        assert_eq!(state.displayed_mode, ThemeMode::Light);
+        assert_eq!(state.visual_theme, WindowsTheme::Light);
+    }
+
+    #[test]
+    fn failed_transition_restores_the_last_confirmed_selection() {
+        let mut state = AppearanceState::new(ThemeMode::Auto, WindowsTheme::Light);
+        let transition = state
+            .begin(ThemeMode::Dark, WindowsTheme::Dark)
+            .expect("transition");
+
+        assert!(state.rollback(transition, WindowsTheme::Light));
+        assert_eq!(
+            state.confirmed,
+            AppearanceSnapshot {
+                mode: ThemeMode::Auto,
+                theme: WindowsTheme::Light,
+            }
+        );
+        assert_eq!(state.displayed_mode, ThemeMode::Auto);
+        assert_eq!(state.visual_theme, WindowsTheme::Light);
+    }
+
+    #[test]
+    fn external_windows_change_updates_an_explicit_selection() {
+        let mut state = AppearanceState::new(ThemeMode::Light, WindowsTheme::Light);
+
+        let (previous_mode, next) = state
+            .observe_external(WindowsTheme::Dark)
+            .expect("external change");
+
+        assert_eq!(previous_mode, ThemeMode::Light);
+        assert_eq!(next.mode, ThemeMode::Dark);
+        assert_eq!(state.displayed_mode, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn external_windows_change_keeps_auto_selected() {
+        let mut state = AppearanceState::new(ThemeMode::Auto, WindowsTheme::Light);
+
+        let (_, next) = state
+            .observe_external(WindowsTheme::Dark)
+            .expect("external change");
+
+        assert_eq!(next.mode, ThemeMode::Auto);
+        assert_eq!(next.theme, WindowsTheme::Dark);
+        assert_eq!(state.displayed_mode, ThemeMode::Auto);
+    }
+
+    #[test]
+    fn selecting_the_confirmed_mode_and_theme_is_a_noop() {
+        let mut state = AppearanceState::new(ThemeMode::Dark, WindowsTheme::Dark);
+
+        assert_eq!(state.begin(ThemeMode::Dark, WindowsTheme::Dark), None);
+        assert_eq!(state.generation, 0);
+    }
+
+    #[test]
+    fn a_new_auto_target_supersedes_an_in_flight_auto_target() {
+        let mut state = AppearanceState::new(ThemeMode::Auto, WindowsTheme::Light);
+        let stale = state
+            .begin(ThemeMode::Auto, WindowsTheme::Dark)
+            .expect("first Auto target");
+        let latest = state
+            .begin(ThemeMode::Auto, WindowsTheme::Light)
+            .expect("updated Auto target");
+
+        assert!(!state.commit(stale));
+        assert!(state.commit(latest));
+        assert_eq!(state.confirmed.theme, WindowsTheme::Light);
+    }
+
+    #[test]
+    fn theme_modes_round_trip_through_persistence_values() {
+        for (value, mode) in [
+            ("auto", ThemeMode::Auto),
+            ("light", ThemeMode::Light),
+            ("dark", ThemeMode::Dark),
+        ] {
+            assert_eq!(ThemeMode::parse(value), Some(mode));
+            assert_eq!(mode.as_str(), value);
+        }
+        assert_eq!(ThemeMode::parse("system"), None);
     }
 }
