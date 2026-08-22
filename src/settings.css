@@ -85,6 +85,45 @@ h2 {
   border-radius: 14px;
 }
 
+.pip-settings-card {
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.pip-master-row {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+
+#pip-targets {
+  display: grid;
+  margin: 0;
+  padding: 12px 16px 14px;
+  border: 0;
+  gap: 9px;
+}
+
+#pip-targets legend {
+  padding-top: 12px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+#pip-targets p {
+  margin: -5px 0 3px;
+  color: var(--secondary-text);
+  font-size: 11px;
+}
+
+#pip-targets label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .setting-row > span {
   display: grid;
   min-width: 0;

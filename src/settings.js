@@ -8,6 +8,9 @@ const appearanceSection = document.querySelector("#appearance-section");
 const autoLightStart = document.querySelector("#auto-light-start");
 const autoDarkStart = document.querySelector("#auto-dark-start");
 const errorMessage = document.querySelector("#error");
+const pipSection = document.querySelector("#pip-section");
+const pipEnabled = document.querySelector("#pip-enabled");
+const pipTargets = document.querySelector("#pip-targets");
 const customSelects = new Map();
 let openCustomSelect = null;
 
@@ -222,6 +225,23 @@ async function loadSettings() {
   try {
     const settings = await invoke("settings_state");
     startAtLogin.checked = settings.startAtLogin;
+    if (settings.pictureInPicture !== null) {
+      pipEnabled.checked = settings.pictureInPicture.enabled;
+      pipTargets.querySelectorAll("label").forEach((label) => label.remove());
+      for (const target of settings.pictureInPicture.targets) {
+        const label = document.createElement("label");
+        const text = document.createElement("span");
+        const checkbox = document.createElement("input");
+        text.textContent = `${target.label}${target.optional ? " (optional)" : ""}`;
+        checkbox.type = "checkbox";
+        checkbox.value = target.host;
+        checkbox.checked = target.enabled;
+        checkbox.disabled = !pipEnabled.checked;
+        label.append(text, checkbox);
+        pipTargets.append(label);
+      }
+      pipSection.hidden = false;
+    }
     if (settings.platform === "macos") {
       iconHeading.textContent = "Menu-bar icon";
       iconDescription.textContent = "Choose how Pulse appears in the menu bar.";
@@ -242,6 +262,28 @@ async function loadSettings() {
     showError(error);
   }
 }
+
+pipEnabled.addEventListener("change", async () => {
+  try {
+    await invoke("set_pip_enabled", { enabled: pipEnabled.checked });
+    pipTargets.querySelectorAll("input").forEach((input) => { input.disabled = !pipEnabled.checked; });
+    errorMessage.hidden = true;
+  } catch (error) {
+    pipEnabled.checked = !pipEnabled.checked;
+    showError(error);
+  }
+});
+
+pipTargets.addEventListener("change", async () => {
+  const targets = [...pipTargets.querySelectorAll("input:checked")].map((input) => input.value);
+  try {
+    await invoke("set_pip_targets", { targets });
+    errorMessage.hidden = true;
+  } catch (error) {
+    showError(error);
+    await loadSettings();
+  }
+});
 
 startAtLogin.addEventListener("change", async () => {
   try {

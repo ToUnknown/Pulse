@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pulse Picture in Picture</title>
+  <link rel="stylesheet" href="pip.css" />
+  <script src="pip.js" defer></script>
+</head>
+<body>
+  <main data-tauri-drag-region>
+    <div class="artwork" aria-hidden="true"><span>♫</span></div>
+    <section data-tauri-drag-region>
+      <div class="heading" data-tauri-drag-region>
+        <div data-tauri-drag-region>
+          <strong id="title">Waiting for browser media</strong>
+          <small id="source">Apple Music · Spotify · YouTube Music</small>
+        </div>
+        <button id="close" type="button" aria-label="Turn off Picture in Picture">×</button>
+      </div>
+      <input id="timeline" type="range" min="0" max="100" value="0" aria-label="Playback position" disabled />
+      <div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
+      <div class="controls">
+        <button type="button" data-action="previous" aria-label="Previous track">‹｜</button>
+        <button class="play" type="button" data-action="play-pause" aria-label="Play or pause">▶</button>
+        <button type="button" data-action="next" aria-label="Next track">｜›</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

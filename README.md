@@ -9,6 +9,8 @@ Pulse is a tray/menu-bar utility for macOS and Windows.
 - Default and Red menu-bar or tray icons
 - Windows appearance controls with Auto, Light, and Dark modes
 - Configurable light and dark start times for Windows Auto mode
+- An always-on-top Picture-in-Picture player that snaps to the nearest screen corner
+- A media website whitelist for Apple Music, Spotify, and YouTube Music, with optional YouTube video support
 
 Closing Settings hides the window without quitting Pulse. Opening it again brings it to the front.
 

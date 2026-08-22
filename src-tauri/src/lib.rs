@@ -17,6 +17,9 @@ use {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri::menu::CheckMenuItem;
+
 #[cfg(target_os = "macos")]
 use tauri::Manager as _;
 
@@ -309,7 +312,7 @@ use {
     chrono::{Local, Timelike},
     std::{thread, time::Duration},
     tauri::{
-        menu::{CheckMenuItem, ContextMenu, Submenu},
+        menu::{ContextMenu, Submenu},
         Manager,
     },
     windows_sys::Win32::{
@@ -421,7 +424,7 @@ fn default_tray_icon_variant(theme: WindowsTheme) -> DefaultTrayIconVariant {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrayIconMode {
     Default,
@@ -433,6 +436,106 @@ struct TrayIconSettings {
     mode: Arc<Mutex<TrayIconMode>>,
     config_path: std::path::PathBuf,
     update_status: SharedUpdateStatus,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const MEDIA_TARGETS: [(&str, &str, bool); 4] = [
+    ("music.apple.com", "Apple Music", false),
+    ("open.spotify.com", "Spotify", false),
+    ("music.youtube.com", "YouTube Music", false),
+    ("youtube.com", "YouTube video", true),
+];
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+struct PipSettings {
+    enabled: Arc<Mutex<bool>>,
+    targets: Arc<Mutex<Vec<String>>>,
+    config_path: std::path::PathBuf,
+    tray_item: CheckMenuItem<tauri::Wry>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn load_pip_settings(path: &Path) -> (bool, Vec<String>) {
+    let defaults = MEDIA_TARGETS
+        .iter()
+        .filter(|(_, _, optional)| !optional)
+        .map(|(host, _, _)| (*host).to_string())
+        .collect::<Vec<_>>();
+    let Ok(value) = fs::read_to_string(path) else {
+        return (true, defaults);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&value) else {
+        return (true, defaults);
+    };
+    let enabled = value["enabled"].as_bool().unwrap_or(true);
+    let targets = value["targets"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .filter(|host| MEDIA_TARGETS.iter().any(|(known, _, _)| known == host))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or(defaults);
+    (enabled, targets)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn save_pip_settings(path: &Path, enabled: bool, targets: &[String]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let value = serde_json::json!({ "enabled": enabled, "targets": targets });
+    fs::write(path, value.to_string()).map_err(|error| error.to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn set_pip_window_visible(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pip") {
+        if visible {
+            window.show()
+        } else {
+            window.hide()
+        }
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn set_pip_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let settings = app.state::<PipSettings>();
+    let targets = settings
+        .targets
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    save_pip_settings(&settings.config_path, enabled, &targets)?;
+    *settings.enabled.lock().map_err(|error| error.to_string())? = enabled;
+    settings
+        .tray_item
+        .set_checked(enabled)
+        .map_err(|error| error.to_string())?;
+    set_pip_window_visible(&app, enabled)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn set_pip_targets(app: tauri::AppHandle, targets: Vec<String>) -> Result<(), String> {
+    if targets
+        .iter()
+        .any(|host| !MEDIA_TARGETS.iter().any(|(known, _, _)| known == host))
+    {
+        return Err("unknown media website".to_string());
+    }
+    let settings = app.state::<PipSettings>();
+    let enabled = *settings.enabled.lock().map_err(|error| error.to_string())?;
+    save_pip_settings(&settings.config_path, enabled, &targets)?;
+    *settings.targets.lock().map_err(|error| error.to_string())? = targets;
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -450,6 +553,17 @@ fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
     let tray_icon = app
         .try_state::<TrayIconSettings>()
         .and_then(|settings| settings.mode.lock().ok().map(|mode| mode.as_str()));
+    let pip = app.try_state::<PipSettings>().and_then(|settings| {
+        let enabled = *settings.enabled.lock().ok()?;
+        let selected = settings.targets.lock().ok()?.clone();
+        Some(serde_json::json!({
+            "enabled": enabled,
+            "targets": MEDIA_TARGETS.iter().map(|(host, label, optional)| serde_json::json!({
+                "host": host, "label": label, "optional": optional,
+                "enabled": selected.iter().any(|value| value == host),
+            })).collect::<Vec<_>>()
+        }))
+    });
 
     #[cfg(target_os = "windows")]
     let auto_schedule = app
@@ -468,6 +582,7 @@ fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
         "platform": std::env::consts::OS,
         "startAtLogin": start_at_login,
         "trayIcon": tray_icon,
+        "pictureInPicture": pip,
         "autoSchedule": auto_schedule,
     })
 }
@@ -526,9 +641,9 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window
     } else {
         #[cfg(target_os = "windows")]
-        let window_height = 440.0;
+        let window_height = 670.0;
         #[cfg(target_os = "macos")]
-        let window_height = 288.0;
+        let window_height = 518.0;
 
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Pulse Settings")
@@ -542,7 +657,7 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     window.set_focus()
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 impl TrayIconMode {
     fn parse(value: &str) -> Option<Self> {
         match value {
@@ -965,14 +1080,18 @@ pub fn run() {
         settings_state,
         set_start_at_login,
         set_tray_icon_mode,
-        set_auto_schedule
+        set_auto_schedule,
+        set_pip_enabled,
+        set_pip_targets
     ]);
 
     #[cfg(target_os = "macos")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
         set_start_at_login,
-        set_tray_icon_mode
+        set_tray_icon_mode,
+        set_pip_enabled,
+        set_pip_targets
     ]);
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -992,6 +1111,47 @@ pub fn run() {
                 if let Err(error) = window.hide() {
                     eprintln!("failed to hide settings: {error}");
                 }
+            }
+        }
+        if window.label() == "pip" {
+            if let tauri::WindowEvent::Moved(position) = event {
+                let window = window.clone();
+                let settled_position = *position;
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(180));
+                    if window.outer_position().ok() != Some(settled_position) {
+                        return;
+                    }
+                    let Ok(Some(monitor)) = window.current_monitor() else {
+                        return;
+                    };
+                    let Ok(size) = window.outer_size() else {
+                        return;
+                    };
+                    let work = monitor.work_area();
+                    let padding = (16.0 * monitor.scale_factor()) as i32;
+                    let left = work.position.x + padding;
+                    let right =
+                        work.position.x + work.size.width as i32 - size.width as i32 - padding;
+                    let top = work.position.y + padding;
+                    let bottom =
+                        work.position.y + work.size.height as i32 - size.height as i32 - padding;
+                    let x = if (settled_position.x - left).abs()
+                        <= (settled_position.x - right).abs()
+                    {
+                        left
+                    } else {
+                        right
+                    };
+                    let y = if (settled_position.y - top).abs()
+                        <= (settled_position.y - bottom).abs()
+                    {
+                        top
+                    } else {
+                        bottom
+                    };
+                    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+                });
             }
         }
     });
@@ -1051,6 +1211,19 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let pip_config_path = app.path().app_config_dir()?.join("picture-in-picture.json");
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let (initial_pip_enabled, initial_pip_targets) = load_pip_settings(&pip_config_path);
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let pip_toggle = CheckMenuItem::with_id(
+                app,
+                "toggle-pip",
+                "Picture in Picture",
+                true,
+                initial_pip_enabled,
+                None::<&str>,
+            )?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             let update_item = MenuItem::with_id(
                 app,
                 "check-for-updates",
@@ -1107,6 +1280,7 @@ pub fn run() {
                     &[
                         &appearance,
                         &separator,
+                        &pip_toggle,
                         &settings,
                         &update_item,
                         &quit_separator,
@@ -1136,6 +1310,7 @@ pub fn run() {
                     &[
                         &status,
                         &separator,
+                        &pip_toggle,
                         &settings,
                         &update_item,
                         &quit_separator,
@@ -1177,6 +1352,37 @@ pub fn run() {
                 config_path: tray_icon_config_path,
                 update_status: update_status.clone(),
             });
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            app.manage(PipSettings {
+                enabled: Arc::new(Mutex::new(initial_pip_enabled)),
+                targets: Arc::new(Mutex::new(initial_pip_targets)),
+                config_path: pip_config_path,
+                tray_item: pip_toggle.clone(),
+            });
+
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            {
+                let window =
+                    WebviewWindowBuilder::new(app, "pip", WebviewUrl::App("pip.html".into()))
+                        .title("Pulse Picture in Picture")
+                        .inner_size(360.0, 202.0)
+                        .resizable(false)
+                        .decorations(false)
+                        .always_on_top(true)
+                        .visible(initial_pip_enabled)
+                        .skip_taskbar(true)
+                        .build()?;
+                if let Some(monitor) = window.current_monitor()? {
+                    let work = monitor.work_area();
+                    let scale = monitor.scale_factor();
+                    let size = window.outer_size()?;
+                    let padding = (16.0 * scale) as i32;
+                    window.set_position(tauri::PhysicalPosition::new(
+                        work.position.x + work.size.width as i32 - size.width as i32 - padding,
+                        work.position.y + work.size.height as i32 - size.height as i32 - padding,
+                    ))?;
+                }
+            }
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
@@ -1224,6 +1430,19 @@ pub fn run() {
                     if event.id().as_ref() == "settings" {
                         if let Err(error) = open_settings(app) {
                             eprintln!("failed to open settings: {error}");
+                        }
+                    }
+
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if event.id().as_ref() == "toggle-pip" {
+                        let enabled = app
+                            .state::<PipSettings>()
+                            .enabled
+                            .lock()
+                            .map(|enabled| !*enabled)
+                            .unwrap_or(false);
+                        if let Err(error) = set_pip_enabled(app.clone(), enabled) {
+                            eprintln!("picture-in-picture toggle failed: {error}");
                         }
                     }
 

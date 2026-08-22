@@ -1,0 +1,20 @@
+:root { color-scheme: light dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color:#17171a; background:transparent; }
+* { box-sizing:border-box; }
+body { margin:0; overflow:hidden; background:transparent; user-select:none; }
+main { display:grid; grid-template-columns:142px 1fr; gap:16px; height:202px; padding:16px; background:rgba(248,248,250,.96); border:1px solid rgba(0,0,0,.14); border-radius:18px; box-shadow:0 15px 42px rgba(0,0,0,.28); }
+.artwork { display:grid; place-items:center; border-radius:12px; color:white; background:linear-gradient(145deg,#ff5e7d,#7b5cff); font-size:52px; }
+section { min-width:0; }
+.heading { display:flex; height:57px; align-items:flex-start; justify-content:space-between; gap:8px; }
+.heading div { display:grid; min-width:0; gap:4px; padding-top:3px; }
+strong,small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+strong { font-size:14px; } small { color:#68686f; font-size:11px; }
+button { color:inherit; background:transparent; border:0; cursor:pointer; }
+#close { width:24px; height:24px; flex:none; border-radius:50%; color:#666; font-size:20px; line-height:18px; }
+#close:hover { background:rgba(0,0,0,.08); }
+#timeline { width:100%; height:14px; margin:8px 0 0; accent-color:#745cff; }
+.times { display:flex; justify-content:space-between; color:#777; font-size:10px; font-variant-numeric:tabular-nums; }
+.controls { display:flex; align-items:center; justify-content:center; gap:14px; margin-top:13px; }
+.controls button { width:30px; height:30px; border-radius:50%; font-size:16px; }
+.controls button:hover { background:rgba(0,0,0,.08); }
+.controls .play { color:white; background:#17171a; font-size:13px; }
+@media (prefers-color-scheme:dark) { :root{color:#f5f5f7}.heading small,.times{color:#aaa} main{background:rgba(36,36,39,.96);border-color:rgba(255,255,255,.16)} .controls .play{color:#17171a;background:#f5f5f7} #close:hover,.controls button:hover{background:rgba(255,255,255,.11)} }
