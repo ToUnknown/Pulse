@@ -53,6 +53,7 @@ enum UpdateStatus {
 enum UpdateResult {
     Ready,
     UpToDate,
+    ReleaseBuildRequired,
     Failed(&'static str),
 }
 
@@ -62,6 +63,7 @@ impl UpdateResult {
         match self {
             Self::Ready => None,
             Self::UpToDate => Some("Pulse is up to date."),
+            Self::ReleaseBuildRequired => Some("Update checks require a release build."),
             Self::Failed(message) => Some(message),
         }
     }
@@ -296,7 +298,7 @@ fn handle_update_menu(
     tray_icon_mode: Arc<Mutex<TrayIconMode>>,
 ) {
     if cfg!(debug_assertions) {
-        set_update_result(&app, &update_item, UpdateResult::UpToDate, true);
+        set_update_result(&app, &update_item, UpdateResult::ReleaseBuildRequired, true);
         return;
     }
 
@@ -1875,6 +1877,10 @@ mod tests {
 
     #[test]
     fn manual_update_results_have_distinct_feedback() {
+        assert_eq!(
+            UpdateResult::ReleaseBuildRequired.feedback(),
+            Some("Update checks require a release build.")
+        );
         assert_eq!(
             UpdateResult::UpToDate.feedback(),
             Some("Pulse is up to date.")
