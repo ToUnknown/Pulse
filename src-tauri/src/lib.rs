@@ -428,7 +428,24 @@ impl AppearanceState {
         next_mode: ThemeMode,
         next_theme: WindowsTheme,
     ) -> Option<AppearanceTransition> {
-        if self.displayed_mode == next_mode && self.visual_theme == next_theme {
+        self.begin_transition(next_mode, next_theme, false)
+    }
+
+    fn begin_forced(
+        &mut self,
+        next_mode: ThemeMode,
+        next_theme: WindowsTheme,
+    ) -> Option<AppearanceTransition> {
+        self.begin_transition(next_mode, next_theme, true)
+    }
+
+    fn begin_transition(
+        &mut self,
+        next_mode: ThemeMode,
+        next_theme: WindowsTheme,
+        forced: bool,
+    ) -> Option<AppearanceTransition> {
+        if !forced && self.displayed_mode == next_mode && self.visual_theme == next_theme {
             return None;
         }
 
@@ -977,10 +994,24 @@ impl WindowsAppearanceController {
         self.request_mode_with_theme(next_mode, resolve_theme(next_mode, schedule))
     }
 
+    fn force_startup_mode(&self, next_mode: ThemeMode) -> Result<bool, String> {
+        let schedule = *self.schedule.lock().map_err(|error| error.to_string())?;
+        self.start_transition(next_mode, resolve_theme(next_mode, schedule), true)
+    }
+
     fn request_mode_with_theme(
         &self,
         next_mode: ThemeMode,
         next_theme: WindowsTheme,
+    ) -> Result<bool, String> {
+        self.start_transition(next_mode, next_theme, false)
+    }
+
+    fn start_transition(
+        &self,
+        next_mode: ThemeMode,
+        next_theme: WindowsTheme,
+        forced: bool,
     ) -> Result<bool, String> {
         let _transition_guard = self
             .transition_lock
@@ -988,7 +1019,11 @@ impl WindowsAppearanceController {
             .map_err(|error| error.to_string())?;
         let transition = {
             let mut state = self.state.lock().map_err(|error| error.to_string())?;
-            state.begin(next_mode, next_theme)
+            if forced {
+                state.begin_forced(next_mode, next_theme)
+            } else {
+                state.begin(next_mode, next_theme)
+            }
         };
         let Some(transition) = transition else {
             return Ok(false);
@@ -1606,7 +1641,7 @@ pub fn run() {
                 .build(app)?;
 
             #[cfg(target_os = "windows")]
-            if let Err(error) = appearance_controller.request_mode(initial_theme_mode) {
+            if let Err(error) = appearance_controller.force_startup_mode(initial_theme_mode) {
                 eprintln!("initial Windows appearance request failed: {error}");
             }
             #[cfg(target_os = "windows")]
@@ -1726,6 +1761,16 @@ mod tests {
         );
         assert_eq!(state.displayed_mode, ThemeMode::Light);
         assert_eq!(state.visual_theme, WindowsTheme::Light);
+    }
+
+    #[test]
+    fn forcing_the_current_mode_starts_a_transition() {
+        let mut state = AppearanceState::new(ThemeMode::Dark, WindowsTheme::Dark);
+
+        let transition = state.begin_forced(ThemeMode::Dark, WindowsTheme::Dark);
+
+        assert!(transition.is_some());
+        assert!(state.pending.is_some());
     }
 
     #[test]
