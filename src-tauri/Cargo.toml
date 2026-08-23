@@ -18,6 +18,7 @@ tauri = { version = "2", features = ["image-png", "tray-icon"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]

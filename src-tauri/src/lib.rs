@@ -14,6 +14,7 @@ use {
         sync::{Arc, Mutex},
     },
     tauri_plugin_autostart::{MacosLauncher, ManagerExt},
+    tauri_plugin_dialog::{DialogExt, MessageDialogKind},
     tauri_plugin_updater::{Update, UpdaterExt},
 };
 
@@ -36,6 +37,29 @@ enum UpdateStatus {
     Downloading,
     Ready(Box<DownloadedUpdate>),
     Installing,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateResult {
+    Ready,
+    UpToDate,
+    Failed(&'static str),
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl UpdateResult {
+    fn feedback(self) -> Option<&'static str> {
+        match self {
+            Self::Ready => None,
+            Self::UpToDate => Some("Pulse is up to date."),
+            Self::Failed(message) => Some(message),
+        }
+    }
+
+    fn is_error(self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -102,11 +126,26 @@ fn reveal_update_menu(app: &tauri::AppHandle) {
 fn set_update_result(
     app: &tauri::AppHandle,
     update_item: &IconMenuItem<tauri::Wry>,
-    update_ready: bool,
+    result: UpdateResult,
     reveal_result: bool,
 ) {
-    set_update_menu(update_item, update_ready, true);
-    if reveal_result {
+    set_update_menu(update_item, result == UpdateResult::Ready, true);
+    if !reveal_result {
+        return;
+    }
+
+    if let Some(message) = result.feedback() {
+        let kind = if result.is_error() {
+            MessageDialogKind::Error
+        } else {
+            MessageDialogKind::Info
+        };
+        app.dialog()
+            .message(message)
+            .kind(kind)
+            .title("Pulse")
+            .show(|_| {});
+    } else {
         reveal_update_menu(app);
     }
 }
@@ -155,7 +194,12 @@ async fn check_for_updates(
         Err(error) => {
             eprintln!("update setup failed: {error}");
             reset_update_status(&status);
-            set_update_result(&app, &update_item, false, reveal_result);
+            set_update_result(
+                &app,
+                &update_item,
+                UpdateResult::Failed("Pulse couldn't start the update check. Try again."),
+                reveal_result,
+            );
             return;
         }
     };
@@ -165,21 +209,33 @@ async fn check_for_updates(
         Err(error) => {
             eprintln!("update check failed: {error}");
             reset_update_status(&status);
-            set_update_result(&app, &update_item, false, reveal_result);
+            set_update_result(
+                &app,
+                &update_item,
+                UpdateResult::Failed(
+                    "Pulse couldn't check for updates. Check your internet connection and try again.",
+                ),
+                reveal_result,
+            );
             return;
         }
     };
 
     let Some(update) = update else {
         reset_update_status(&status);
-        set_update_result(&app, &update_item, false, reveal_result);
+        set_update_result(&app, &update_item, UpdateResult::UpToDate, reveal_result);
         return;
     };
 
     if let Ok(mut status) = status.lock() {
         *status = UpdateStatus::Downloading;
     } else {
-        set_update_result(&app, &update_item, false, reveal_result);
+        set_update_result(
+            &app,
+            &update_item,
+            UpdateResult::Failed("Pulse found an update but couldn't prepare it. Try again."),
+            reveal_result,
+        );
         return;
     }
 
@@ -198,15 +254,27 @@ async fn check_for_updates(
                 if let Err(error) = refresh_tray_icon(&app, &tray_icon_mode, &status) {
                     eprintln!("update-ready tray icon failed: {error}");
                 }
-                set_update_result(&app, &update_item, true, reveal_result);
+                set_update_result(&app, &update_item, UpdateResult::Ready, reveal_result);
             } else {
-                set_update_result(&app, &update_item, false, reveal_result);
+                set_update_result(
+                    &app,
+                    &update_item,
+                    UpdateResult::Failed(
+                        "Pulse found an update but couldn't prepare it. Try again.",
+                    ),
+                    reveal_result,
+                );
             }
         }
         Err(error) => {
             eprintln!("update download failed: {error}");
             reset_update_status(&status);
-            set_update_result(&app, &update_item, false, reveal_result);
+            set_update_result(
+                &app,
+                &update_item,
+                UpdateResult::Failed("Pulse found an update but couldn't download it. Try again."),
+                reveal_result,
+            );
         }
     }
 }
@@ -219,13 +287,18 @@ fn handle_update_menu(
     tray_icon_mode: Arc<Mutex<TrayIconMode>>,
 ) {
     if cfg!(debug_assertions) {
-        set_update_result(&app, &update_item, false, true);
+        set_update_result(&app, &update_item, UpdateResult::UpToDate, true);
         return;
     }
 
     let ready_update = {
         let Ok(mut status) = status.lock() else {
-            set_update_result(&app, &update_item, false, true);
+            set_update_result(
+                &app,
+                &update_item,
+                UpdateResult::Failed("Pulse couldn't check for updates. Try again."),
+                true,
+            );
             return;
         };
 
@@ -251,7 +324,12 @@ fn handle_update_menu(
                 if let Err(error) = refresh_tray_icon(&app, &tray_icon_mode, &status) {
                     eprintln!("default tray icon restore failed: {error}");
                 }
-                set_update_result(&app, &update_item, false, true);
+                set_update_result(
+                    &app,
+                    &update_item,
+                    UpdateResult::Failed("Pulse couldn't install the update. Try again."),
+                    true,
+                );
                 return;
             }
 
@@ -868,7 +946,9 @@ fn apply_windows_theme_value(theme: WindowsTheme) -> Result<(), String> {
         )
     };
     if notified == 0 {
-        return Err("Windows did not acknowledge the appearance change".to_string());
+        eprintln!(
+            "Windows appearance notification failed or timed out after registry values were saved"
+        );
     }
 
     Ok(())
@@ -1389,6 +1469,9 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.on_window_event(|window, event| {
         if window.label() == "settings" {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -1670,8 +1753,21 @@ pub fn run() {
 mod tests {
     use super::{
         default_tray_icon_variant, AppearanceSnapshot, AppearanceState, AutoSchedule,
-        DefaultTrayIconVariant, ThemeMode, TrayIconAsset, TrayIconMode, WindowsTheme,
+        DefaultTrayIconVariant, ThemeMode, TrayIconAsset, TrayIconMode, UpdateResult, WindowsTheme,
     };
+
+    #[test]
+    fn manual_update_results_have_distinct_feedback() {
+        assert_eq!(
+            UpdateResult::UpToDate.feedback(),
+            Some("Pulse is up to date.")
+        );
+        assert_eq!(
+            UpdateResult::Failed("Pulse couldn't check for updates.").feedback(),
+            Some("Pulse couldn't check for updates.")
+        );
+        assert_eq!(UpdateResult::Ready.feedback(), None);
+    }
 
     #[test]
     fn default_auto_schedule_uses_light_between_seven_and_nineteen() {
