@@ -6,6 +6,11 @@ name = "Pulse"
 script = "pnpm install --frozen-lockfile"
 
 [[actions]]
+name = "Start Dev"
+icon = "run"
+command = "pnpm tauri dev"
+
+[[actions]]
 name = "Build DMG"
 icon = "run"
 command = "node ./scripts/codex/build-desktop-installer.mjs macos"
