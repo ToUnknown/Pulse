@@ -22,7 +22,16 @@ use {
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
-use tauri::Manager as _;
+use {
+    block2::RcBlock,
+    objc2::MainThreadMarker,
+    objc2_app_kit::{NSApp, NSAppearanceNameAqua, NSAppearanceNameDarkAqua},
+    objc2_foundation::{
+        NSArray, NSDistributedNotificationCenter, NSNotification, NSOperationQueue, NSString,
+    },
+    std::ptr::NonNull,
+    tauri::Manager as _,
+};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct DownloadedUpdate {
@@ -354,10 +363,14 @@ const TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-iconTemplate@2x.png");
 
 #[cfg(target_os = "macos")]
-// The contrast outline stays visible in either menu-bar appearance while the
-// non-template image preserves the blue update badge.
-const UPDATE_TRAY_ICON_BYTES: &[u8] =
+// Update icons stay non-template to preserve the blue badge, so Pulse selects
+// a contrasting waveform for the current macOS appearance.
+const UPDATE_DARK_TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-update-macos@2x.png");
+
+#[cfg(target_os = "macos")]
+const UPDATE_LIGHT_TRAY_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/tray/pulse-tray-expanded-update-macos-light@2x.png");
 
 #[cfg(target_os = "windows")]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
@@ -623,6 +636,23 @@ fn default_tray_icon_variant(theme: WindowsTheme) -> DefaultTrayIconVariant {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacosAppearance {
+    Light,
+    Dark,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacosTrayIconAsset {
+    DefaultTemplate,
+    Red,
+    UpdateBlack,
+    UpdateWhite,
+    UpdateRed,
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrayIconMode {
@@ -635,6 +665,8 @@ struct TrayIconSettings {
     mode: Arc<Mutex<TrayIconMode>>,
     config_path: std::path::PathBuf,
     update_status: SharedUpdateStatus,
+    #[cfg(target_os = "macos")]
+    appearance: Arc<Mutex<MacosAppearance>>,
 }
 
 #[cfg(target_os = "windows")]
@@ -776,6 +808,17 @@ impl TrayIconMode {
         }
     }
 
+    #[cfg(any(target_os = "macos", test))]
+    fn macos_asset(self, appearance: MacosAppearance, update_ready: bool) -> MacosTrayIconAsset {
+        match (self, appearance, update_ready) {
+            (Self::Default, _, false) => MacosTrayIconAsset::DefaultTemplate,
+            (Self::Red, _, false) => MacosTrayIconAsset::Red,
+            (Self::Default, MacosAppearance::Light, true) => MacosTrayIconAsset::UpdateBlack,
+            (Self::Default, MacosAppearance::Dark, true) => MacosTrayIconAsset::UpdateWhite,
+            (Self::Red, _, true) => MacosTrayIconAsset::UpdateRed,
+        }
+    }
+
     #[cfg(any(target_os = "windows", test))]
     fn asset(self, theme: WindowsTheme, update_ready: bool) -> TrayIconAsset {
         match (self, default_tray_icon_variant(theme), update_ready) {
@@ -801,12 +844,13 @@ impl TrayIconMode {
     }
 
     #[cfg(target_os = "macos")]
-    fn bytes(self, update_ready: bool) -> &'static [u8] {
-        match (self, update_ready) {
-            (Self::Default, false) => TRAY_ICON_BYTES,
-            (Self::Red, false) => RED_TRAY_ICON_BYTES,
-            (Self::Default, true) => UPDATE_TRAY_ICON_BYTES,
-            (Self::Red, true) => UPDATE_RED_TRAY_ICON_BYTES,
+    fn bytes(self, appearance: MacosAppearance, update_ready: bool) -> &'static [u8] {
+        match self.macos_asset(appearance, update_ready) {
+            MacosTrayIconAsset::DefaultTemplate => TRAY_ICON_BYTES,
+            MacosTrayIconAsset::Red => RED_TRAY_ICON_BYTES,
+            MacosTrayIconAsset::UpdateBlack => UPDATE_LIGHT_TRAY_ICON_BYTES,
+            MacosTrayIconAsset::UpdateWhite => UPDATE_DARK_TRAY_ICON_BYTES,
+            MacosTrayIconAsset::UpdateRed => UPDATE_RED_TRAY_ICON_BYTES,
         }
     }
 }
@@ -1302,6 +1346,35 @@ fn visual_windows_theme(app: &tauri::AppHandle) -> Result<WindowsTheme, String> 
 }
 
 #[cfg(target_os = "macos")]
+fn current_macos_appearance() -> MacosAppearance {
+    let main_thread =
+        MainThreadMarker::new().expect("macOS appearance must be read on the main thread");
+    let appearance = NSApp(main_thread).effectiveAppearance();
+    let names = NSArray::from_slice(&[unsafe { NSAppearanceNameAqua }, unsafe {
+        NSAppearanceNameDarkAqua
+    }]);
+    let dark = appearance
+        .bestMatchFromAppearancesWithNames(&names)
+        .is_some_and(|name| &*name == unsafe { NSAppearanceNameDarkAqua });
+
+    if dark {
+        MacosAppearance::Dark
+    } else {
+        MacosAppearance::Light
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn visual_macos_appearance(app: &tauri::AppHandle) -> Result<MacosAppearance, String> {
+    let settings = app.state::<TrayIconSettings>();
+    settings
+        .appearance
+        .lock()
+        .map(|appearance| *appearance)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
 fn set_tray_icon(
     app: &tauri::AppHandle,
     mode: TrayIconMode,
@@ -1310,10 +1383,43 @@ fn set_tray_icon(
     let tray = app
         .tray_by_id("pulse-tray")
         .ok_or_else(|| "pulse tray not found".to_string())?;
-    let icon = tauri::image::Image::from_bytes(mode.bytes(update_ready))
-        .map_err(|error| error.to_string())?;
+    let icon =
+        tauri::image::Image::from_bytes(mode.bytes(visual_macos_appearance(app)?, update_ready))
+            .map_err(|error| error.to_string())?;
     tray.set_icon_with_as_template(Some(icon), mode == TrayIconMode::Default && !update_ready)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn start_macos_appearance_watcher(app: tauri::AppHandle) {
+    let center = NSDistributedNotificationCenter::defaultCenter();
+    let name = NSString::from_str("AppleInterfaceThemeChangedNotification");
+    let queue = NSOperationQueue::mainQueue();
+    let block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        let next = current_macos_appearance();
+        let settings = app.state::<TrayIconSettings>();
+        let changed = match settings.appearance.lock() {
+            Ok(mut appearance) if *appearance != next => {
+                *appearance = next;
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                eprintln!("macOS appearance state update failed: {error}");
+                false
+            }
+        };
+
+        if changed {
+            if let Err(error) = refresh_tray_icon(&app, &settings.mode, &settings.update_status) {
+                eprintln!("macOS appearance tray icon update failed: {error}");
+            }
+        }
+    });
+
+    unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(&name), None, Some(&queue), &block);
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1494,6 +1600,9 @@ pub fn run() {
                 (load_tray_icon_mode(&config_path), config_path)
             };
 
+            #[cfg(target_os = "macos")]
+            let initial_macos_appearance = current_macos_appearance();
+
             #[cfg(target_os = "windows")]
             let (
                 initial_theme_mode,
@@ -1521,7 +1630,9 @@ pub fn run() {
                 initial_tray_icon_mode.bytes(initial_windows_theme, false),
             )?;
             #[cfg(target_os = "macos")]
-            let tray_icon = tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(false))?;
+            let tray_icon = tauri::image::Image::from_bytes(
+                initial_tray_icon_mode.bytes(initial_macos_appearance, false),
+            )?;
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let tray_icon = tauri::image::Image::from_bytes(TRAY_ICON_BYTES)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1655,6 +1766,8 @@ pub fn run() {
                 mode: tray_icon_mode.clone(),
                 config_path: tray_icon_config_path,
                 update_status: update_status.clone(),
+                #[cfg(target_os = "macos")]
+                appearance: Arc::new(Mutex::new(initial_macos_appearance)),
             });
             #[cfg(target_os = "windows")]
             let appearance_controller = WindowsAppearanceController {
@@ -1723,6 +1836,9 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            #[cfg(target_os = "macos")]
+            start_macos_appearance_watcher(app.handle().clone());
+
             #[cfg(target_os = "windows")]
             if let Err(error) = appearance_controller.force_startup_mode(initial_theme_mode) {
                 eprintln!("initial Windows appearance request failed: {error}");
@@ -1753,7 +1869,8 @@ pub fn run() {
 mod tests {
     use super::{
         default_tray_icon_variant, AppearanceSnapshot, AppearanceState, AutoSchedule,
-        DefaultTrayIconVariant, ThemeMode, TrayIconAsset, TrayIconMode, UpdateResult, WindowsTheme,
+        DefaultTrayIconVariant, MacosAppearance, MacosTrayIconAsset, ThemeMode, TrayIconAsset,
+        TrayIconMode, UpdateResult, WindowsTheme,
     };
 
     #[test]
@@ -1832,6 +1949,30 @@ mod tests {
         assert_eq!(
             TrayIconMode::Red.asset(WindowsTheme::Dark, true),
             TrayIconAsset::UpdateRed
+        );
+    }
+
+    #[test]
+    fn macos_update_default_tray_icon_follows_appearance() {
+        assert_eq!(
+            TrayIconMode::Default.macos_asset(MacosAppearance::Light, true),
+            MacosTrayIconAsset::UpdateBlack
+        );
+        assert_eq!(
+            TrayIconMode::Default.macos_asset(MacosAppearance::Dark, true),
+            MacosTrayIconAsset::UpdateWhite
+        );
+    }
+
+    #[test]
+    fn macos_update_red_tray_icon_ignores_appearance() {
+        assert_eq!(
+            TrayIconMode::Red.macos_asset(MacosAppearance::Light, true),
+            MacosTrayIconAsset::UpdateRed
+        );
+        assert_eq!(
+            TrayIconMode::Red.macos_asset(MacosAppearance::Dark, true),
+            MacosTrayIconAsset::UpdateRed
         );
     }
 
