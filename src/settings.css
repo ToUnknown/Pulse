@@ -178,7 +178,7 @@ input:focus-visible,
 }
 
 .schedule-row {
-  align-items: flex-start;
+  align-items: center;
 }
 
 .schedule-controls {
