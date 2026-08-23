@@ -654,7 +654,7 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
 
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Pulse Settings")
-            .inner_size(420.0, window_height)
+            .inner_size(460.0, window_height)
             .resizable(false)
             .maximizable(false)
             .minimizable(false)
