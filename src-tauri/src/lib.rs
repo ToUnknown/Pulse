@@ -1523,6 +1523,9 @@ fn start_auto_scheduler(controller: WindowsAppearanceController) {
                     let target = scheduled_theme(schedule);
                     match active_schedule_target {
                         None if !pending && confirmed_theme != target => {
+                            // Remember automated attempts before they finish so a rollback does
+                            // not trigger another modal failure on every scheduler iteration.
+                            active_schedule_target = Some(target);
                             let _ = controller.request_mode_with_theme(ThemeMode::Auto, target);
                         }
                         None if !pending => active_schedule_target = Some(target),
@@ -1531,6 +1534,9 @@ fn start_auto_scheduler(controller: WindowsAppearanceController) {
                             if confirmed_theme == target && !pending {
                                 active_schedule_target = Some(target);
                             } else if !pending {
+                                // A new schedule period gets one automatic attempt. Manual mode
+                                // changes reset this marker and allow a later Auto selection to try.
+                                active_schedule_target = Some(target);
                                 let _ = controller.request_mode_with_theme(ThemeMode::Auto, target);
                             }
                         }
