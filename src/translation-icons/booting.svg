@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title desc">
+  <title id="title">Real-time translation booting</title>
+  <desc id="desc">A dark eight-segment activity spinner on a yellow circular background.</desc>
+  <circle cx="12" cy="12" r="11" fill="#FFCC00" />
+  <g fill="#493B00">
+    <rect x="11" y="5.25" width="2" height="4" rx="1" />
+    <rect x="11" y="5.25" width="2" height="4" rx="1" opacity="0.82" transform="rotate(45 12 12)" />
+    <rect x="11" y="5.25" width="2" height="4" rx="1" opacity="0.68" transform="rotate(90 12 12)" />
+    <rect x="11" y="5.25" width="2" height="4" rx="1" opacity="0.54" transform="rotate(135 12 12)" />
+    <rect x="11" y="5.25" width="2" height="4" rx="1" opacity="0.42" transform="rotate(180 12 12)" />
+    <rect x="11" y="5.25" width="2" height="4" rx="1" opacity="0.32" transform="rotate(225 12 12)" />
+    <rect x="11" y="5.25" width="2" height="4" rx="1" opacity="0.24" transform="rotate(270 12 12)" />
+    <rect x="11" y="5.25" width="2" height="4" rx="1" opacity="0.16" transform="rotate(315 12 12)" />
+  </g>
+</svg>

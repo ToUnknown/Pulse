@@ -1,5 +1,5 @@
 use tauri::{
-    menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{IconMenuItem, Menu, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
 
@@ -847,7 +847,7 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
 
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Pulse Settings")
-            .inner_size(460.0, window_height)
+            .inner_size(500.0, window_height)
             .resizable(false)
             .maximizable(false)
             .minimizable(false)
@@ -1621,7 +1621,7 @@ fn start_auto_scheduler(controller: WindowsAppearanceController) {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 type TranslationControls = (
     Submenu<tauri::Wry>,
-    MenuItem<tauri::Wry>,
+    IconMenuItem<tauri::Wry>,
     Vec<(String, CheckMenuItem<tauri::Wry>)>,
 );
 
@@ -1646,11 +1646,14 @@ fn build_translation_controls(app: &tauri::App<tauri::Wry>) -> tauri::Result<Tra
         .map(|(_, item)| item as &dyn IsMenuItem<tauri::Wry>)
         .collect::<Vec<_>>();
     let language_menu = Submenu::with_items(app, "Translate to", true, &language_item_refs)?;
-    let start_item = MenuItem::with_id(
+    let start_item = IconMenuItem::with_id(
         app,
         "translation-start",
         "Start Translation",
         true,
+        Some(tauri::image::Image::from_bytes(include_bytes!(
+            "../icons/menu/translation-off.png"
+        ))?),
         None::<&str>,
     )?;
 
@@ -1772,7 +1775,8 @@ pub fn run() {
                 None::<&str>,
             )?;
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
+            let quit =
+                tauri::menu::MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let settings = IconMenuItem::with_id(
                 app,
@@ -1884,8 +1888,13 @@ pub fn run() {
 
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let menu = {
-                let status =
-                    MenuItem::with_id(app, "status", "Pulse is running", false, None::<&str>)?;
+                let status = tauri::menu::MenuItem::with_id(
+                    app,
+                    "status",
+                    "Pulse is running",
+                    false,
+                    None::<&str>,
+                )?;
                 Menu::with_items(app, &[&status, &separator, &quit])?
             };
 

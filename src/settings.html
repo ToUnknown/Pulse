@@ -28,10 +28,18 @@
           <input id="start-at-login" type="checkbox" />
         </label>
         <label class="setting-row">
-          <span>
-            <strong>Live Translate</strong>
-            <small>Add the Pulse microphone and show translation controls.</small>
-            <small id="translation-lifecycle-status" class="lifecycle-status" hidden></small>
+          <span class="setting-copy">
+            <img
+              class="setting-feature-icon"
+              src="translation-icons/translate-icon.svg"
+              alt=""
+              aria-hidden="true"
+            />
+            <span class="setting-text">
+              <strong>Live Translate</strong>
+              <small>Add the Pulse microphone and show translation controls.</small>
+              <small id="translation-lifecycle-status" class="lifecycle-status" hidden></small>
+            </span>
           </span>
           <input id="translation-enabled" type="checkbox" />
         </label>
@@ -69,7 +77,6 @@
           <div class="translation-row">
             <span>
               <strong>Microphone</strong>
-              <small>Your speech is captured here.</small>
             </span>
             <select
               id="translation-input-device"
@@ -77,10 +84,18 @@
               aria-label="Translation microphone"
             ></select>
           </div>
-          <p id="translation-status" class="translation-status">
-            Pulse is routing your selected microphone. Start Translation from the tray to replace
-            it with translated speech.
-          </p>
+          <div class="translation-stage">
+            <img
+              id="translation-stage-icon"
+              class="translation-stage-icon"
+              src="translation-icons/off.svg"
+              alt="Translation stopped"
+            />
+            <p id="translation-status" class="translation-status">
+              Pulse is routing your selected microphone. Start Translation from the tray to replace
+              it with translated speech.
+            </p>
+          </div>
           <p class="provider-credit">
             macOS uses Pulse's input-only driver. Windows uses VB-CABLE donationware.
           </p>

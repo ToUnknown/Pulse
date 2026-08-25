@@ -15,10 +15,32 @@ const apiKeyStatus = document.querySelector("#api-key-status");
 const saveApiKey = document.querySelector("#save-api-key");
 const removeApiKey = document.querySelector("#remove-api-key");
 const translationInputDevice = document.querySelector("#translation-input-device");
+const translationStageIcon = document.querySelector("#translation-stage-icon");
 const translationStatus = document.querySelector("#translation-status");
 const errorMessage = document.querySelector("#error");
 const customSelects = new Map();
 let openCustomSelect = null;
+
+const translationStageAssets = {
+  off: {
+    src: "translation-icons/off.svg",
+    alt: "Translation stopped",
+  },
+  booting: {
+    src: "translation-icons/booting.svg",
+    alt: "Translation starting",
+  },
+  ready: {
+    src: "translation-icons/ready.svg",
+    alt: "Translation active",
+  },
+};
+
+function setTranslationStage(stage) {
+  const asset = translationStageAssets[stage];
+  translationStageIcon.src = asset.src;
+  translationStageIcon.alt = asset.alt;
+}
 
 function showError(error) {
   errorMessage.textContent = `Could not save the setting: ${error}`;
@@ -299,6 +321,13 @@ async function loadSettings() {
       "System default",
     );
     const translationActive = translation.status !== "idle";
+    const translationBooting =
+      translation.status === "starting" ||
+      translation.status === "stopping" ||
+      (translation.enabled && !translation.virtualOutputAvailable);
+    setTranslationStage(
+      translationBooting ? "booting" : translation.status === "running" ? "ready" : "off",
+    );
     setSelectDisabled(translationInputDevice, translationActive);
     apiKeyInput.disabled = translationActive;
     removeApiKey.disabled = translationActive;
@@ -358,6 +387,7 @@ startAtLogin.addEventListener("change", async () => {
 translationEnabled.addEventListener("change", async () => {
   const enabled = translationEnabled.checked;
   translationEnabled.disabled = true;
+  setTranslationStage("booting");
   try {
     const lifecycle = await invoke("set_translation_enabled", { enabled });
     errorMessage.hidden = true;

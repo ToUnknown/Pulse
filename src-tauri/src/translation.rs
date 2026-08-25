@@ -20,7 +20,7 @@ use cpal::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IconMenuItem, Menu, Submenu};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{
@@ -55,6 +55,34 @@ const PULSE_DRIVER_PACKET_SAMPLES: usize = 480;
 const PULSE_DRIVER_ADDRESS: &str = "127.0.0.1:41873";
 #[cfg(target_os = "macos")]
 const INSTALLED_PULSE_DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/Pulse.driver";
+const TRANSLATION_OFF_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/translation-off.png");
+const TRANSLATION_BOOTING_MENU_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/menu/translation-booting.png");
+const TRANSLATION_READY_MENU_ICON_BYTES: &[u8] =
+    include_bytes!("../icons/menu/translation-ready.png");
+
+#[derive(Clone, Copy)]
+enum TranslationMenuState {
+    Off,
+    Booting,
+    Ready,
+}
+
+fn set_translation_menu_state(
+    item: &IconMenuItem<tauri::Wry>,
+    text: &str,
+    state: TranslationMenuState,
+) {
+    let icon_bytes = match state {
+        TranslationMenuState::Off => TRANSLATION_OFF_MENU_ICON_BYTES,
+        TranslationMenuState::Booting => TRANSLATION_BOOTING_MENU_ICON_BYTES,
+        TranslationMenuState::Ready => TRANSLATION_READY_MENU_ICON_BYTES,
+    };
+    let icon = tauri::image::Image::from_bytes(icon_bytes).ok();
+
+    let _ = item.set_text(text);
+    let _ = item.set_icon(icon);
+}
 
 pub(crate) const LANGUAGES: [(&str, &str); 13] = [
     ("en", "English"),
@@ -150,7 +178,7 @@ pub(crate) struct TranslationManager {
     menu: Menu<tauri::Wry>,
     language_menu: Submenu<tauri::Wry>,
     menu_items_visible: Mutex<bool>,
-    start_item: MenuItem<tauri::Wry>,
+    start_item: IconMenuItem<tauri::Wry>,
     language_items: Vec<(String, CheckMenuItem<tauri::Wry>)>,
 }
 
@@ -159,7 +187,7 @@ impl TranslationManager {
         config_path: PathBuf,
         menu: Menu<tauri::Wry>,
         language_menu: Submenu<tauri::Wry>,
-        start_item: MenuItem<tauri::Wry>,
+        start_item: IconMenuItem<tauri::Wry>,
         language_items: Vec<(String, CheckMenuItem<tauri::Wry>)>,
     ) -> tauri::Result<Self> {
         let config = TranslationConfig::load(&config_path);
@@ -301,7 +329,11 @@ impl TranslationManager {
                     if let Ok(mut last_error) = self.last_error.lock() {
                         *last_error = Some(error.clone());
                     }
-                    let _ = self.start_item.set_text("Translation Failed — Retry");
+                    set_translation_menu_state(
+                        &self.start_item,
+                        "Translation Failed — Retry",
+                        TranslationMenuState::Off,
+                    );
                 }
                 result
             }
@@ -325,7 +357,11 @@ impl TranslationManager {
             signal.store(true, Ordering::Release);
         }
         *self.status.lock().map_err(|error| error.to_string())? = TranslationStatus::Stopping;
-        let _ = self.start_item.set_text("Stopping Translation…");
+        set_translation_menu_state(
+            &self.start_item,
+            "Stopping Translation…",
+            TranslationMenuState::Booting,
+        );
         Ok(())
     }
 
@@ -345,7 +381,11 @@ impl TranslationManager {
             *last_error = None;
         }
         if matches!(self.current_status(), Ok(TranslationStatus::Idle)) {
-            let _ = self.start_item.set_text("Start Translation");
+            set_translation_menu_state(
+                &self.start_item,
+                "Start Translation",
+                TranslationMenuState::Off,
+            );
         }
     }
 
@@ -375,7 +415,11 @@ impl TranslationManager {
         self.session_number.store(0, Ordering::Release);
         self.dropped_input_frames.store(0, Ordering::Release);
         self.set_language_menu_enabled(false);
-        let _ = self.start_item.set_text("Starting Translation…");
+        set_translation_menu_state(
+            &self.start_item,
+            "Starting Translation…",
+            TranslationMenuState::Booting,
+        );
 
         let status = self.status.clone();
         let active_stop_signal = self.stop_signal.clone();
@@ -440,21 +484,33 @@ impl TranslationManager {
                     if let Ok(mut error) = last_error.lock() {
                         *error = None;
                     }
-                    let _ = start_item.set_text("Start Translation");
+                    set_translation_menu_state(
+                        &start_item,
+                        "Start Translation",
+                        TranslationMenuState::Off,
+                    );
                 }
                 (Ok(()), Err(error)) => {
                     eprintln!("Pulse microphone passthrough stopped: {error}");
                     if let Ok(mut last_error) = last_error.lock() {
                         *last_error = Some(error);
                     }
-                    let _ = start_item.set_text("Start Translation");
+                    set_translation_menu_state(
+                        &start_item,
+                        "Start Translation",
+                        TranslationMenuState::Off,
+                    );
                 }
                 (Err(error), _) => {
                     eprintln!("live translation stopped: {error}");
                     if let Ok(mut last_error) = last_error.lock() {
                         *last_error = Some(error);
                     }
-                    let _ = start_item.set_text("Translation Failed — Retry");
+                    set_translation_menu_state(
+                        &start_item,
+                        "Translation Failed — Retry",
+                        TranslationMenuState::Off,
+                    );
                 }
             }
         });
@@ -866,7 +922,7 @@ fn start_passthrough_task(
 struct TranslationSessionContext {
     stop_signal: Arc<AtomicBool>,
     status: Arc<Mutex<TranslationStatus>>,
-    start_item: MenuItem<tauri::Wry>,
+    start_item: IconMenuItem<tauri::Wry>,
     session_id: Arc<Mutex<Option<String>>>,
     session_number: Arc<AtomicUsize>,
     dropped_input_frames: Arc<AtomicUsize>,
@@ -899,7 +955,11 @@ async fn run_translation_with_reconnect(
         if let Ok(mut current_status) = context.status.lock() {
             *current_status = TranslationStatus::Starting;
         }
-        let _ = context.start_item.set_text("Reconnecting Translation…");
+        set_translation_menu_state(
+            &context.start_item,
+            "Reconnecting Translation…",
+            TranslationMenuState::Booting,
+        );
         eprintln!("OpenAI translation session reconnecting after: {error}");
         let delay = Duration::from_millis(RECONNECT_DELAYS_MS[reconnect_attempt]);
         reconnect_attempt += 1;
@@ -1075,7 +1135,7 @@ async fn run_translation_session(
     if let Ok(mut current_status) = status.lock() {
         *current_status = TranslationStatus::Running;
     }
-    let _ = start_item.set_text("Stop Translation");
+    set_translation_menu_state(&start_item, "Stop Translation", TranslationMenuState::Ready);
 
     let mut output_source_rate = REALTIME_SAMPLE_RATE;
     let mut output_resampler = WindowedSincResampler::new(output_source_rate, output_sample_rate);

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title desc">
+  <title id="title">Real-time translation off</title>
+  <desc id="desc">A white play symbol on a gray circular background.</desc>
+  <circle cx="12" cy="12" r="11" fill="#8E8E93" />
+  <path d="M9 7.15 L17.1 12 L9 16.85 Z" fill="#fff" />
+</svg>

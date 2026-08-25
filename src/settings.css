@@ -250,11 +250,35 @@ input[type="password"]:disabled {
 }
 
 .translation-status {
+  flex: 1;
   margin: 0;
-  padding: 11px 15px 13px;
+  padding: 0;
   color: var(--secondary-text);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.translation-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 15px 13px;
+}
+
+.translation-stage-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
+.translation-stage-icon[src$="booting.svg"] {
+  animation: translation-stage-spin 900ms linear infinite;
+}
+
+@keyframes translation-stage-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .translation-status[data-error="true"] {
@@ -582,6 +606,12 @@ button:focus-visible,
   .time-icon-dark {
     color: #aab7ff;
     background: #30395f;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .translation-stage-icon {
+    animation: none;
   }
 }
 
