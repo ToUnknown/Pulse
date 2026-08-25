@@ -56,6 +56,7 @@ const TRANSLATION_URL: &str =
     "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate";
 const REALTIME_SAMPLE_RATE: u32 = 24_000;
 const REALTIME_FRAME_SAMPLES: usize = 4_800;
+const INPUT_STARTUP_FADE_MS: usize = 100;
 const INPUT_QUEUE_FRAMES: usize = 10;
 const OUTPUT_PREBUFFER_MS: usize = 200;
 const PASSTHROUGH_PREBUFFER_MS: usize = 20;
@@ -1754,6 +1755,7 @@ fn build_output_stream(
 struct InputChunker {
     channels: usize,
     resampler: WindowedSincResampler,
+    startup_fade_position: usize,
     pending: Vec<f32>,
     sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     audio_error: Arc<Mutex<Option<String>>>,
@@ -1771,6 +1773,7 @@ impl InputChunker {
         Self {
             channels,
             resampler: WindowedSincResampler::new(sample_rate, REALTIME_SAMPLE_RATE),
+            startup_fade_position: 0,
             pending: Vec::with_capacity(REALTIME_FRAME_SAMPLES * 2),
             sender,
             audio_error,
@@ -1799,7 +1802,9 @@ impl InputChunker {
     }
 
     fn push_mono(&mut self, mono: Vec<f32>) {
-        self.pending.extend(self.resampler.process(&mono));
+        let mut resampled = self.resampler.process(&mono);
+        self.apply_startup_fade(&mut resampled);
+        self.pending.extend(resampled);
 
         while self.pending.len() >= REALTIME_FRAME_SAMPLES {
             let remaining = self.pending.split_off(REALTIME_FRAME_SAMPLES);
@@ -1825,6 +1830,19 @@ impl InputChunker {
                     }
                 }
             }
+        }
+    }
+
+    fn apply_startup_fade(&mut self, samples: &mut [f32]) {
+        let fade_samples = REALTIME_SAMPLE_RATE as usize * INPUT_STARTUP_FADE_MS / 1_000;
+        for sample in samples {
+            if self.startup_fade_position >= fade_samples {
+                break;
+            }
+            let progress = self.startup_fade_position as f32 / fade_samples.max(1) as f32;
+            let gain = 0.5 - 0.5 * (std::f32::consts::PI * progress).cos();
+            *sample *= gain;
+            self.startup_fade_position += 1;
         }
     }
 }
@@ -2147,6 +2165,38 @@ mod tests {
             "temporary WebSocket backpressure must not stop the translation session"
         );
         assert_eq!(dropped_frames.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn microphone_startup_is_faded_before_streaming() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let mut chunker = InputChunker::new(
+            REALTIME_SAMPLE_RATE,
+            1,
+            sender,
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        chunker.push_f32(&vec![0.8; REALTIME_FRAME_SAMPLES]);
+
+        let frame = receiver
+            .try_recv()
+            .expect("the first complete microphone frame should be queued");
+        let samples = frame
+            .chunks_exact(2)
+            .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32)
+            .collect::<Vec<_>>();
+
+        assert!(samples[0].abs() < 0.01, "startup audio must begin silent");
+        assert!(
+            samples[REALTIME_SAMPLE_RATE as usize / 20] < 0.5,
+            "startup audio must rise gradually"
+        );
+        assert!(
+            samples[REALTIME_SAMPLE_RATE as usize / 8] > 0.75,
+            "normal microphone level must be restored quickly"
+        );
     }
 
     #[test]
