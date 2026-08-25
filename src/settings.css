@@ -109,6 +109,10 @@ h2 {
   flex: none;
 }
 
+img.setting-feature-icon {
+  padding: 2px;
+}
+
 .setting-feature-icon svg {
   display: block;
   width: 100%;
@@ -231,6 +235,7 @@ input[type="password"]:disabled {
   width: 32px;
   height: 32px;
   flex: none;
+  padding: 2px;
 }
 
 .translation-row-copy {
