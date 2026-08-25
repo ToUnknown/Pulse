@@ -1843,6 +1843,13 @@ pub fn run() {
             ) = build_translation_controls(app)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let translation_config_path = app.path().app_config_dir()?.join("live-translate.json");
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let translation_input_recording_path = app
+                .path()
+                .audio_dir()?
+                .join("Pulse")
+                .join("Live Translate")
+                .join("last-session-model-input.wav");
 
             #[cfg(target_os = "windows")]
             let (menu, appearance_menu_items, auto_schedule) = {
@@ -1959,6 +1966,7 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             app.manage(translation::TranslationManager::new(
                 translation_config_path,
+                translation_input_recording_path,
                 menu.clone(),
                 translation_menu.clone(),
                 translation_start.clone(),

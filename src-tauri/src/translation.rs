@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     fs,
+    io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -328,6 +329,87 @@ impl TranslationConfig {
     }
 }
 
+struct SessionInputRecording {
+    file: fs::File,
+    path: PathBuf,
+    data_bytes: u32,
+    failed: bool,
+}
+
+impl SessionInputRecording {
+    fn create(path: PathBuf) -> Result<Self, String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("could not create the input recording folder: {error}"))?;
+        }
+        let mut file = fs::File::create(&path)
+            .map_err(|error| format!("could not create the input recording: {error}"))?;
+        file.write_all(&pcm16_wav_header(0))
+            .map_err(|error| format!("could not initialize the input recording: {error}"))?;
+        Ok(Self {
+            file,
+            path,
+            data_bytes: 0,
+            failed: false,
+        })
+    }
+
+    fn append(&mut self, pcm16: &[u8]) {
+        if self.failed || pcm16.is_empty() {
+            return;
+        }
+        if pcm16.len() % 2 != 0 {
+            self.fail("received an incomplete PCM16 sample");
+            return;
+        }
+        let Ok(frame_bytes) = u32::try_from(pcm16.len()) else {
+            self.fail("received an oversized PCM16 frame");
+            return;
+        };
+        let Some(data_bytes) = self.data_bytes.checked_add(frame_bytes) else {
+            self.fail("the recording exceeded the WAV size limit");
+            return;
+        };
+        if let Err(error) = self.file.write_all(pcm16) {
+            self.fail(format!("could not write model input audio: {error}"));
+            return;
+        }
+        self.data_bytes = data_bytes;
+    }
+
+    fn finish(mut self) -> Result<PathBuf, String> {
+        self.file
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| self.file.write_all(&pcm16_wav_header(self.data_bytes)))
+            .and_then(|_| self.file.flush())
+            .map_err(|error| format!("could not finalize the input recording: {error}"))?;
+        Ok(self.path)
+    }
+
+    fn fail(&mut self, error: impl std::fmt::Display) {
+        eprintln!("Pulse model input recording stopped: {error}");
+        self.failed = true;
+    }
+}
+
+fn pcm16_wav_header(data_bytes: u32) -> [u8; 44] {
+    let mut header = [0_u8; 44];
+    header[0..4].copy_from_slice(b"RIFF");
+    header[4..8].copy_from_slice(&(36_u32.saturating_add(data_bytes)).to_le_bytes());
+    header[8..12].copy_from_slice(b"WAVE");
+    header[12..16].copy_from_slice(b"fmt ");
+    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    header[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    header[22..24].copy_from_slice(&1_u16.to_le_bytes());
+    header[24..28].copy_from_slice(&REALTIME_SAMPLE_RATE.to_le_bytes());
+    header[28..32].copy_from_slice(&(REALTIME_SAMPLE_RATE * 2).to_le_bytes());
+    header[32..34].copy_from_slice(&2_u16.to_le_bytes());
+    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+    header[36..40].copy_from_slice(b"data");
+    header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+    header
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TranslationStatus {
     Idle,
@@ -353,6 +435,7 @@ impl TranslationStatus {
 
 pub(crate) struct TranslationManager {
     config_path: PathBuf,
+    input_recording_path: PathBuf,
     config: Arc<Mutex<TranslationConfig>>,
     status: Arc<Mutex<TranslationStatus>>,
     stop_signal: Arc<Mutex<Option<Arc<AtomicBool>>>>,
@@ -372,6 +455,7 @@ pub(crate) struct TranslationManager {
 impl TranslationManager {
     pub(crate) fn new(
         config_path: PathBuf,
+        input_recording_path: PathBuf,
         menu: Menu<tauri::Wry>,
         language_menu: Submenu<tauri::Wry>,
         start_item: IconMenuItem<tauri::Wry>,
@@ -381,6 +465,7 @@ impl TranslationManager {
         let config = TranslationConfig::load(&config_path);
         let manager = Self {
             config_path,
+            input_recording_path,
             config: Arc::new(Mutex::new(config)),
             status: Arc::new(Mutex::new(TranslationStatus::Idle)),
             stop_signal: Arc::new(Mutex::new(None)),
@@ -453,6 +538,7 @@ impl TranslationManager {
             "sessionId": session_id,
             "sessionNumber": session_number,
             "droppedInputFrames": dropped_input_frames,
+            "modelInputRecordingPath": self.input_recording_path.to_string_lossy(),
             "lastError": last_error,
             "audioDeviceError": audio_device_error,
         })
@@ -629,6 +715,7 @@ impl TranslationManager {
         let session_id = self.session_id.clone();
         let session_number = self.session_number.clone();
         let dropped_input_frames = self.dropped_input_frames.clone();
+        let input_recording_path = self.input_recording_path.clone();
         let start_item = self.start_item.clone();
         let language_items = self.language_items.clone();
 
@@ -645,11 +732,33 @@ impl TranslationManager {
                 .enable_all()
                 .build();
             let result = match runtime {
-                Ok(runtime) => runtime.block_on(run_translation_with_reconnect(
-                    api_key,
-                    config,
-                    session_context,
-                )),
+                Ok(runtime) => {
+                    let mut input_recording =
+                        match SessionInputRecording::create(input_recording_path) {
+                            Ok(recording) => Some(recording),
+                            Err(error) => {
+                                eprintln!("Pulse could not record model input audio: {error}");
+                                None
+                            }
+                        };
+                    let result = runtime.block_on(run_translation_with_reconnect(
+                        api_key,
+                        config,
+                        session_context,
+                        &mut input_recording,
+                    ));
+                    if let Some(recording) = input_recording {
+                        match recording.finish() {
+                            Ok(path) => {
+                                eprintln!("Pulse saved model input audio to {}", path.display())
+                            }
+                            Err(error) => {
+                                eprintln!("Pulse could not finalize model input audio: {error}")
+                            }
+                        }
+                    }
+                    result
+                }
                 Err(error) => Err(format!("translation runtime setup failed: {error}")),
             };
 
@@ -1123,12 +1232,18 @@ async fn run_translation_with_reconnect(
     api_key: String,
     config: TranslationConfig,
     context: TranslationSessionContext,
+    input_recording: &mut Option<SessionInputRecording>,
 ) -> Result<(), String> {
     let mut reconnect_attempt = 0;
     loop {
         let connection_started_at = tokio::time::Instant::now();
-        let result =
-            run_translation_session(api_key.clone(), config.clone(), context.clone()).await;
+        let result = run_translation_session(
+            api_key.clone(),
+            config.clone(),
+            context.clone(),
+            input_recording.as_mut(),
+        )
+        .await;
 
         let error = match result {
             Ok(()) => return Ok(()),
@@ -1188,6 +1303,7 @@ async fn run_translation_session(
     api_key: String,
     config: TranslationConfig,
     context: TranslationSessionContext,
+    mut input_recording: Option<&mut SessionInputRecording>,
 ) -> Result<(), String> {
     let TranslationSessionContext {
         stop_signal,
@@ -1363,10 +1479,13 @@ async fn run_translation_session(
                 writer
                     .send(Message::Text(json!({
                         "type": "session.input_audio_buffer.append",
-                        "audio": BASE64.encode(frame),
+                        "audio": BASE64.encode(&frame),
                     }).to_string().into()))
                     .await
                     .map_err(|error| format!("could not stream microphone audio: {error}"))?;
+                if let Some(recording) = input_recording.as_mut() {
+                    recording.append(&frame);
+                }
             }
             message = reader.next() => {
                 let Some(message) = message else {
@@ -2099,6 +2218,34 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn session_input_recording_preserves_the_exact_model_audio() {
+        let directory = tempfile::tempdir().expect("temporary recording directory");
+        let path = directory.path().join("last-session-input.wav");
+        let model_audio = [
+            i16::MIN.to_le_bytes(),
+            (-1_i16).to_le_bytes(),
+            0_i16.to_le_bytes(),
+            i16::MAX.to_le_bytes(),
+        ]
+        .concat();
+
+        let mut recording = SessionInputRecording::create(path.clone()).expect("WAV recording");
+        recording.append(&model_audio);
+        recording.finish().expect("finalized WAV recording");
+
+        let wav = fs::read(path).expect("saved WAV file");
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1);
+        assert_eq!(
+            u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]),
+            REALTIME_SAMPLE_RATE
+        );
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16);
+        assert_eq!(&wav[44..], model_audio);
     }
 
     #[test]
