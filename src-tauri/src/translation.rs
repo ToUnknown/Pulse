@@ -20,7 +20,7 @@ use cpal::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::menu::{CheckMenuItem, IconMenuItem, Menu, Submenu};
+use tauri::menu::{CheckMenuItem, IconMenuItem, IsMenuItem, Menu, PredefinedMenuItem, Submenu};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{
@@ -179,6 +179,7 @@ pub(crate) struct TranslationManager {
     language_menu: Submenu<tauri::Wry>,
     menu_items_visible: Mutex<bool>,
     start_item: IconMenuItem<tauri::Wry>,
+    separator: PredefinedMenuItem<tauri::Wry>,
     language_items: Vec<(String, CheckMenuItem<tauri::Wry>)>,
 }
 
@@ -188,6 +189,7 @@ impl TranslationManager {
         menu: Menu<tauri::Wry>,
         language_menu: Submenu<tauri::Wry>,
         start_item: IconMenuItem<tauri::Wry>,
+        separator: PredefinedMenuItem<tauri::Wry>,
         language_items: Vec<(String, CheckMenuItem<tauri::Wry>)>,
     ) -> tauri::Result<Self> {
         let config = TranslationConfig::load(&config_path);
@@ -205,6 +207,7 @@ impl TranslationManager {
             language_menu,
             menu_items_visible: Mutex::new(true),
             start_item,
+            separator,
             language_items,
         };
         manager.sync_language_menu();
@@ -618,13 +621,13 @@ impl TranslationManager {
         }
 
         if visible {
-            self.menu.insert_items(
-                &[&self.language_menu, &self.start_item],
-                TRANSLATION_MENU_INDEX,
-            )?;
+            let items: [&dyn IsMenuItem<tauri::Wry>; 3] =
+                [&self.language_menu, &self.start_item, &self.separator];
+            self.menu.insert_items(&items, TRANSLATION_MENU_INDEX)?;
         } else {
             self.menu.remove(&self.language_menu)?;
             self.menu.remove(&self.start_item)?;
+            self.menu.remove(&self.separator)?;
         }
         *current = visible;
         Ok(())

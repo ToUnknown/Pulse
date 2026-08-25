@@ -91,6 +91,8 @@ const RESTART_TO_UPDATE_MENU_ICON_BYTES: &[u8] =
 const SETTINGS_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/settings.png");
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const QUIT_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/quit.png");
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const TRANSLATION_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/translation.png");
 
 #[cfg(target_os = "windows")]
 const APPEARANCE_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/appearance.png");
@@ -1622,6 +1624,7 @@ fn start_auto_scheduler(controller: WindowsAppearanceController) {
 type TranslationControls = (
     Submenu<tauri::Wry>,
     IconMenuItem<tauri::Wry>,
+    PredefinedMenuItem<tauri::Wry>,
     Vec<(String, CheckMenuItem<tauri::Wry>)>,
 );
 
@@ -1646,6 +1649,9 @@ fn build_translation_controls(app: &tauri::App<tauri::Wry>) -> tauri::Result<Tra
         .map(|(_, item)| item as &dyn IsMenuItem<tauri::Wry>)
         .collect::<Vec<_>>();
     let language_menu = Submenu::with_items(app, "Translate to", true, &language_item_refs)?;
+    language_menu.set_icon(Some(tauri::image::Image::from_bytes(
+        TRANSLATION_MENU_ICON_BYTES,
+    )?))?;
     let start_item = IconMenuItem::with_id(
         app,
         "translation-start",
@@ -1656,8 +1662,9 @@ fn build_translation_controls(app: &tauri::App<tauri::Wry>) -> tauri::Result<Tra
         ))?),
         None::<&str>,
     )?;
+    let separator = PredefinedMenuItem::separator(app)?;
 
-    Ok((language_menu, start_item, language_items))
+    Ok((language_menu, start_item, separator, language_items))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1761,7 +1768,7 @@ pub fn run() {
             let tray_icon_is_template = initial_tray_icon_mode == TrayIconMode::Default;
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let tray_icon_is_template = true;
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let separator = PredefinedMenuItem::separator(app)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let quit_separator = PredefinedMenuItem::separator(app)?;
@@ -1800,8 +1807,12 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let (translation_menu, translation_start, translation_language_items) =
-                build_translation_controls(app)?;
+            let (
+                translation_menu,
+                translation_start,
+                translation_separator,
+                translation_language_items,
+            ) = build_translation_controls(app)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let translation_config_path = app.path().app_config_dir()?.join("live-translate.json");
 
@@ -1859,7 +1870,7 @@ pub fn run() {
                         &appearance,
                         &translation_menu,
                         &translation_start,
-                        &separator,
+                        &translation_separator,
                         &settings,
                         &update_item,
                         &quit_separator,
@@ -1879,6 +1890,7 @@ pub fn run() {
                 &[
                     &translation_menu,
                     &translation_start,
+                    &translation_separator,
                     &settings,
                     &update_item,
                     &quit_separator,
@@ -1920,6 +1932,7 @@ pub fn run() {
                 menu.clone(),
                 translation_menu.clone(),
                 translation_start.clone(),
+                translation_separator.clone(),
                 translation_language_items,
             )?);
             #[cfg(target_os = "windows")]

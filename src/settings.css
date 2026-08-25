@@ -208,16 +208,30 @@ input[type="password"]:disabled {
 }
 
 .translation-row {
-  display: flex;
-  min-height: 82px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 13px 15px;
+  display: grid;
+  gap: 12px;
+  padding: 15px;
   border-bottom: 1px solid var(--border);
 }
 
-.translation-row > span {
+.translation-row:last-child {
+  border-bottom: 0;
+}
+
+.translation-row-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.translation-row-icon {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+
+.translation-row-copy {
   display: grid;
   min-width: 0;
   gap: 4px;
@@ -232,65 +246,27 @@ input[type="password"]:disabled {
   line-height: 1.35;
 }
 
-.translation-key-row {
-  align-items: flex-start;
+.translation-row-controls {
+  min-width: 0;
+  margin-left: 44px;
 }
 
 .key-controls {
-  display: grid;
-  width: 176px;
-  flex: none;
-  gap: 7px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-controls input[type="password"] {
+  width: auto;
+  flex: 1;
 }
 
 .button-row {
   display: flex;
+  flex: none;
   justify-content: flex-end;
   gap: 6px;
-}
-
-.translation-status {
-  flex: 1;
-  margin: 0;
-  padding: 0;
-  color: var(--secondary-text);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.translation-stage {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 11px 15px 13px;
-}
-
-.translation-stage-icon {
-  width: 24px;
-  height: 24px;
-  flex: none;
-}
-
-.translation-stage-icon[src$="booting.svg"] {
-  animation: translation-stage-spin 900ms linear infinite;
-}
-
-@keyframes translation-stage-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.translation-status[data-error="true"] {
-  color: var(--error);
-}
-
-.provider-credit {
-  margin: 0;
-  padding: 0 15px 13px;
-  color: var(--secondary-text);
-  font-size: 11px;
-  line-height: 1.35;
 }
 
 :root[data-platform="macos"] input[type="checkbox"] {
@@ -571,7 +547,7 @@ button:focus-visible,
 }
 
 .custom-select--audio {
-  width: 176px;
+  width: 100%;
 }
 
 .custom-select--audio .custom-select-trigger span {
@@ -581,7 +557,7 @@ button:focus-visible,
 }
 
 .custom-select--audio .custom-select-menu {
-  width: 300px;
+  width: 100%;
 }
 
 .tray-glyph {
@@ -606,12 +582,6 @@ button:focus-visible,
   .time-icon-dark {
     color: #aab7ff;
     background: #30395f;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .translation-stage-icon {
-    animation: none;
   }
 }
 

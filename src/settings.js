@@ -15,32 +15,9 @@ const apiKeyStatus = document.querySelector("#api-key-status");
 const saveApiKey = document.querySelector("#save-api-key");
 const removeApiKey = document.querySelector("#remove-api-key");
 const translationInputDevice = document.querySelector("#translation-input-device");
-const translationStageIcon = document.querySelector("#translation-stage-icon");
-const translationStatus = document.querySelector("#translation-status");
 const errorMessage = document.querySelector("#error");
 const customSelects = new Map();
 let openCustomSelect = null;
-
-const translationStageAssets = {
-  off: {
-    src: "translation-icons/off.svg",
-    alt: "Translation stopped",
-  },
-  booting: {
-    src: "translation-icons/booting.svg",
-    alt: "Translation starting",
-  },
-  ready: {
-    src: "translation-icons/ready.svg",
-    alt: "Translation active",
-  },
-};
-
-function setTranslationStage(stage) {
-  const asset = translationStageAssets[stage];
-  translationStageIcon.src = asset.src;
-  translationStageIcon.alt = asset.alt;
-}
 
 function showError(error) {
   errorMessage.textContent = `Could not save the setting: ${error}`;
@@ -98,7 +75,15 @@ function enhanceSelect(select) {
     if (!selectedOption) {
       return;
     }
-    fillOption(trigger, selectedOption);
+    const closedLabel = select.dataset.closedLabel;
+    if (closedLabel) {
+      trigger.replaceChildren();
+      const text = document.createElement("span");
+      text.textContent = closedLabel;
+      trigger.append(text);
+    } else {
+      fillOption(trigger, selectedOption);
+    }
     trigger.disabled = select.disabled;
     for (const button of optionButtons) {
       const isSelected = button.dataset.value === select.value;
@@ -321,13 +306,6 @@ async function loadSettings() {
       "System default",
     );
     const translationActive = translation.status !== "idle";
-    const translationBooting =
-      translation.status === "starting" ||
-      translation.status === "stopping" ||
-      (translation.enabled && !translation.virtualOutputAvailable);
-    setTranslationStage(
-      translationBooting ? "booting" : translation.status === "running" ? "ready" : "off",
-    );
     setSelectDisabled(translationInputDevice, translationActive);
     apiKeyInput.disabled = translationActive;
     removeApiKey.disabled = translationActive;
@@ -337,38 +315,8 @@ async function loadSettings() {
         ? "Stored in macOS Keychain. Enter a new key to replace it."
         : "Stored in Windows Credential Manager. Enter a new key to replace it."
       : "Required for the OpenAI Realtime Translation API.";
-    apiKeyInput.placeholder = translation.apiKeyConfigured ? "Saved securely" : "sk-…";
+    apiKeyInput.placeholder = translation.apiKeyConfigured ? "************" : "sk-…";
     saveApiKey.disabled = translationActive || apiKeyInput.value.trim() === "";
-
-    if (translation.lastError) {
-      translationStatus.textContent = `Pulse audio stopped: ${translation.lastError}`;
-      translationStatus.dataset.error = "true";
-    } else if (translation.audioDeviceError) {
-      translationStatus.textContent = `Audio devices unavailable: ${translation.audioDeviceError}`;
-      translationStatus.dataset.error = "true";
-    } else if (translationActive) {
-      const sessionNumber = translation.sessionNumber ?? 0;
-      const reconnectCount = Math.max(sessionNumber - 1, 0);
-      const droppedInputFrames = translation.droppedInputFrames ?? 0;
-      const sessionDetail = translation.sessionId
-        ? reconnectCount === 0
-          ? ` OpenAI session 1: ${translation.sessionId}.`
-          : ` OpenAI session ${sessionNumber}: ${translation.sessionId}. Pulse has reconnected ${reconnectCount} ${reconnectCount === 1 ? "time" : "times"}.`
-        : "";
-      const droppedFrameDetail = droppedInputFrames
-        ? ` Pulse dropped ${droppedInputFrames} microphone ${droppedInputFrames === 1 ? "frame" : "frames"}.`
-        : "";
-      translationStatus.textContent = `Translation is ${translation.status}.${sessionDetail}${droppedFrameDetail} Stop it from the tray before changing the microphone.`;
-      translationStatus.dataset.error = "false";
-    } else if (!translation.virtualOutputAvailable) {
-      translationStatus.textContent =
-        "Restart your computer to finish adding Pulse. If installation was cancelled, turn Live Translate off and on to retry.";
-      translationStatus.dataset.error = "true";
-    } else {
-      translationStatus.textContent =
-        "Pulse is routing your selected microphone. Start Translation from the tray to replace it with translated speech.";
-      translationStatus.dataset.error = "false";
-    }
   } catch (error) {
     showError(error);
   }
@@ -387,7 +335,6 @@ startAtLogin.addEventListener("change", async () => {
 translationEnabled.addEventListener("change", async () => {
   const enabled = translationEnabled.checked;
   translationEnabled.disabled = true;
-  setTranslationStage("booting");
   try {
     const lifecycle = await invoke("set_translation_enabled", { enabled });
     errorMessage.hidden = true;
