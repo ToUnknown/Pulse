@@ -59,6 +59,13 @@ const REALTIME_SAMPLE_RATE: u32 = 24_000;
 const INPUT_BLOCK_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 200 / 1_000;
 const INPUT_QUEUE_BLOCKS: usize = 10;
 const INPUT_STARTUP_WARMUP_SAMPLES: usize = INPUT_BLOCK_SAMPLES;
+const INPUT_STARTUP_ANALYSIS_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 20 / 1_000;
+const INPUT_STARTUP_PREROLL_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 300 / 1_000;
+const INPUT_STARTUP_CONTEXT_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 800 / 1_000;
+const INPUT_STARTUP_SPEECH_WINDOWS: usize = 3;
+const INPUT_STARTUP_MIN_SPEECH_RMS: f32 = 0.004;
+const INPUT_STARTUP_MAX_SPEECH_RMS: f32 = 0.02;
+const INPUT_STARTUP_NOISE_MULTIPLIER: f32 = 2.5;
 const OUTPUT_PREBUFFER_MS: usize = 200;
 const PASSTHROUGH_PREBUFFER_MS: usize = 20;
 const MAX_OUTPUT_BUFFER_SECONDS: usize = 10;
@@ -1596,14 +1603,15 @@ async fn run_translation_session(
 }
 
 fn translation_session_update(config: &TranslationConfig) -> serde_json::Value {
+    // The selected microphone is already captured as clean, single-speaker PCM.
+    // Keep optional server filtering off so source-language detection sees the
+    // same opening audio that Pulse records and sends.
     json!({
         "type": "session.update",
         "session": {
             "audio": {
                 "input": {
-                    "noise_reduction": {
-                        "type": "near_field"
-                    },
+                    "noise_reduction": null,
                     "transcription": null
                 },
                 "output": {
@@ -1887,6 +1895,7 @@ struct InputChunker {
     dropped_frames: Arc<AtomicUsize>,
     warmup_samples_remaining: usize,
     warmup_complete: Option<tokio::sync::oneshot::Sender<()>>,
+    startup_gate: Option<StartupSpeechGate>,
 }
 
 impl InputChunker {
@@ -1903,6 +1912,9 @@ impl InputChunker {
         } else {
             0
         };
+        let startup_gate = warmup_complete
+            .as_ref()
+            .map(|_| StartupSpeechGate::default());
         Self {
             channels,
             resampler: WindowedSincResampler::new(sample_rate, REALTIME_SAMPLE_RATE),
@@ -1912,6 +1924,7 @@ impl InputChunker {
             dropped_frames,
             warmup_samples_remaining,
             warmup_complete,
+            startup_gate,
         }
     }
 
@@ -1944,32 +1957,155 @@ impl InputChunker {
                 let _ = sender.send(());
             }
         }
-        self.pending.extend_from_slice(&samples[discarded..]);
+        let model_samples = &samples[discarded..];
+        if let Some(gate) = self.startup_gate.as_mut() {
+            let Some(startup) = gate.push(model_samples) else {
+                return;
+            };
+            self.startup_gate = None;
+            if !self.send_samples(startup.initial) {
+                return;
+            }
+            self.pending.extend(startup.remainder);
+        } else {
+            self.pending.extend_from_slice(model_samples);
+        }
 
         while self.pending.len() >= INPUT_BLOCK_SAMPLES {
             let remaining = self.pending.split_off(INPUT_BLOCK_SAMPLES);
             let block = std::mem::replace(&mut self.pending, remaining);
-            let mut bytes = Vec::with_capacity(INPUT_BLOCK_SAMPLES * 2);
-            for sample in block {
-                let sample = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                bytes.extend_from_slice(&sample.to_le_bytes());
+            if !self.send_samples(block) {
+                return;
             }
-            if let Err(error) = self.sender.try_send(bytes) {
-                match error {
-                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                        self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-                    }
-                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                        if let Ok(mut stored_error) = self.audio_error.lock() {
-                            *stored_error = Some(
-                                "the translation connection stopped accepting microphone audio"
-                                    .to_string(),
-                            );
-                        }
-                        return;
-                    }
+        }
+    }
+
+    fn send_samples(&mut self, samples: Vec<f32>) -> bool {
+        let mut bytes = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            let sample = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        match self.sender.try_send(bytes) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                if let Ok(mut stored_error) = self.audio_error.lock() {
+                    *stored_error = Some(
+                        "the translation connection stopped accepting microphone audio".to_string(),
+                    );
                 }
+                false
             }
+        }
+    }
+}
+
+struct StartupAudio {
+    initial: Vec<f32>,
+    remainder: Vec<f32>,
+}
+
+// gpt-realtime-translate must infer the source language from its first audio.
+// Hold room tone locally, then send preserved pre-roll and enough speech in one
+// initial append so the model does not have to translate an ambiguous noise-only
+// prefix. Normal continuous 200 ms streaming begins immediately afterward.
+struct StartupSpeechGate {
+    audio: Vec<f32>,
+    buffer_start: usize,
+    total_samples: usize,
+    next_window_start: usize,
+    candidate_start: Option<usize>,
+    consecutive_speech_windows: usize,
+    speech_start: Option<usize>,
+    noise_rms: Option<f32>,
+}
+
+impl Default for StartupSpeechGate {
+    fn default() -> Self {
+        Self {
+            audio: Vec::with_capacity(
+                INPUT_STARTUP_PREROLL_SAMPLES + INPUT_STARTUP_CONTEXT_SAMPLES,
+            ),
+            buffer_start: 0,
+            total_samples: 0,
+            next_window_start: 0,
+            candidate_start: None,
+            consecutive_speech_windows: 0,
+            speech_start: None,
+            noise_rms: None,
+        }
+    }
+}
+
+impl StartupSpeechGate {
+    fn push(&mut self, samples: &[f32]) -> Option<StartupAudio> {
+        self.audio.extend_from_slice(samples);
+        self.total_samples = self.total_samples.saturating_add(samples.len());
+
+        while self.speech_start.is_none()
+            && self.next_window_start + INPUT_STARTUP_ANALYSIS_SAMPLES <= self.total_samples
+        {
+            let local_start = self.next_window_start.saturating_sub(self.buffer_start);
+            let window = &self.audio
+                [local_start..local_start.saturating_add(INPUT_STARTUP_ANALYSIS_SAMPLES)];
+            let rms = (window.iter().map(|sample| sample * sample).sum::<f32>()
+                / window.len() as f32)
+                .sqrt();
+            let noise_rms = *self.noise_rms.get_or_insert(rms);
+            let speech_threshold = (noise_rms * INPUT_STARTUP_NOISE_MULTIPLIER)
+                .clamp(INPUT_STARTUP_MIN_SPEECH_RMS, INPUT_STARTUP_MAX_SPEECH_RMS);
+
+            if rms >= speech_threshold {
+                if self.consecutive_speech_windows == 0 {
+                    self.candidate_start = Some(self.next_window_start);
+                }
+                self.consecutive_speech_windows += 1;
+                if self.consecutive_speech_windows >= INPUT_STARTUP_SPEECH_WINDOWS {
+                    self.speech_start = self.candidate_start;
+                }
+            } else {
+                self.candidate_start = None;
+                self.consecutive_speech_windows = 0;
+                self.noise_rms = Some(noise_rms * 0.95 + rms * 0.05);
+            }
+            self.next_window_start += INPUT_STARTUP_ANALYSIS_SAMPLES;
+        }
+
+        let Some(speech_start) = self.speech_start else {
+            let retained_samples = INPUT_STARTUP_PREROLL_SAMPLES
+                + INPUT_STARTUP_ANALYSIS_SAMPLES * INPUT_STARTUP_SPEECH_WINDOWS;
+            let retain_from = self.next_window_start.saturating_sub(retained_samples);
+            self.trim_before(retain_from);
+            return None;
+        };
+
+        let release_at = speech_start.saturating_add(INPUT_STARTUP_CONTEXT_SAMPLES);
+        if self.total_samples < release_at {
+            return None;
+        }
+
+        self.trim_before(speech_start.saturating_sub(INPUT_STARTUP_PREROLL_SAMPLES));
+        let split_at = release_at.saturating_sub(self.buffer_start);
+        let mut buffered = std::mem::take(&mut self.audio);
+        let remainder = buffered.split_off(split_at.min(buffered.len()));
+        Some(StartupAudio {
+            initial: buffered,
+            remainder,
+        })
+    }
+
+    fn trim_before(&mut self, sample: usize) {
+        let sample = sample.min(self.total_samples);
+        let remove = sample
+            .saturating_sub(self.buffer_start)
+            .min(self.audio.len());
+        if remove > 0 {
+            self.audio.drain(..remove);
+            self.buffer_start += remove;
         }
     }
 }
@@ -2236,9 +2372,7 @@ mod tests {
                 "session": {
                     "audio": {
                         "input": {
-                            "noise_reduction": {
-                                "type": "near_field"
-                            },
+                            "noise_reduction": null,
                             "transcription": null
                         },
                         "output": {
@@ -2347,7 +2481,7 @@ mod tests {
             "capture should become ready after the startup warmup"
         );
 
-        chunker.push_f32(&vec![0.25; INPUT_BLOCK_SAMPLES]);
+        chunker.push_f32(&vec![0.25; INPUT_STARTUP_CONTEXT_SAMPLES]);
         let frame = receiver
             .try_recv()
             .expect("post-warmup microphone audio should reach the model");
@@ -2355,6 +2489,59 @@ mod tests {
         assert!(
             (first_sample - 0.25).abs() < 0.01,
             "post-warmup audio must retain its original timing and level"
+        );
+    }
+
+    #[test]
+    fn startup_gate_waits_for_speech_and_preserves_its_beginning() {
+        let mut gate = StartupSpeechGate::default();
+        let quiet = vec![0.001; REALTIME_SAMPLE_RATE as usize];
+        assert!(
+            gate.push(&quiet).is_none(),
+            "startup room tone must not be sent to the translator by itself"
+        );
+
+        let mut speech = vec![0.25; INPUT_STARTUP_CONTEXT_SAMPLES];
+        speech.extend(vec![0.1; INPUT_BLOCK_SAMPLES]);
+        let startup = gate
+            .push(&speech)
+            .expect("sustained speech should open the startup gate");
+
+        assert_eq!(
+            startup.initial.len(),
+            INPUT_STARTUP_PREROLL_SAMPLES + INPUT_STARTUP_CONTEXT_SAMPLES,
+            "the first append should contain pre-roll plus language-detection context"
+        );
+        assert!(
+            startup.initial[..INPUT_STARTUP_PREROLL_SAMPLES]
+                .iter()
+                .all(|sample| (*sample - 0.001).abs() < f32::EPSILON),
+            "pre-roll must preserve the lead-in before the first word"
+        );
+        assert!(
+            startup.initial[INPUT_STARTUP_PREROLL_SAMPLES..]
+                .iter()
+                .all(|sample| (*sample - 0.25).abs() < f32::EPSILON),
+            "the first speech samples must not be attenuated or discarded"
+        );
+        assert_eq!(startup.remainder.len(), INPUT_BLOCK_SAMPLES);
+    }
+
+    #[test]
+    fn startup_gate_ignores_a_short_noise_burst() {
+        let mut gate = StartupSpeechGate::default();
+        assert!(gate
+            .push(&vec![0.001; INPUT_STARTUP_PREROLL_SAMPLES])
+            .is_none());
+        assert!(
+            gate.push(&vec![0.2; INPUT_STARTUP_ANALYSIS_SAMPLES])
+                .is_none(),
+            "one transient must not be mistaken for the start of speech"
+        );
+        assert!(
+            gate.push(&vec![0.001; INPUT_STARTUP_CONTEXT_SAMPLES])
+                .is_none(),
+            "the translator must remain gated after the transient ends"
         );
     }
 
