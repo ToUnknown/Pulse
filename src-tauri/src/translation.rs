@@ -29,6 +29,25 @@ use tokio_tungstenite::{
         Message,
     },
 };
+#[cfg(target_os = "windows")]
+use windows_sys::core::BOOL;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW},
+    System::Threading::GetCurrentThreadId,
+    UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::{
+            EnumThreadWindows, GetClassNameW, PostMessageW, WM_APP, WM_NCDESTROY,
+        },
+    },
+};
+#[cfg(target_os = "macos")]
+use {
+    block2::RcBlock,
+    objc2_foundation::{NSArray, NSRunLoop, NSRunLoopCommonModes},
+};
 
 const API_KEY_SERVICE: &str = "app.pulse.desktop";
 const API_KEY_ACCOUNT: &str = "openai-api-key";
@@ -60,6 +79,27 @@ const TRANSLATION_BOOTING_MENU_ICON_BYTES: &[u8] =
     include_bytes!("../icons/menu/translation-booting.png");
 const TRANSLATION_READY_MENU_ICON_BYTES: &[u8] =
     include_bytes!("../icons/menu/translation-ready.png");
+#[cfg(target_os = "windows")]
+const WINDOWS_TRANSLATION_MENU_MESSAGE: u32 = WM_APP + 0x51;
+#[cfg(target_os = "windows")]
+const WINDOWS_TRANSLATION_MENU_SUBCLASS_ID: usize = 0x5055_4c53;
+#[cfg(target_os = "windows")]
+const WINDOWS_MENU_WINDOW_CLASS: [u16; 6] = [
+    b'#' as u16,
+    b'3' as u16,
+    b'2' as u16,
+    b'7' as u16,
+    b'6' as u16,
+    b'8' as u16,
+];
+#[cfg(target_os = "windows")]
+static WINDOWS_TRAY_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+#[cfg(target_os = "windows")]
+static WINDOWS_MENU_TASKS: std::sync::OnceLock<Mutex<VecDeque<WindowsMenuTask>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+type WindowsMenuTask = Box<dyn FnOnce() + Send>;
 
 #[derive(Clone, Copy)]
 enum TranslationMenuState {
@@ -68,7 +108,7 @@ enum TranslationMenuState {
     Ready,
 }
 
-fn set_translation_menu_state(
+fn apply_translation_menu_state(
     item: &IconMenuItem<tauri::Wry>,
     text: &str,
     state: TranslationMenuState,
@@ -82,6 +122,147 @@ fn set_translation_menu_state(
 
     let _ = item.set_text(text);
     let _ = item.set_icon(icon);
+}
+
+#[cfg(target_os = "macos")]
+fn set_translation_menu_state(
+    item: &IconMenuItem<tauri::Wry>,
+    text: &str,
+    state: TranslationMenuState,
+) {
+    let item = item.clone();
+    let text = text.to_string();
+    let block = RcBlock::new(move || apply_translation_menu_state(&item, &text, state));
+    let modes = NSArray::from_slice(&[unsafe { NSRunLoopCommonModes }]);
+
+    // Tauri's regular main-thread event is paused while macOS tracks an open
+    // native menu. Common run-loop modes keep the visible row live without
+    // dismissing and reopening the menu.
+    unsafe {
+        NSRunLoop::mainRunLoop().performInModes_block(&modes, &block);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_translation_menu_state(
+    item: &IconMenuItem<tauri::Wry>,
+    text: &str,
+    state: TranslationMenuState,
+) {
+    let item = item.clone();
+    let text = text.to_string();
+    let task: WindowsMenuTask = Box::new(move || {
+        apply_translation_menu_state(&item, &text, state);
+    });
+
+    if let Err(task) = dispatch_windows_menu_task(task) {
+        task();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn dispatch_windows_menu_task(task: WindowsMenuTask) -> Result<(), WindowsMenuTask> {
+    let window = WINDOWS_TRAY_WINDOW.load(Ordering::Acquire) as HWND;
+    if window.is_null() {
+        return Err(task);
+    }
+
+    let tasks = WINDOWS_MENU_TASKS.get_or_init(|| Mutex::new(VecDeque::new()));
+    let mut tasks = tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    tasks.push_back(task);
+    let posted = unsafe { PostMessageW(window, WINDOWS_TRANSLATION_MENU_MESSAGE, 0, 0) };
+    if posted == 0 {
+        return Err(tasks
+            .pop_back()
+            .expect("the translation menu task was just queued"));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn redraw_active_menu_window(window: HWND, _parameter: LPARAM) -> BOOL {
+    let mut class_name = [0_u16; 16];
+    let length = unsafe { GetClassNameW(window, class_name.as_mut_ptr(), class_name.len() as i32) };
+    if length > 0 && class_name[..length as usize] == WINDOWS_MENU_WINDOW_CLASS {
+        unsafe {
+            RedrawWindow(
+                window,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            );
+        }
+    }
+    1
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn translation_menu_window_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass_id: usize,
+    _reference_data: usize,
+) -> LRESULT {
+    if message == WINDOWS_TRANSLATION_MENU_MESSAGE {
+        let task = WINDOWS_MENU_TASKS.get().and_then(|tasks| {
+            tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+        });
+        if let Some(task) = task {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+            unsafe {
+                EnumThreadWindows(GetCurrentThreadId(), Some(redraw_active_menu_window), 0);
+            }
+        }
+        return 0;
+    }
+
+    if message == WM_NCDESTROY {
+        WINDOWS_TRAY_WINDOW.store(0, Ordering::Release);
+        if let Some(tasks) = WINDOWS_MENU_TASKS.get() {
+            tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        unsafe {
+            RemoveWindowSubclass(
+                window,
+                Some(translation_menu_window_proc),
+                WINDOWS_TRANSLATION_MENU_SUBCLASS_ID,
+            );
+        }
+    }
+
+    unsafe { DefSubclassProc(window, message, wparam, lparam) }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn install_windows_menu_dispatch(window: HWND) -> Result<(), String> {
+    let installed = unsafe {
+        SetWindowSubclass(
+            window,
+            Some(translation_menu_window_proc),
+            WINDOWS_TRANSLATION_MENU_SUBCLASS_ID,
+            0,
+        )
+    };
+    if installed == 0 {
+        return Err(format!(
+            "could not connect translation updates to the tray menu: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    WINDOWS_TRAY_WINDOW.store(window as isize, Ordering::Release);
+    Ok(())
 }
 
 pub(crate) const LANGUAGES: [(&str, &str); 13] = [
@@ -343,13 +524,6 @@ impl TranslationManager {
             TranslationStatus::Starting | TranslationStatus::Running => self.stop(),
             TranslationStatus::Stopping => Ok(()),
         }
-    }
-
-    pub(crate) fn is_transitioning(&self) -> bool {
-        matches!(
-            self.current_status(),
-            Ok(TranslationStatus::Starting | TranslationStatus::Stopping)
-        )
     }
 
     pub(crate) fn stop(&self) -> Result<(), String> {

@@ -35,9 +35,9 @@ coreaudio-rs = "0.14"
 block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppearance", "NSApplication", "NSResponder"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSDistributedNotificationCenter", "NSNotification", "NSObject", "NSOperation", "NSString", "block2", "std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSDistributedNotificationCenter", "NSNotification", "NSObject", "NSObjCRuntime", "NSOperation", "NSRunLoop", "NSString", "block2", "std"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-windows-sys = { version = "0.61", features = ["Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.55"
