@@ -86,7 +86,8 @@ h2 {
   padding: 14px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 20px;
+  corner-shape: squircle;
 }
 
 .setting-copy {
@@ -204,7 +205,8 @@ input[type="password"]:disabled {
 .translation-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 20px;
+  corner-shape: squircle;
 }
 
 .translation-row {
