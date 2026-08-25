@@ -4,6 +4,11 @@ use tauri::{
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+mod translation;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod virtual_audio;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use {
     std::{
         fs,
@@ -15,10 +20,10 @@ use {
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use tauri::{WebviewUrl, WebviewWindowBuilder};
-
-#[cfg(target_os = "macos")]
-use tauri::Manager as _;
+use tauri::{
+    menu::{CheckMenuItem, IsMenuItem, Submenu},
+    Manager as _, WebviewUrl, WebviewWindowBuilder,
+};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct DownloadedUpdate {
@@ -308,10 +313,7 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded
 use {
     chrono::{Local, Timelike},
     std::{thread, time::Duration},
-    tauri::{
-        menu::{CheckMenuItem, ContextMenu, Submenu},
-        Manager,
-    },
+    tauri::menu::ContextMenu,
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
@@ -464,12 +466,71 @@ fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
     #[cfg(target_os = "macos")]
     let auto_schedule: Option<serde_json::Value> = None;
 
+    let translation = app
+        .try_state::<translation::TranslationManager>()
+        .map(|manager| manager.state_json())
+        .unwrap_or_else(|| serde_json::json!({}));
+
     serde_json::json!({
         "platform": std::env::consts::OS,
         "startAtLogin": start_at_login,
         "trayIcon": tray_icon,
         "autoSchedule": auto_schedule,
+        "translation": translation,
     })
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn set_openai_api_key(app: tauri::AppHandle, api_key: String) -> Result<(), String> {
+    translation::save_api_key(&api_key)?;
+    app.state::<translation::TranslationManager>()
+        .clear_last_error();
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn clear_openai_api_key(app: tauri::AppHandle) -> Result<(), String> {
+    translation::clear_api_key()?;
+    app.state::<translation::TranslationManager>()
+        .clear_last_error();
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+async fn set_translation_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<virtual_audio::LifecycleResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = app.state::<translation::TranslationManager>();
+        if enabled {
+            let result = virtual_audio::enable(&app)?;
+            manager.set_enabled(true)?;
+            if !result.restart_required {
+                if let Err(error) = manager.start_passthrough() {
+                    eprintln!("Pulse microphone passthrough could not start: {error}");
+                }
+            }
+            Ok(result)
+        } else {
+            manager.set_enabled(false)?;
+            manager.stop_and_wait()?;
+            let result = virtual_audio::disable(&app)?;
+            Ok(result)
+        }
+    })
+    .await
+    .map_err(|error| format!("Pulse audio lifecycle task failed: {error}"))?
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn set_translation_input_device(app: tauri::AppHandle, name: Option<String>) -> Result<(), String> {
+    app.state::<translation::TranslationManager>()
+        .set_input_device(name)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -526,9 +587,9 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window
     } else {
         #[cfg(target_os = "windows")]
-        let window_height = 440.0;
+        let window_height = 650.0;
         #[cfg(target_os = "macos")]
-        let window_height = 288.0;
+        let window_height = 590.0;
 
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Pulse Settings")
@@ -956,6 +1017,45 @@ fn start_auto_scheduler(mode: Arc<Mutex<ThemeMode>>, schedule: Arc<Mutex<AutoSch
     });
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+type TranslationControls = (
+    Submenu<tauri::Wry>,
+    MenuItem<tauri::Wry>,
+    Vec<(String, CheckMenuItem<tauri::Wry>)>,
+);
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn build_translation_controls(app: &tauri::App<tauri::Wry>) -> tauri::Result<TranslationControls> {
+    let language_items = translation::LANGUAGES
+        .iter()
+        .map(|(code, label)| {
+            CheckMenuItem::with_id(
+                app,
+                format!("translation-language-{code}"),
+                *label,
+                true,
+                *code == "en",
+                None::<&str>,
+            )
+            .map(|item| ((*code).to_string(), item))
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let language_item_refs = language_items
+        .iter()
+        .map(|(_, item)| item as &dyn IsMenuItem<tauri::Wry>)
+        .collect::<Vec<_>>();
+    let language_menu = Submenu::with_items(app, "Translate to", true, &language_item_refs)?;
+    let start_item = MenuItem::with_id(
+        app,
+        "translation-start",
+        "Start Translation",
+        true,
+        None::<&str>,
+    )?;
+
+    Ok((language_menu, start_item, language_items))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -965,14 +1065,22 @@ pub fn run() {
         settings_state,
         set_start_at_login,
         set_tray_icon_mode,
-        set_auto_schedule
+        set_auto_schedule,
+        set_openai_api_key,
+        clear_openai_api_key,
+        set_translation_enabled,
+        set_translation_input_device
     ]);
 
     #[cfg(target_os = "macos")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
         set_start_at_login,
-        set_tray_icon_mode
+        set_tray_icon_mode,
+        set_openai_api_key,
+        clear_openai_api_key,
+        set_translation_enabled,
+        set_translation_input_device
     ]);
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1060,6 +1168,11 @@ pub fn run() {
             )?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let (translation_menu, translation_start, translation_language_items) =
+                build_translation_controls(app)?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let translation_config_path = app.path().app_config_dir()?.join("live-translate.json");
 
             #[cfg(target_os = "windows")]
             let (
@@ -1106,6 +1219,8 @@ pub fn run() {
                     app,
                     &[
                         &appearance,
+                        &translation_menu,
+                        &translation_start,
                         &separator,
                         &settings,
                         &update_item,
@@ -1135,6 +1250,8 @@ pub fn run() {
                     app,
                     &[
                         &status,
+                        &translation_menu,
+                        &translation_start,
                         &separator,
                         &settings,
                         &update_item,
@@ -1177,6 +1294,14 @@ pub fn run() {
                 config_path: tray_icon_config_path,
                 update_status: update_status.clone(),
             });
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            app.manage(translation::TranslationManager::new(
+                translation_config_path,
+                menu.clone(),
+                translation_menu.clone(),
+                translation_start.clone(),
+                translation_language_items,
+            )?);
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
@@ -1185,6 +1310,27 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| {
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if let Some(code) = event.id().as_ref().strip_prefix("translation-language-") {
+                        if let Err(error) = app
+                            .state::<translation::TranslationManager>()
+                            .select_language(code)
+                        {
+                            eprintln!("translation language selection failed: {error}");
+                        }
+                    }
+
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if event.id().as_ref() == "translation-start" {
+                        if let Err(error) = app.state::<translation::TranslationManager>().toggle()
+                        {
+                            eprintln!("translation start failed: {error}");
+                            if let Err(window_error) = open_settings(app) {
+                                eprintln!("failed to open translation settings: {window_error}");
+                            }
+                        }
+                    }
+
                     #[cfg(target_os = "windows")]
                     {
                         let next_mode = match event.id().as_ref() {
@@ -1238,6 +1384,12 @@ pub fn run() {
                     }
 
                     if event.id().as_ref() == "quit" {
+                        #[cfg(any(target_os = "macos", target_os = "windows"))]
+                        if let Some(manager) = app.try_state::<translation::TranslationManager>() {
+                            if let Err(error) = manager.stop() {
+                                eprintln!("translation shutdown failed: {error}");
+                            }
+                        }
                         app.exit(0);
                     }
                 })

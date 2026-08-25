@@ -1,0 +1,16 @@
+Pulse includes the original Windows VB-CABLE distribution archive without modification.
+
+VB-CABLE is donationware by VB-Audio Software. If it is useful to you, please support
+the developer or purchase a license:
+
+https://vb-audio.com/Cable/
+https://vb-audio.com/Services/licensing.htm
+
+Bundled package versions and source checksums:
+
+- Windows: VBCABLE_Driver_Pack45.zip, downloaded from
+  https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip
+  SHA-256 b950e39f01af1d04ea623c8f6d8eb9b6ea5c477c637295fabf20631c85116bfb
+The package contains VB-Audio's own license and installer UI. The archive and signed driver
+files are not modified. macOS uses Pulse's own AudioServer plug-in; its third-party
+attribution is bundled separately in LICENSE-Hush.txt.

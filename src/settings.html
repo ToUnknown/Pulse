@@ -18,6 +18,64 @@
           </span>
           <input id="start-at-login" type="checkbox" />
         </label>
+        <label class="setting-row">
+          <span>
+            <strong>Live Translate</strong>
+            <small>Add the Pulse microphone and show translation controls.</small>
+            <small id="translation-lifecycle-status" class="lifecycle-status" hidden></small>
+          </span>
+          <input id="translation-enabled" type="checkbox" />
+        </label>
+      </section>
+      <section
+        id="translation-section"
+        class="settings-group"
+        aria-labelledby="translation-heading"
+        hidden
+      >
+        <h2 id="translation-heading">Live Translate</h2>
+        <div class="translation-card">
+          <div class="translation-row translation-key-row">
+            <span>
+              <strong>OpenAI API key</strong>
+              <small id="api-key-status">Checking secure storage…</small>
+            </span>
+            <div class="key-controls">
+              <input
+                id="openai-api-key"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                aria-label="OpenAI API key"
+                placeholder="sk-…"
+              />
+              <div class="button-row">
+                <button id="save-api-key" type="button">Save</button>
+                <button id="remove-api-key" class="secondary-button" type="button" hidden>
+                  Remove
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="translation-row">
+            <span>
+              <strong>Microphone</strong>
+              <small>Your speech is captured here.</small>
+            </span>
+            <select
+              id="translation-input-device"
+              data-custom-select="audio"
+              aria-label="Translation microphone"
+            ></select>
+          </div>
+          <p id="translation-status" class="translation-status">
+            Pulse is routing your selected microphone. Start Translation from the tray to replace
+            it with translated speech.
+          </p>
+          <p class="provider-credit">
+            macOS uses Pulse's input-only driver. Windows uses VB-CABLE donationware.
+          </p>
+        </div>
       </section>
       <section
         id="appearance-section"

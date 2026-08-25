@@ -48,7 +48,7 @@ body {
   min-height: 100vh;
   margin: 0;
   background: inherit;
-  overflow: hidden;
+  overflow: auto;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -71,6 +71,10 @@ h2 {
 
 .settings-group:last-of-type {
   margin-bottom: 0;
+}
+
+.settings-group > .setting-row + .setting-row {
+  margin-top: 8px;
 }
 
 .setting-row {
@@ -100,6 +104,11 @@ h2 {
   line-height: 1.35;
 }
 
+.setting-row .lifecycle-status {
+  color: #b15b00;
+  font-weight: 600;
+}
+
 input,
 select {
   flex: none;
@@ -109,6 +118,116 @@ select {
 input[type="checkbox"] {
   width: 18px;
   height: 18px;
+}
+
+input[type="password"] {
+  width: 176px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 11px;
+  color: inherit;
+  background: var(--control-background);
+  border: 1px solid var(--control-border);
+  border-radius: 9px;
+  font: inherit;
+}
+
+input[type="password"]:disabled {
+  opacity: 0.55;
+}
+
+.button-row button {
+  min-height: 30px;
+  padding: 5px 13px;
+  color: #ffffff;
+  background: var(--focus);
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+}
+
+.button-row button:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.button-row button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.secondary-button {
+  color: inherit;
+  background: var(--control-background);
+  border: 1px solid var(--control-border);
+}
+
+.translation-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.translation-row {
+  display: flex;
+  min-height: 82px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--border);
+}
+
+.translation-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.translation-row strong {
+  font-weight: 600;
+}
+
+.translation-row small {
+  color: var(--secondary-text);
+  line-height: 1.35;
+}
+
+.translation-key-row {
+  align-items: flex-start;
+}
+
+.key-controls {
+  display: grid;
+  width: 176px;
+  flex: none;
+  gap: 7px;
+}
+
+.button-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.translation-status {
+  margin: 0;
+  padding: 11px 15px 13px;
+  color: var(--secondary-text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.translation-status[data-error="true"] {
+  color: var(--error);
+}
+
+.provider-credit {
+  margin: 0;
+  padding: 0 15px 13px;
+  color: var(--secondary-text);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 select {
@@ -129,6 +248,7 @@ select {
 
 select:focus-visible,
 input:focus-visible,
+button:focus-visible,
 .custom-select-trigger:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -383,6 +503,20 @@ input:focus-visible,
   width: 154px;
 }
 
+.custom-select--audio {
+  width: 176px;
+}
+
+.custom-select--audio .custom-select-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select--audio .custom-select-menu {
+  width: 300px;
+}
+
 .tray-glyph {
   width: 17px;
   height: 17px;
@@ -416,7 +550,10 @@ input:focus-visible,
 
 @media (forced-colors: active) {
   .setting-row,
+  .translation-card,
   select,
+  input[type="password"],
+  .secondary-button,
   .time-selector,
   .custom-select-trigger,
   .custom-select-menu {

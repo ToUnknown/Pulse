@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>English</string>
+    <key>CFBundleExecutable</key>
+    <string>PulseAudio</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.pulse.desktop.virtual-audio</string>
+    <key>CFBundleName</key>
+    <string>Pulse</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFPlugInFactories</key>
+    <dict>
+        <key>73C5B08E-0A0B-4B1E-ACD7-33492804FE09</key>
+        <string>PulseCreate</string>
+    </dict>
+    <key>CFPlugInTypes</key>
+    <dict>
+        <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+        <array>
+            <string>73C5B08E-0A0B-4B1E-ACD7-33492804FE09</string>
+        </array>
+    </dict>
+</dict>
+</plist>
