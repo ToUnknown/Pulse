@@ -273,6 +273,13 @@ input[type="password"]:disabled {
   width: 100%;
 }
 
+.api-key-field input:focus,
+.api-key-field input:focus-visible {
+  border-color: var(--control-border);
+  outline: none;
+  box-shadow: none;
+}
+
 .api-key-mask {
   position: absolute;
   top: 50%;
