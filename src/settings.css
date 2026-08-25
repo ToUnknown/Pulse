@@ -280,6 +280,11 @@ input[type="password"]:disabled {
   box-shadow: none;
 }
 
+.api-key-field input[data-attention="true"] {
+  border-color: var(--error);
+  box-shadow: inset 0 0 0 1px var(--error);
+}
+
 .api-key-mask {
   position: absolute;
   top: 50%;

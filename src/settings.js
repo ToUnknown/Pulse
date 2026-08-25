@@ -1,4 +1,5 @@
 const invoke = window.__TAURI__.core.invoke;
+const listen = window.__TAURI__.event.listen;
 const startAtLogin = document.querySelector("#start-at-login");
 const translationEnabled = document.querySelector("#translation-enabled");
 const translationLifecycleStatus = document.querySelector("#translation-lifecycle-status");
@@ -19,10 +20,22 @@ const translationInputDevice = document.querySelector("#translation-input-device
 const errorMessage = document.querySelector("#error");
 const customSelects = new Map();
 let openCustomSelect = null;
+let apiKeyInteractionVersion = 0;
 
 function showError(error) {
   errorMessage.textContent = `Could not save the setting: ${error}`;
   errorMessage.hidden = false;
+}
+
+function showApiKeyAttention() {
+  apiKeyInput.dataset.attention = "true";
+  apiKeyInput.setAttribute("aria-invalid", "true");
+}
+
+function clearApiKeyAttention() {
+  apiKeyInteractionVersion += 1;
+  delete apiKeyInput.dataset.attention;
+  apiKeyInput.removeAttribute("aria-invalid");
 }
 
 function addHourOptions(select) {
@@ -268,6 +281,7 @@ document.addEventListener("pointerdown", (event) => {
 window.addEventListener("blur", () => openCustomSelect?.close());
 
 async function loadSettings() {
+  const apiKeyInteractionAtLoad = apiKeyInteractionVersion;
   try {
     const settings = await invoke("settings_state");
     document.documentElement.dataset.platform = settings.platform;
@@ -307,11 +321,17 @@ async function loadSettings() {
       ? settings.platform === "macos"
         ? "Stored in macOS Keychain. Enter a new key to replace it."
         : "Stored in Windows Credential Manager. Enter a new key to replace it."
-      : "Required for the OpenAI Realtime Translation API.";
+      : "Required for the OpenAI Live Translation API.";
     apiKeyInput.dataset.configured = String(translation.apiKeyConfigured);
     apiKeyInput.placeholder = translation.apiKeyConfigured ? "" : "sk-…";
     apiKeyMask.hidden = !translation.apiKeyConfigured || apiKeyInput.value.trim() !== "";
     saveApiKey.disabled = translationActive || apiKeyInput.value.trim() === "";
+    if (
+      settings.apiKeyAttentionRequired &&
+      apiKeyInteractionVersion === apiKeyInteractionAtLoad
+    ) {
+      showApiKeyAttention();
+    }
   } catch (error) {
     showError(error);
   }
@@ -383,10 +403,14 @@ autoLightStart.addEventListener("change", saveAutoSchedule);
 autoDarkStart.addEventListener("change", saveAutoSchedule);
 
 apiKeyInput.addEventListener("input", () => {
+  clearApiKeyAttention();
   apiKeyMask.hidden =
     apiKeyInput.dataset.configured !== "true" || apiKeyInput.value.trim() !== "";
   saveApiKey.disabled = apiKeyInput.disabled || apiKeyInput.value.trim() === "";
 });
+
+apiKeyInput.addEventListener("pointerdown", clearApiKeyAttention);
+apiKeyInput.addEventListener("keydown", clearApiKeyAttention);
 
 saveApiKey.addEventListener("click", async () => {
   const apiKey = apiKeyInput.value.trim();
@@ -434,4 +458,5 @@ translationInputDevice.addEventListener("change", async () => {
 });
 
 window.addEventListener("focus", loadSettings);
+void listen("api-key-attention-requested", loadSettings);
 loadSettings();

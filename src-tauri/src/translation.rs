@@ -51,6 +51,7 @@ use {
 
 const API_KEY_SERVICE: &str = "app.pulse.desktop";
 const API_KEY_ACCOUNT: &str = "openai-api-key";
+const MISSING_API_KEY_ERROR: &str = "add an OpenAI API key in Settings before starting";
 const TRANSLATION_URL: &str =
     "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate";
 const REALTIME_SAMPLE_RATE: u32 = 24_000;
@@ -100,6 +101,10 @@ static WINDOWS_MENU_TASKS: std::sync::OnceLock<Mutex<VecDeque<WindowsMenuTask>>>
 
 #[cfg(target_os = "windows")]
 type WindowsMenuTask = Box<dyn FnOnce() + Send>;
+
+pub(crate) fn is_missing_api_key_error(error: &str) -> bool {
+    error == MISSING_API_KEY_ERROR
+}
 
 #[derive(Clone, Copy)]
 enum TranslationMenuState {
@@ -510,14 +515,25 @@ impl TranslationManager {
             TranslationStatus::Idle => {
                 let result = self.start();
                 if let Err(error) = &result {
-                    if let Ok(mut last_error) = self.last_error.lock() {
-                        *last_error = Some(error.clone());
+                    if is_missing_api_key_error(error) {
+                        if let Ok(mut last_error) = self.last_error.lock() {
+                            *last_error = None;
+                        }
+                        set_translation_menu_state(
+                            &self.start_item,
+                            "Start Translation",
+                            TranslationMenuState::Off,
+                        );
+                    } else {
+                        if let Ok(mut last_error) = self.last_error.lock() {
+                            *last_error = Some(error.clone());
+                        }
+                        set_translation_menu_state(
+                            &self.start_item,
+                            "Translation Failed — Retry",
+                            TranslationMenuState::Off,
+                        );
                     }
-                    set_translation_menu_state(
-                        &self.start_item,
-                        "Translation Failed — Retry",
-                        TranslationMenuState::Off,
-                    );
                 }
                 result
             }
@@ -848,9 +864,7 @@ fn api_key_is_configured() -> Result<bool, String> {
 fn load_api_key() -> Result<String, String> {
     match api_key_entry()?.get_password() {
         Ok(api_key) if !api_key.trim().is_empty() => Ok(api_key),
-        Ok(_) | Err(keyring::Error::NoEntry) => {
-            Err("add an OpenAI API key in Settings before starting".to_string())
-        }
+        Ok(_) | Err(keyring::Error::NoEntry) => Err(MISSING_API_KEY_ERROR.to_string()),
         Err(error) => Err(format!("secure credential lookup failed: {error}")),
     }
 }

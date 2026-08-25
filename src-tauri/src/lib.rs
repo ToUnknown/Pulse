@@ -13,7 +13,10 @@ use {
     std::{
         fs,
         path::Path,
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
     },
     tauri_plugin_autostart::{MacosLauncher, ManagerExt},
     tauri_plugin_dialog::{DialogExt, MessageDialogKind},
@@ -23,7 +26,7 @@ use {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::{
     menu::{CheckMenuItem, IsMenuItem, Submenu},
-    WebviewUrl, WebviewWindowBuilder,
+    Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 #[cfg(target_os = "macos")]
@@ -42,6 +45,23 @@ use {
 struct DownloadedUpdate {
     update: Update,
     bytes: Vec<u8>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[derive(Default)]
+struct SettingsAttention {
+    api_key_required: AtomicBool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl SettingsAttention {
+    fn request_api_key(&self) {
+        self.api_key_required.store(true, Ordering::Release);
+    }
+
+    fn take_api_key_request(&self) -> bool {
+        self.api_key_required.swap(false, Ordering::AcqRel)
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -730,6 +750,9 @@ fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
         .try_state::<translation::TranslationManager>()
         .map(|manager| manager.state_json())
         .unwrap_or_else(|| serde_json::json!({}));
+    let api_key_attention_required = app
+        .try_state::<SettingsAttention>()
+        .is_some_and(|attention| attention.take_api_key_request());
 
     serde_json::json!({
         "platform": std::env::consts::OS,
@@ -737,6 +760,7 @@ fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
         "trayIcon": tray_icon,
         "autoSchedule": auto_schedule,
         "translation": translation,
+        "apiKeyAttentionRequired": api_key_attention_required,
     })
 }
 
@@ -840,7 +864,7 @@ fn set_auto_schedule(app: tauri::AppHandle, light_start: u8, dark_start: u8) -> 
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn open_settings(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
     let window = if let Some(window) = app.get_webview_window("settings") {
         window.show()?;
         window
@@ -859,7 +883,8 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
             .build()?
     };
 
-    window.set_focus()
+    window.set_focus()?;
+    Ok(window)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1930,6 +1955,8 @@ pub fn run() {
                 appearance: Arc::new(Mutex::new(initial_macos_appearance)),
             });
             #[cfg(any(target_os = "macos", target_os = "windows"))]
+            app.manage(SettingsAttention::default());
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             app.manage(translation::TranslationManager::new(
                 translation_config_path,
                 menu.clone(),
@@ -1984,11 +2011,29 @@ pub fn run() {
                                 reveal_tray_menu(app, 75);
                             }
                             Err(error) => {
-                                eprintln!("translation start failed: {error}");
-                                if let Err(window_error) = open_settings(app) {
-                                    eprintln!(
-                                        "failed to open translation settings: {window_error}"
-                                    );
+                                let missing_api_key =
+                                    translation::is_missing_api_key_error(&error);
+                                if missing_api_key {
+                                    app.state::<SettingsAttention>().request_api_key();
+                                } else {
+                                    eprintln!("translation start failed: {error}");
+                                }
+                                match open_settings(app) {
+                                    Ok(window) if missing_api_key => {
+                                        if let Err(emit_error) =
+                                            window.emit("api-key-attention-requested", ())
+                                        {
+                                            eprintln!(
+                                                "failed to highlight the API key setting: {emit_error}"
+                                            );
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(window_error) => {
+                                        eprintln!(
+                                            "failed to open translation settings: {window_error}"
+                                        );
+                                    }
                                 }
                             }
                         }
