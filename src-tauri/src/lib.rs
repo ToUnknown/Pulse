@@ -129,9 +129,12 @@ fn set_update_menu(update_item: &IconMenuItem<tauri::Wry>, update_ready: bool, e
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn reveal_update_menu(app: &tauri::AppHandle) {
+fn reveal_tray_menu(app: &tauri::AppHandle, delay_ms: u64) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
         let Some(tray) = app.tray_by_id("pulse-tray") else {
             return;
         };
@@ -164,7 +167,7 @@ fn set_update_result(
             .title("Pulse")
             .show(|_| {});
     } else {
-        reveal_update_menu(app);
+        reveal_tray_menu(app, 0);
     }
 }
 
@@ -1975,11 +1978,19 @@ pub fn run() {
 
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     if event.id().as_ref() == "translation-start" {
-                        if let Err(error) = app.state::<translation::TranslationManager>().toggle()
-                        {
-                            eprintln!("translation start failed: {error}");
-                            if let Err(window_error) = open_settings(app) {
-                                eprintln!("failed to open translation settings: {window_error}");
+                        match app.state::<translation::TranslationManager>().toggle() {
+                            Ok(()) => {
+                                // Native tray menus dismiss selected items before this callback
+                                // returns, so reopen after menu tracking has finished.
+                                reveal_tray_menu(app, 75);
+                            }
+                            Err(error) => {
+                                eprintln!("translation start failed: {error}");
+                                if let Err(window_error) = open_settings(app) {
+                                    eprintln!(
+                                        "failed to open translation settings: {window_error}"
+                                    );
+                                }
                             }
                         }
                     }
