@@ -25,12 +25,12 @@ Both paths keep the stream's first channel for the entire run instead of changin
 audio callbacks. The passthrough path performs band-limited resampling to the virtual device's
 native rate and uses a 20 ms buffer for stable,
 low-latency routing. The translation path performs band-limited resampling to mono 24 kHz PCM16
-and applies a 100 ms fade to the start of each API session before sending continuous 200 ms frames
-to the dedicated OpenAI Realtime Translation WebSocket. This suppresses microphone and AGC startup
-transients without adding delay or changing later speech. Pulse
-configures the selected output language, enables OpenAI `near_field` input noise reduction, and
-keeps optional input transcription disabled. It sends no prompt or instructions. Pulse waits for
-`session.updated` before starting capture so no audio is sent with the wrong configuration.
+and sends continuous 200 ms frames to the dedicated OpenAI Realtime Translation WebSocket. Pulse
+starts local capture while the API session is being prepared, retaining up to two seconds of source
+audio so the beginning of the first sentence is not clipped. It configures the selected output
+language, enables OpenAI `near_field` input noise reduction, and keeps optional input transcription
+disabled. It sends no prompt or instructions. Pulse waits for `session.updated` before sending the
+buffered audio so no samples reach the model with the wrong configuration.
 
 Pulse consumes each complete `session.output_audio.delta` directly. It validates the reported
 PCM format, sample rate, and channel count, uses 24 kHz directly when the cable supports it,
