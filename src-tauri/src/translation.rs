@@ -55,9 +55,8 @@ const MISSING_API_KEY_ERROR: &str = "add an OpenAI API key in Settings before st
 const TRANSLATION_URL: &str =
     "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate";
 const REALTIME_SAMPLE_RATE: u32 = 24_000;
-const INITIAL_INPUT_BLOCK_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 600 / 1_000;
-const STREAM_INPUT_BLOCK_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 200 / 1_000;
-const INPUT_QUEUE_BLOCKS: usize = 8;
+const INPUT_BLOCK_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 40 / 1_000;
+const INPUT_QUEUE_BLOCKS: usize = 50;
 const OUTPUT_PREBUFFER_MS: usize = 200;
 const PASSTHROUGH_PREBUFFER_MS: usize = 20;
 const MAX_OUTPUT_BUFFER_SECONDS: usize = 10;
@@ -1753,7 +1752,6 @@ fn build_output_stream(
 struct InputChunker {
     channels: usize,
     resampler: WindowedSincResampler,
-    next_block_samples: usize,
     pending: Vec<f32>,
     sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     audio_error: Arc<Mutex<Option<String>>>,
@@ -1771,8 +1769,7 @@ impl InputChunker {
         Self {
             channels,
             resampler: WindowedSincResampler::new(sample_rate, REALTIME_SAMPLE_RATE),
-            next_block_samples: INITIAL_INPUT_BLOCK_SAMPLES,
-            pending: Vec::with_capacity(INITIAL_INPUT_BLOCK_SAMPLES + STREAM_INPUT_BLOCK_SAMPLES),
+            pending: Vec::with_capacity(INPUT_BLOCK_SAMPLES * 2),
             sender,
             audio_error,
             dropped_frames,
@@ -1802,12 +1799,10 @@ impl InputChunker {
     fn push_mono(&mut self, mono: Vec<f32>) {
         self.pending.extend(self.resampler.process(&mono));
 
-        while self.pending.len() >= self.next_block_samples {
-            let block_samples = self.next_block_samples;
-            let remaining = self.pending.split_off(block_samples);
+        while self.pending.len() >= INPUT_BLOCK_SAMPLES {
+            let remaining = self.pending.split_off(INPUT_BLOCK_SAMPLES);
             let block = std::mem::replace(&mut self.pending, remaining);
-            self.next_block_samples = STREAM_INPUT_BLOCK_SAMPLES;
-            let mut bytes = Vec::with_capacity(block_samples * 2);
+            let mut bytes = Vec::with_capacity(INPUT_BLOCK_SAMPLES * 2);
             for sample in block {
                 let sample = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                 bytes.extend_from_slice(&sample.to_le_bytes());
@@ -2142,11 +2137,7 @@ mod tests {
             dropped_frames.clone(),
         );
 
-        chunker.push_f32(&vec![
-            0.25;
-            INITIAL_INPUT_BLOCK_SAMPLES
-                + STREAM_INPUT_BLOCK_SAMPLES
-        ]);
+        chunker.push_f32(&vec![0.25; INPUT_BLOCK_SAMPLES * 2]);
 
         assert_eq!(
             audio_error.lock().expect("audio error lock").as_deref(),
@@ -2166,7 +2157,7 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicUsize::new(0)),
         );
-        let mut input = vec![0.0; INITIAL_INPUT_BLOCK_SAMPLES];
+        let mut input = vec![0.0; INPUT_BLOCK_SAMPLES];
         input[0] = 0.8;
 
         chunker.push_f32(&input);
@@ -2186,7 +2177,7 @@ mod tests {
     }
 
     #[test]
-    fn first_input_block_accumulates_context_without_losing_audio() {
+    fn input_blocks_are_uniform_and_preserve_all_audio() {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
         let mut chunker = InputChunker::new(
             REALTIME_SAMPLE_RATE,
@@ -2195,33 +2186,38 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicUsize::new(0)),
         );
-        let first_block_samples = INITIAL_INPUT_BLOCK_SAMPLES;
-        let input = (0..first_block_samples)
-            .map(|index| index as f32 / first_block_samples as f32)
+        let block_samples = INPUT_BLOCK_SAMPLES;
+        let input_samples = block_samples * 2;
+        let input = (0..input_samples)
+            .map(|index| index as f32 / input_samples as f32)
             .collect::<Vec<_>>();
 
         chunker.push_f32(&input);
 
         let first_block = receiver
             .try_recv()
-            .expect("600 ms of captured speech should produce the initial API block");
+            .expect("the first 40 ms of captured speech should be queued immediately");
+        let second_block = receiver
+            .try_recv()
+            .expect("the next 40 ms of captured speech should be queued separately");
         assert_eq!(
             first_block.len(),
-            first_block_samples * 2,
-            "the first API block should contain 600 ms of PCM16 context"
+            block_samples * 2,
+            "the first API block should contain 40 ms of PCM16 audio"
         );
+        assert_eq!(second_block.len(), block_samples * 2);
         assert!(
             receiver.try_recv().is_err(),
-            "the initial context must be sent as one block, not three 200 ms blocks"
+            "80 ms of input must produce exactly two API blocks"
         );
         let final_sample = i16::from_le_bytes([
-            first_block[first_block.len() - 2],
-            first_block[first_block.len() - 1],
+            second_block[second_block.len() - 2],
+            second_block[second_block.len() - 1],
         ]) as f32
             / i16::MAX as f32;
         assert!(
             final_sample > 0.99,
-            "the initial block must retain its tail"
+            "consecutive input blocks must retain the tail of captured audio"
         );
     }
 
