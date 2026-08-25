@@ -2153,6 +2153,11 @@ pub fn run() {
         .expect("error while running Pulse");
 }
 
+#[cfg(target_os = "windows")]
+pub fn run_windows_uninstall_maintenance_if_requested() -> Option<Result<(), String>> {
+    virtual_audio::run_uninstall_maintenance_if_requested()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

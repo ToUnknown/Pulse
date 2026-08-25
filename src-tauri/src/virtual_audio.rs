@@ -3,16 +3,16 @@ use std::{fs, io, path::PathBuf, process::Command};
 #[cfg(target_os = "windows")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use cpal::traits::{DeviceTrait, HostTrait};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::path::Path;
 use tauri::{path::BaseDirectory, AppHandle, Manager};
-#[cfg(target_os = "windows")]
-use tempfile::TempDir;
 
 const OWNER_MARKER: &str = "pulse-installed-vb-cable";
 #[cfg(target_os = "windows")]
-const WINDOWS_PACKAGE: &str = "resources/virtual-audio/VBCABLE_Driver_Pack45.zip";
+const WINDOWS_PACKAGE: &str = "resources/virtual-audio/windows/x64";
+#[cfg(target_os = "windows")]
+const WINDOWS_INSTALLER: &str = "PulseDriverInstaller.exe";
 #[cfg(target_os = "macos")]
 const MACOS_DRIVER: &str = "target/pulse-audio-driver/Pulse.driver";
 #[cfg(target_os = "macos")]
@@ -39,19 +39,58 @@ pub(crate) fn enable(app: &AppHandle) -> Result<LifecycleResult, String> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn enable(app: &AppHandle) -> Result<LifecycleResult, String> {
-    let provider_was_present = backing_provider_present();
-    if !provider_was_present {
-        let package = bundled_windows_package(app)?;
-        let unpacked = unpack_windows_package(&package)?;
-        install_windows_provider(&unpacked)?;
-        mark_provider_owned(app, OwnedProvider::LegacyVbCable)?;
-    } else {
-        rename_windows_capture_endpoint("Pulse")?;
+    let package = bundled_windows_package(app)?;
+    let previous_owner = owned_provider(app)?;
+    let legacy_was_renamed = legacy_capture_endpoint_renamed()?;
+    if legacy_was_renamed {
+        restore_legacy_windows_capture_endpoint()?;
     }
 
-    Ok(LifecycleResult {
-        restart_required: !wait_for_pulse_state(true),
-    })
+    let pulse_driver_was_present = crate::windows_audio::interface_available();
+    let mut restart_required = false;
+    if !pulse_driver_was_present {
+        let install = run_windows_installer(&package, "install")?;
+        restart_required |= install.restart_required;
+    }
+
+    if !wait_for_windows_pulse_state(true) {
+        let rollback = (!pulse_driver_was_present)
+            .then(|| run_windows_installer(&package, "remove"))
+            .transpose();
+        return Err(match rollback {
+            Ok(_) => "PulseVirtualMic was installed, but Windows did not publish its Pulse recording endpoint; the incomplete installation was removed".to_string(),
+            Err(rollback_error) => format!(
+                "PulseVirtualMic was installed, but Windows did not publish its Pulse recording endpoint; rollback also failed: {rollback_error}"
+            ),
+        });
+    }
+
+    if previous_owner == Some(OwnedProvider::LegacyVbCable) && legacy_windows_provider_present() {
+        match run_windows_installer(&package, "remove-legacy") {
+            Ok(removal) => restart_required |= removal.restart_required,
+            Err(legacy_error) => {
+                if pulse_driver_was_present {
+                    return Err(format!(
+                        "the new Pulse input was verified, but the Pulse-owned legacy VB-CABLE package could not be removed: {legacy_error}; the existing PulseVirtualMic installation was left intact"
+                    ));
+                }
+                return Err(match run_windows_installer(&package, "remove") {
+                    Ok(_) => format!(
+                        "the new Pulse input was verified, but the Pulse-owned legacy VB-CABLE package could not be removed: {legacy_error}; the new driver was rolled back"
+                    ),
+                    Err(rollback_error) => format!(
+                        "the new Pulse input was verified, but the Pulse-owned legacy VB-CABLE package could not be removed: {legacy_error}; rollback also failed: {rollback_error}"
+                    ),
+                });
+            }
+        }
+    }
+
+    if !pulse_driver_was_present || previous_owner == Some(OwnedProvider::LegacyVbCable) {
+        mark_provider_owned(app, OwnedProvider::PulseDriver)?;
+    }
+
+    Ok(LifecycleResult { restart_required })
 }
 
 #[cfg(target_os = "macos")]
@@ -70,21 +109,35 @@ pub(crate) fn disable(app: &AppHandle) -> Result<LifecycleResult, String> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn disable(app: &AppHandle) -> Result<LifecycleResult, String> {
-    let owned = owned_provider(app)?.is_some();
-    if owned {
-        let package = bundled_windows_package(app)?;
-        let unpacked = unpack_windows_package(&package)?;
-        remove_windows_provider(&unpacked)?;
-        if !backing_provider_present() {
+    let package = bundled_windows_package(app)?;
+    let owner = owned_provider(app)?;
+    let restart_required = match owner {
+        Some(OwnedProvider::PulseDriver) => {
+            let removal = run_windows_installer(&package, "remove")?;
+            if !wait_for_windows_pulse_state(false) {
+                return Err("Windows did not remove the Pulse recording endpoint and private driver interface".to_string());
+            }
             clear_provider_owned(app)?;
+            removal.restart_required
         }
-    } else {
-        rename_windows_capture_endpoint("CABLE Output")?;
+        Some(OwnedProvider::LegacyVbCable) => {
+            let removal = run_windows_installer(&package, "remove-legacy")?;
+            clear_provider_owned(app)?;
+            removal.restart_required
+        }
+        None => {
+            if legacy_capture_endpoint_renamed()? {
+                restore_legacy_windows_capture_endpoint()?;
+            }
+            false
+        }
+    };
+
+    if crate::windows_audio::interface_available() && owner != Some(OwnedProvider::PulseDriver) {
+        return Ok(LifecycleResult { restart_required });
     }
 
-    Ok(LifecycleResult {
-        restart_required: !wait_for_pulse_state(false) || (owned && backing_provider_present()),
-    })
+    Ok(LifecycleResult { restart_required })
 }
 
 #[cfg(target_os = "macos")]
@@ -104,36 +157,9 @@ fn bundled_windows_package(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .resolve(WINDOWS_PACKAGE, BaseDirectory::Resource)
         .map_err(|error| format!("could not locate the bundled Pulse audio component: {error}"))?;
-    path.is_file()
+    path.is_dir()
         .then_some(path)
-        .ok_or_else(|| "the bundled Pulse audio component is missing".to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn unpack_windows_package(package: &Path) -> Result<TempDir, String> {
-    let directory = tempfile::Builder::new()
-        .prefix("pulse-virtual-audio-")
-        .tempdir()
-        .map_err(|error| format!("could not prepare the Pulse audio installer: {error}"))?;
-
-    let status = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Expand-Archive -LiteralPath $env:PULSE_AUDIO_ARCHIVE -DestinationPath $env:PULSE_AUDIO_DESTINATION -Force",
-        ])
-        .env("PULSE_AUDIO_ARCHIVE", package)
-        .env("PULSE_AUDIO_DESTINATION", directory.path())
-        .status();
-
-    let status =
-        status.map_err(|error| format!("could not unpack the Pulse audio component: {error}"))?;
-    if !status.success() {
-        return Err("could not unpack the Pulse audio component".to_string());
-    }
-
-    Ok(directory)
+        .ok_or_else(|| "the bundled PulseVirtualMic driver package is missing".to_string())
 }
 
 fn owner_marker(app: &AppHandle) -> Result<PathBuf, String> {
@@ -163,10 +189,17 @@ fn mark_provider_owned(app: &AppHandle, provider: OwnedProvider) -> Result<(), S
 
 fn owned_provider(app: &AppHandle) -> Result<Option<OwnedProvider>, String> {
     match fs::read_to_string(owner_marker(app)?) {
-        Ok(value) if value.trim() == "PULSE_DRIVER" => Ok(Some(OwnedProvider::PulseDriver)),
-        Ok(_) => Ok(Some(OwnedProvider::LegacyVbCable)),
+        Ok(value) => Ok(Some(parse_owned_provider(&value))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+fn parse_owned_provider(value: &str) -> OwnedProvider {
+    if value.trim() == "PULSE_DRIVER" {
+        OwnedProvider::PulseDriver
+    } else {
+        OwnedProvider::LegacyVbCable
     }
 }
 
@@ -206,6 +239,7 @@ fn pulse_input_present() -> bool {
         .any(|description| description.name().eq_ignore_ascii_case("Pulse"))
 }
 
+#[cfg(target_os = "macos")]
 fn wait_for_pulse_state(expected: bool) -> bool {
     for _ in 0..50 {
         if pulse_input_present() == expected {
@@ -214,6 +248,18 @@ fn wait_for_pulse_state(expected: bool) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     pulse_input_present() == expected
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_windows_pulse_state(expected: bool) -> bool {
+    for _ in 0..50 {
+        let interface_present = crate::windows_audio::interface_available();
+        if interface_present == expected && pulse_input_present() == expected {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    crate::windows_audio::interface_available() == expected && pulse_input_present() == expected
 }
 
 #[cfg(target_os = "windows")]
@@ -284,66 +330,189 @@ end run"#;
 }
 
 #[cfg(target_os = "windows")]
-fn install_windows_provider(unpacked: &TempDir) -> Result<(), String> {
-    run_windows_setup(unpacked, true)?;
-    if !backing_provider_present() && !windows_provider_service_exists() {
-        return Err("Pulse audio installation was cancelled or did not finish".to_string());
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsInstallerResult {
+    ok: bool,
+    restart_required: bool,
+    error_code: u32,
+    #[serde(rename = "devicePresent")]
+    _device_present: bool,
+    inf_name: String,
+    message: String,
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_installer(
+    package: &Path,
+    operation: &str,
+) -> Result<WindowsInstallerResult, String> {
+    let installer = package.join(WINDOWS_INSTALLER);
+    if !installer.is_file() {
+        return Err(format!(
+            "the Pulse driver installer is missing: {}",
+            installer.display()
+        ));
     }
-    Ok(())
-}
+    let result_directory = tempfile::Builder::new()
+        .prefix("pulse-driver-result-")
+        .tempdir()
+        .map_err(|error| format!("could not prepare the Pulse driver installer: {error}"))?;
+    let result_path = result_directory.path().join("result.json");
 
-#[cfg(target_os = "windows")]
-fn remove_windows_provider(unpacked: &TempDir) -> Result<(), String> {
-    run_windows_setup(unpacked, false)
-}
-
-#[cfg(target_os = "windows")]
-fn windows_provider_service_exists() -> bool {
-    Command::new("sc.exe")
-        .args(["query", "VBAudioVACMME"])
+    const LAUNCH: &str = r#"$ErrorActionPreference = 'Stop'
+$process = Start-Process -FilePath $env:PULSE_DRIVER_INSTALLER -ArgumentList $env:PULSE_DRIVER_OPERATION -Verb RunAs -Wait -PassThru
+exit $process.ExitCode"#;
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", LAUNCH])
+        .env("PULSE_DRIVER_INSTALLER", &installer)
+        .env("PULSE_DRIVER_OPERATION", operation)
+        .env("PULSE_DRIVER_PACKAGE", package)
+        .env("PULSE_DRIVER_RESULT", &result_path)
         .status()
-        .is_ok_and(|status| status.success())
-}
+        .map_err(|error| format!("could not start the Pulse driver installer: {error}"))?;
 
-#[cfg(target_os = "windows")]
-fn run_windows_setup(unpacked: &TempDir, rename_after: bool) -> Result<(), String> {
-    let setup = unpacked.path().join("VBCABLE_Setup_x64.exe");
-    let mut elevated = String::from(
-        "$p = Start-Process -FilePath $env:PULSE_VIRTUAL_AUDIO_SETUP -WorkingDirectory $env:PULSE_VIRTUAL_AUDIO_DIRECTORY -Wait -PassThru; \
-         if ($p.ExitCode -ne 0) { exit $p.ExitCode }; ",
-    );
-    if rename_after {
-        elevated.push_str(&windows_rename_script("Pulse"));
+    let contents = fs::read_to_string(&result_path).map_err(|error| {
+        if status.success() {
+            format!("the Pulse driver installer did not return a result: {error}")
+        } else {
+            "Pulse driver installation was cancelled or could not be elevated".to_string()
+        }
+    })?;
+    let result: WindowsInstallerResult = serde_json::from_str(&contents)
+        .map_err(|error| format!("the Pulse driver installer returned invalid status: {error}"))?;
+    if !result.ok || !status.success() {
+        let details = if result.inf_name.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", result.inf_name)
+        };
+        return Err(format!(
+            "{} [Windows error {}]{}",
+            result.message, result.error_code, details
+        ));
     }
-    let encoded = encode_powershell(&elevated);
-    run_elevated_powershell(&encoded, Some(&setup))
+    Ok(result)
 }
 
 #[cfg(target_os = "windows")]
-fn rename_windows_capture_endpoint(name: &str) -> Result<(), String> {
-    let encoded = encode_powershell(&windows_rename_script(name));
-    run_elevated_powershell(&encoded, None)
+pub(crate) fn run_uninstall_maintenance_if_requested() -> Option<Result<(), String>> {
+    let requested = std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "--uninstall-pulse-driver");
+    if !requested {
+        return None;
+    }
+
+    Some((|| {
+        let app_data = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "APPDATA is unavailable; Pulse cannot inspect driver ownership".to_string()
+            })?;
+        let marker = app_data.join("app.pulse.desktop").join(OWNER_MARKER);
+        let owner = match fs::read_to_string(&marker) {
+            Ok(value) => parse_owned_provider(&value),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("could not read Pulse driver ownership: {error}")),
+        };
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("could not locate Pulse.exe: {error}"))?;
+        let package = executable
+            .parent()
+            .ok_or_else(|| "Pulse.exe has no installation directory".to_string())?
+            .join(WINDOWS_PACKAGE);
+        let operation = match owner {
+            OwnedProvider::PulseDriver => "remove",
+            OwnedProvider::LegacyVbCable => "remove-legacy",
+        };
+        run_windows_installer(&package, operation)?;
+        match fs::remove_file(&marker) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!(
+                "the driver was removed, but its ownership marker remains: {error}"
+            )),
+        }
+    })())
 }
 
 #[cfg(target_os = "windows")]
-fn windows_rename_script(name: &str) -> String {
-    format!(
-        r#"
+fn legacy_windows_provider_present() -> bool {
+    backing_provider_present()
+        || Command::new("sc.exe")
+            .args(["query", "VBAudioVACMME"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+}
+
+#[cfg(target_os = "windows")]
+fn legacy_capture_endpoint_renamed() -> Result<bool, String> {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+
+    const CAPTURE: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
+    const FRIENDLY_NAME: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},14";
+    let local_machine = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let capture = match local_machine.open_subkey(CAPTURE) {
+        Ok(key) => key,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "could not inspect Windows recording endpoints: {error}"
+            ))
+        }
+    };
+
+    for endpoint in capture.enum_keys().flatten() {
+        let Ok(properties) = capture.open_subkey(format!(r"{endpoint}\Properties")) else {
+            continue;
+        };
+        let Ok(name) = properties.get_value::<String, _>(FRIENDLY_NAME) else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("Pulse") {
+            continue;
+        }
+
+        let legacy_backing = properties.enum_values().flatten().any(|(_, value)| {
+            let ascii = String::from_utf8_lossy(&value.bytes).to_ascii_lowercase();
+            let utf16 = value
+                .bytes
+                .chunks_exact(2)
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                .collect::<Vec<_>>();
+            let utf16 = String::from_utf16_lossy(&utf16).to_ascii_lowercase();
+            ["vb-audio", "vbaudio", "cable output", "vbaudiovacwdm"]
+                .iter()
+                .any(|needle| ascii.contains(needle) || utf16.contains(needle))
+        });
+        if legacy_backing {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "windows")]
+fn restore_legacy_windows_capture_endpoint() -> Result<(), String> {
+    const RESTORE: &str = r#"
 $root = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture'
-$property = '{{a45c254e-df1c-4efd-8020-67d146a850e0}},14'
-if (Test-Path -LiteralPath $root) {{
-  Get-ChildItem -LiteralPath $root | ForEach-Object {{
+$friendlyName = '{a45c254e-df1c-4efd-8020-67d146a850e0},14'
+if (Test-Path -LiteralPath $root) {
+  Get-ChildItem -LiteralPath $root | ForEach-Object {
     $properties = Join-Path $_.PSPath 'Properties'
-    if (Test-Path -LiteralPath $properties) {{
-      $current = (Get-ItemProperty -LiteralPath $properties -Name $property -ErrorAction SilentlyContinue).$property
-      if ($current -eq 'Pulse' -or $current -like '*CABLE Output*') {{
-        Set-ItemProperty -LiteralPath $properties -Name $property -Value '{name}'
-      }}
-    }}
-  }}
-}}
-"#
-    )
+    if (Test-Path -LiteralPath $properties) {
+      $current = (Get-ItemProperty -LiteralPath $properties -Name $friendlyName -ErrorAction SilentlyContinue).$friendlyName
+      $backing = ((Get-ItemProperty -LiteralPath $properties -ErrorAction SilentlyContinue | Out-String) -match 'VB-Audio|VBAudio|CABLE Output|VBAudioVACWDM')
+      if ($current -eq 'Pulse' -and $backing) {
+        Set-ItemProperty -LiteralPath $properties -Name $friendlyName -Value 'CABLE Output'
+      }
+    }
+  }
+}
+"#;
+    let encoded = encode_powershell(RESTORE);
+    run_elevated_powershell(&encoded)
 }
 
 #[cfg(target_os = "windows")]
@@ -356,25 +525,19 @@ fn encode_powershell(script: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn run_elevated_powershell(encoded: &str, setup: Option<&Path>) -> Result<(), String> {
+fn run_elevated_powershell(encoded: &str) -> Result<(), String> {
     const LAUNCH: &str = "$p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$env:PULSE_ELEVATED_COMMAND) -Verb RunAs -Wait -PassThru; exit $p.ExitCode";
     let mut command = Command::new("powershell.exe");
     command
         .args(["-NoProfile", "-NonInteractive", "-Command", LAUNCH])
         .env("PULSE_ELEVATED_COMMAND", encoded);
-    if let Some(setup) = setup {
-        command.env("PULSE_VIRTUAL_AUDIO_SETUP", setup);
-        if let Some(directory) = setup.parent() {
-            command.env("PULSE_VIRTUAL_AUDIO_DIRECTORY", directory);
-        }
-    }
     let status = command
         .status()
         .map_err(|error| format!("could not start the Pulse audio installer: {error}"))?;
     status
         .success()
         .then_some(())
-        .ok_or_else(|| "Pulse audio installation or removal was cancelled".to_string())
+        .ok_or_else(|| "restoring the legacy VB-CABLE endpoint was cancelled".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -456,6 +619,39 @@ mod legacy_macos_aggregate {
 #[cfg(target_os = "macos")]
 fn destroy_legacy_pulse_aggregate() -> Result<(), String> {
     legacy_macos_aggregate::destroy()
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::{parse_owned_provider, OwnedProvider};
+
+    #[test]
+    fn ownership_marker_distinguishes_new_driver_from_legacy_vb_cable() {
+        assert!(matches!(
+            parse_owned_provider("PULSE_DRIVER\n"),
+            OwnedProvider::PulseDriver
+        ));
+        assert!(matches!(
+            parse_owned_provider("VB-CABLE\n"),
+            OwnedProvider::LegacyVbCable
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_inf_registers_one_capture_surface_and_no_render_surface() {
+        let inf = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("audio-driver/windows/driver/PulseVirtualMic.inf"),
+        )
+        .expect("Pulse Windows driver INF");
+
+        assert_eq!(inf.matches("AddInterface=%KSCATEGORY_CAPTURE%").count(), 1);
+        assert!(!inf.contains("KSCATEGORY_RENDER"));
+        assert!(inf.contains("%DeviceDescription%=PulseVirtualMic,ROOT\\PulseVirtualMic"));
+        assert!(inf.contains("EndpointName=\"Pulse\""));
+        assert!(inf.contains("PKEY_AudioEndpoint_FormFactor%"));
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

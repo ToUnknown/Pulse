@@ -21,7 +21,6 @@ NTSTATUS PulseAudioRing::AcquireWriter(PFILE_OBJECT FileObject)
     if (m_Writer == nullptr)
     {
         m_Writer = FileObject;
-        ResetLocked();
     }
     else if (m_Writer != FileObject)
     {
@@ -160,4 +159,3 @@ void PulseAudioRing::ResetLocked()
     ++m_ResetGeneration;
     RtlZeroMemory(m_Samples, sizeof(m_Samples));
 }
-

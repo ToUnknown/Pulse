@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -15,13 +21,32 @@ const artifactPrefix = tauriConfig.productName.replaceAll(" ", "_");
 const updaterOverride = JSON.stringify({
   bundle: { createUpdaterArtifacts: false },
 });
-const tauriCli = join(
+let tauriCli = join(
   repoRoot,
   "node_modules",
   "@tauri-apps",
   "cli",
   "tauri.js",
 );
+if (!existsSync(tauriCli)) {
+  const virtualStore = join(repoRoot, "node_modules", ".pnpm");
+  const cliPackage = existsSync(virtualStore)
+    ? readdirSync(virtualStore)
+        .filter((entry) => entry.startsWith("@tauri-apps+cli@"))
+        .sort()
+        .at(-1)
+    : null;
+  if (cliPackage) {
+    tauriCli = join(
+      virtualStore,
+      cliPackage,
+      "node_modules",
+      "@tauri-apps",
+      "cli",
+      "tauri.js",
+    );
+  }
+}
 const generatedSchema = join(
   repoRoot,
   "src-tauri",
@@ -143,6 +168,29 @@ if (requestedBuild === "macos") {
   );
 
   run("rustup", ["target", "add", target]);
+  const driverBuildArguments = [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    join(repoRoot, "scripts", "build-windows-driver.ps1"),
+    "-Configuration",
+    "Release",
+  ];
+  if (process.env.PULSE_SIGNED_DRIVER_PACKAGE) {
+    driverBuildArguments.push(
+      "-SignedPackagePath",
+      process.env.PULSE_SIGNED_DRIVER_PACKAGE,
+      "-RequireMicrosoftSignature",
+    );
+  } else if (process.env.PULSE_DRIVER_TEST_CERTIFICATE_THUMBPRINT) {
+    driverBuildArguments.push(
+      "-TestCertificateThumbprint",
+      process.env.PULSE_DRIVER_TEST_CERTIFICATE_THUMBPRINT,
+    );
+  }
+  run("powershell.exe", driverBuildArguments);
   run(process.execPath, [
     tauriCli,
     "build",

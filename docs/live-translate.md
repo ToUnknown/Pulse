@@ -56,7 +56,7 @@ event references.
 Pulse keeps the model's native translated audio instead of routing translated transcript text
 through a second speech model.
 
-## Why a virtual audio cable is required
+## Why a virtual audio driver is required
 
 A normal desktop application cannot replace the samples produced by an existing hardware
 microphone endpoint while preserving that endpoint's identity for every other application.
@@ -72,10 +72,12 @@ required because AudioServer plug-ins live in `/Library/Audio/Plug-Ins/HAL`.
 The macOS property and timing implementation is adapted from the MIT-licensed
 [Hush](https://github.com/timschmolka/hush) driver; attribution is bundled with the app.
 
-On Windows, Pulse bundles the original [VB-CABLE](https://vb-audio.com/Cable/) archive and
-changes the capture endpoint friendly name from `CABLE Output` to `Pulse` without modifying
-the signed driver package. The translated render side continues to use the vendor endpoint
-internally. There is no output selector or persisted output route in Settings.
+On Windows, Pulse uses its own minimal root-enumerated WDM/PortCls WaveRT driver. The driver
+publishes one 48 kHz mono PCM16 capture pin and one recording endpoint named `Pulse`. It has no
+render pin, playback endpoint, APO, monitoring path, or visible driver application. Pulse and
+its background router inject fixed 10 ms PCM16 packets through a private device interface. The
+driver reports whether any capture pin is running, so the router leaves the physical microphone
+closed when no application consumes `Pulse`.
 
 Pulse never changes the operating-system default microphone. The receiving application selects
 `Pulse` once; stopped translation carries the selected physical microphone, while active
@@ -86,9 +88,11 @@ Live Translate is disabled by default. Enabling it installs the platform compone
 Pulse's ownership in the app config directory. On macOS, enabling also migrates the earlier
 Pulse-managed VB-CABLE experiment by deleting its aggregate device, driver, and launch daemon
 before installing `Pulse.driver`. Disabling first waits for translation to stop, then removes
-`Pulse.driver`. On Windows, Pulse removes VB-CABLE only when Pulse installed it. A
-restart-required result is shown when the operating system still reports the endpoint after
-the lifecycle operation.
+`Pulse.driver`. On Windows, enabling installs and verifies `PulseVirtualMic`; disabling removes
+the background router, the Pulse devnode, and the Pulse-owned Driver Store package. Migration
+restores an unowned renamed VB-CABLE capture endpoint to `CABLE Output`, and removes the legacy
+package only when Pulse's existing ownership marker says Pulse installed it. A restart-required
+result is shown when Windows needs a reboot to finish the lifecycle operation.
 
 ## Credentials and local data
 
@@ -116,8 +120,7 @@ enabled state, selected language, and physical input-device name.
   selection.
 - Pulse rejects known virtual devices as its capture microphone to prevent translated audio
   from feeding back into the translation session.
-- macOS now has a Pulse-owned, capture-only driver, so it exposes one `Pulse` input and no
-  Pulse output. Windows still uses VB-CABLE, whose render endpoint remains visible because a
-  Windows capture-only Pulse driver is not part of this experiment.
+- Both macOS and Windows use Pulse-owned, capture-only drivers, so each platform exposes one
+  `Pulse` input and no Pulse playback endpoint.
 - The API is billed to the supplied OpenAI account. Current availability and pricing are
   documented on the [`gpt-realtime-translate` model page](https://developers.openai.com/api/docs/models/gpt-realtime-translate).

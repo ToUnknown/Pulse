@@ -175,7 +175,10 @@ std::wstring InfProvider(const std::filesystem::path& path)
     return read ? provider : L"";
 }
 
-std::wstring FindPulsePublishedInf()
+std::wstring FindPublishedInf(
+    const wchar_t* originalInfName,
+    const wchar_t* originalCatalogName,
+    const wchar_t* provider)
 {
     DWORD required = 0;
     SetupGetInfFileListW(nullptr, INF_STYLE_WIN4, nullptr, 0, &required);
@@ -221,15 +224,26 @@ std::wstring FindPulsePublishedInf()
                 0,
                 nullptr,
                 &original) &&
-            _wcsicmp(original.OriginalInfName, L"PulseVirtualMic.inf") == 0 &&
+            _wcsicmp(original.OriginalInfName, originalInfName) == 0 &&
             _wcsicmp(original.OriginalInfName, name) != 0 &&
-            _wcsicmp(original.OriginalCatalogName, L"PulseVirtualMic.cat") == 0 &&
-            _wcsicmp(InfProvider(path).c_str(), L"Pulse") == 0)
+            (originalCatalogName == nullptr ||
+             _wcsicmp(original.OriginalCatalogName, originalCatalogName) == 0) &&
+            _wcsicmp(InfProvider(path).c_str(), provider) == 0)
         {
             return name;
         }
     }
     return {};
+}
+
+std::wstring FindPulsePublishedInf()
+{
+    return FindPublishedInf(L"PulseVirtualMic.inf", L"PulseVirtualMic.cat", L"Pulse");
+}
+
+std::wstring FindLegacyPublishedInf()
+{
+    return FindPublishedInf(L"vbMmeCable64_win10.inf", nullptr, L"VB-Audio Software");
 }
 
 void CleanupFailedPulseInstall()
@@ -399,9 +413,11 @@ Result Remove(const wchar_t* hardwareId, const wchar_t* service, bool removeDriv
     if (!FindMatchingDevice(devices, hardwareId, service, &device))
     {
         SetupDiDestroyDeviceInfoList(devices);
-        if (removeDriverPackage && _wcsicmp(hardwareId, PulseHardwareId) == 0)
+        if (removeDriverPackage)
         {
-            result.InfName = FindPulsePublishedInf();
+            result.InfName = _wcsicmp(hardwareId, PulseHardwareId) == 0
+                ? FindPulsePublishedInf()
+                : FindLegacyPublishedInf();
             if (!result.InfName.empty() &&
                 !SetupUninstallOEMInfW(result.InfName.c_str(), 0, nullptr))
             {
@@ -443,9 +459,11 @@ Result Remove(const wchar_t* hardwareId, const wchar_t* service, bool removeDriv
     SetupDiDestroyDeviceInfoList(devices);
     result.DevicePresent = false;
 
-    if (removeDriverPackage && result.InfName.empty() && _wcsicmp(hardwareId, PulseHardwareId) == 0)
+    if (removeDriverPackage && result.InfName.empty())
     {
-        result.InfName = FindPulsePublishedInf();
+        result.InfName = _wcsicmp(hardwareId, PulseHardwareId) == 0
+            ? FindPulsePublishedInf()
+            : FindLegacyPublishedInf();
     }
     if (removeDriverPackage && !result.InfName.empty())
     {

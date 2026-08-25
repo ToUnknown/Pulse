@@ -2,7 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "resources": [
-      "resources/virtual-audio/NOTICE.txt",
       "audio-driver/macos/LICENSE-Hush.txt",
       "target/pulse-audio-driver/Pulse.driver"
     ]

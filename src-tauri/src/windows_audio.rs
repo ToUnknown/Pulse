@@ -345,4 +345,17 @@ mod tests {
         bytes[0..4].copy_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
         assert!(parse_consumer_state(&bytes).is_err());
     }
+
+    #[test]
+    #[ignore = "requires an installed test-signed PulseVirtualMic driver"]
+    fn driver_writer_ownership_hands_off_after_handle_close() {
+        let first = PulseDriver::open_writer().expect("first writer");
+        assert!(
+            PulseDriver::open_writer().is_err(),
+            "the driver must reject a second producer"
+        );
+        drop(first);
+        let recovered = PulseDriver::open_writer().expect("writer after owner close");
+        recovered.reset().expect("reset after writer handoff");
+    }
 }

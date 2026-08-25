@@ -33,9 +33,10 @@ outputs only translated speech. It never plays translated speech through the use
 
 Live Translate is off by default. On macOS, turning it on installs Pulse's bundled,
 input-only Core Audio driver after administrator approval. It publishes exactly one system
-audio endpoint named `Pulse`, with no public render side. On Windows, Pulse installs bundled
-[VB-CABLE](https://vb-audio.com/Cable/) and assigns `Pulse` as the virtual recording
-endpoint's friendly name. Select `Pulse` as the microphone in the call app.
+audio endpoint named `Pulse`, with no public render side. On Windows, Pulse installs its own
+root-enumerated, capture-only WaveRT driver. It also publishes exactly one recording endpoint
+named `Pulse`, with no playback endpoint or separate driver application. Select `Pulse` as the
+microphone in the call app.
 
 In Pulse Settings, save an OpenAI API key and choose the physical microphone. Output routing
 is fixed internally to the Pulse virtual microphone and has no user-selectable destination.
@@ -51,9 +52,10 @@ adding a second text-to-speech pass that would increase latency and change the a
 The General `Live Translate` switch controls the feature globally. Turning it off stops
 translation, removes its controls from the menu-bar or tray menu, and removes the `Pulse`
 input. On macOS, it removes the Pulse driver; upgrading from the earlier experiment also
-removes the Pulse-owned VB-CABLE driver and aggregate device. On Windows, Pulse launches
-VB-CABLE removal only when Pulse installed it. Windows may require a restart to finish
-adding or removing the endpoint.
+removes the Pulse-owned VB-CABLE driver and aggregate device. On Windows, it stops the
+background microphone router and removes the Pulse-owned devnode and Driver Store package.
+Migration removes legacy VB-CABLE only when Pulse's ownership marker says Pulse installed it.
+Windows may require a restart to finish adding or removing the endpoint.
 
 Pulse cannot make translated audio appear under the original hardware microphone's name.
 Desktop applications bind to operating-system audio endpoints, so the call app must use

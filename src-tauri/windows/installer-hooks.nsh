@@ -4,5 +4,6 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   nsExec::ExecToLog '"$INSTDIR\Pulse.exe" --stop-audio-router'
+  nsExec::ExecToLog '"$INSTDIR\Pulse.exe" --uninstall-pulse-driver'
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Pulse Audio Router"
 !macroend

@@ -2138,6 +2138,158 @@ fn fill_output_f32(data: &mut [f32], channels: usize, queue: &Arc<Mutex<OutputBu
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    fn probe_metrics(samples: &[f32], sample_rate: u32) -> (f64, f64, usize) {
+        let start = (sample_rate as usize / 2).min(samples.len());
+        let samples = &samples[start..];
+        let rms = (samples
+            .iter()
+            .map(|sample| (*sample as f64) * (*sample as f64))
+            .sum::<f64>()
+            / samples.len().max(1) as f64)
+            .sqrt();
+        let positive_crossings = samples
+            .windows(2)
+            .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+            .count();
+        let duration = samples.len() as f64 / sample_rate as f64;
+        let frequency = positive_crossings as f64 / duration.max(f64::EPSILON);
+        let clipped = samples.iter().filter(|sample| sample.abs() >= 0.99).count();
+        (rms, frequency, clipped)
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires an installed test-signed PulseVirtualMic driver"]
+    fn driver_tone_probe_records_tone_then_silence_and_recovers() {
+        use cpal::{SampleFormat, StreamConfig};
+
+        let host = cpal::default_host();
+        let device = host
+            .input_devices()
+            .expect("enumerate recording devices")
+            .find(|device| {
+                device
+                    .description()
+                    .is_ok_and(|description| description.name().eq_ignore_ascii_case("Pulse"))
+            })
+            .expect("Pulse recording endpoint");
+        let supported = device.default_input_config().expect("Pulse default format");
+        let sample_format = supported.sample_format();
+        let config: StreamConfig = supported.into();
+        assert_eq!(config.sample_rate, 48_000);
+        assert_eq!(config.channels, 1);
+
+        let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let error = |error| panic!("Pulse capture failed: {error}");
+        let stream = match sample_format {
+            SampleFormat::F32 => {
+                let recorded = recorded.clone();
+                device.build_input_stream(
+                    config,
+                    move |data: &[f32], _| recorded.lock().expect("capture lock").extend(data),
+                    error,
+                    None,
+                )
+            }
+            SampleFormat::I16 => {
+                let recorded = recorded.clone();
+                device.build_input_stream(
+                    config,
+                    move |data: &[i16], _| {
+                        recorded
+                            .lock()
+                            .expect("capture lock")
+                            .extend(data.iter().map(|sample| *sample as f32 / i16::MAX as f32))
+                    },
+                    error,
+                    None,
+                )
+            }
+            SampleFormat::U16 => {
+                let recorded = recorded.clone();
+                device.build_input_stream(
+                    config,
+                    move |data: &[u16], _| {
+                        recorded.lock().expect("capture lock").extend(
+                            data.iter()
+                                .map(|sample| (*sample as f32 - 32_768.0) / 32_768.0),
+                        )
+                    },
+                    error,
+                    None,
+                )
+            }
+            format => panic!("unexpected Pulse shared-mode sample format: {format:?}"),
+        }
+        .expect("build Pulse capture stream");
+
+        let tone = (0..48_000 * 7)
+            .map(|index| (std::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin() * 0.5)
+            .collect::<Vec<_>>();
+        let queue = Arc::new(Mutex::new(OutputBuffer::with_prebuffer(
+            48_000,
+            tone.len(),
+            0,
+        )));
+        queue.lock().expect("output lock").push(tone.clone());
+        let transport_error = Arc::new(Mutex::new(None));
+        let output =
+            WindowsPulseOutput::new(queue, transport_error.clone()).expect("open Pulse writer");
+        output.play().expect("start Pulse writer");
+        stream.play().expect("start Pulse capture");
+        thread::sleep(Duration::from_millis(5_500));
+
+        let captured_tone = std::mem::take(&mut *recorded.lock().expect("capture lock"));
+        let (rms, frequency, clipped) = probe_metrics(&captured_tone, 48_000);
+        println!(
+            "tone: samples={} rms={rms:.4} frequency={frequency:.1}Hz clipped={clipped}",
+            captured_tone.len()
+        );
+        assert!(rms > 0.2 && rms < 0.5, "unexpected tone RMS {rms}");
+        assert!(
+            (frequency - 1_000.0).abs() < 20.0,
+            "unexpected frequency {frequency}"
+        );
+        assert_eq!(clipped, 0, "tone must not clip");
+        assert!(transport_error.lock().expect("transport lock").is_none());
+
+        drop(output);
+        recorded.lock().expect("capture lock").clear();
+        thread::sleep(Duration::from_millis(600));
+        let silence = std::mem::take(&mut *recorded.lock().expect("capture lock"));
+        let (silence_rms, _, _) = probe_metrics(&silence, 48_000);
+        println!("underflow: samples={} rms={silence_rms:.6}", silence.len());
+        assert!(
+            silence_rms < 0.001,
+            "stale audio remained after writer close"
+        );
+
+        let queue = Arc::new(Mutex::new(OutputBuffer::with_prebuffer(
+            48_000,
+            tone.len(),
+            0,
+        )));
+        queue.lock().expect("output lock").push(tone);
+        let recovery_error = Arc::new(Mutex::new(None));
+        let recovery =
+            WindowsPulseOutput::new(queue, recovery_error.clone()).expect("reopen Pulse writer");
+        recovery.play().expect("restart Pulse writer");
+        recorded.lock().expect("capture lock").clear();
+        thread::sleep(Duration::from_millis(1_200));
+        let recovered = std::mem::take(&mut *recorded.lock().expect("capture lock"));
+        let (recovered_rms, recovered_frequency, recovered_clipped) =
+            probe_metrics(&recovered, 48_000);
+        println!(
+            "recovery: samples={} rms={recovered_rms:.4} frequency={recovered_frequency:.1}Hz clipped={recovered_clipped}",
+            recovered.len()
+        );
+        assert!(recovered_rms > 0.2);
+        assert!((recovered_frequency - 1_000.0).abs() < 20.0);
+        assert_eq!(recovered_clipped, 0);
+        assert!(recovery_error.lock().expect("transport lock").is_none());
+    }
+
     fn received_rms(receiver: &mut tokio::sync::mpsc::Receiver<Vec<u8>>) -> f64 {
         let mut sum_squares = 0.0_f64;
         let mut sample_count = 0_usize;
