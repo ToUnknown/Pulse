@@ -58,6 +58,7 @@ const TRANSLATION_URL: &str =
 const REALTIME_SAMPLE_RATE: u32 = 24_000;
 const INPUT_BLOCK_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 200 / 1_000;
 const INPUT_QUEUE_BLOCKS: usize = 10;
+const INPUT_STARTUP_WARMUP_SAMPLES: usize = INPUT_BLOCK_SAMPLES;
 const OUTPUT_PREBUFFER_MS: usize = 200;
 const PASSTHROUGH_PREBUFFER_MS: usize = 20;
 const MAX_OUTPUT_BUFFER_SECONDS: usize = 10;
@@ -358,7 +359,7 @@ impl SessionInputRecording {
         if self.failed || pcm16.is_empty() {
             return;
         }
-        if pcm16.len() % 2 != 0 {
+        if !pcm16.len().is_multiple_of(2) {
             self.fail("received an incomplete PCM16 sample");
             return;
         }
@@ -1347,12 +1348,14 @@ async fn run_translation_session(
     )?;
 
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel(INPUT_QUEUE_BLOCKS);
+    let (warmup_tx, mut warmup_rx) = tokio::sync::oneshot::channel();
     let input_processor = InputChunker::new(
         input_config.sample_rate(),
         input_config.channels() as usize,
         input_tx,
         audio_error.clone(),
         dropped_input_frames,
+        Some(warmup_tx),
     );
     let input_stream = build_input_stream(
         &input_device,
@@ -1412,6 +1415,15 @@ async fn run_translation_session(
                                     input_stream.play().map_err(|error| {
                                         format!("could not start microphone capture: {error}")
                                     })?;
+                                    tokio::select! {
+                                        result = &mut warmup_rx => result.map_err(|_| {
+                                            "microphone capture stopped during startup warmup".to_string()
+                                        })?,
+                                        _ = wait_for_stop(stop_signal.clone()) => return Ok(false),
+                                        _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                                            return Err("microphone capture startup warmup timed out".to_string());
+                                        }
+                                    }
                                     return Ok(true);
                                 }
                                 Some("error") => return Err(translation_error_message(&event)),
@@ -1873,6 +1885,8 @@ struct InputChunker {
     sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     audio_error: Arc<Mutex<Option<String>>>,
     dropped_frames: Arc<AtomicUsize>,
+    warmup_samples_remaining: usize,
+    warmup_complete: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl InputChunker {
@@ -1882,7 +1896,13 @@ impl InputChunker {
         sender: tokio::sync::mpsc::Sender<Vec<u8>>,
         audio_error: Arc<Mutex<Option<String>>>,
         dropped_frames: Arc<AtomicUsize>,
+        warmup_complete: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Self {
+        let warmup_samples_remaining = if warmup_complete.is_some() {
+            INPUT_STARTUP_WARMUP_SAMPLES
+        } else {
+            0
+        };
         Self {
             channels,
             resampler: WindowedSincResampler::new(sample_rate, REALTIME_SAMPLE_RATE),
@@ -1890,6 +1910,8 @@ impl InputChunker {
             sender,
             audio_error,
             dropped_frames,
+            warmup_samples_remaining,
+            warmup_complete,
         }
     }
 
@@ -1914,7 +1936,15 @@ impl InputChunker {
     }
 
     fn push_mono(&mut self, mono: Vec<f32>) {
-        self.pending.extend(self.resampler.process(&mono));
+        let samples = self.resampler.process(&mono);
+        let discarded = self.warmup_samples_remaining.min(samples.len());
+        self.warmup_samples_remaining -= discarded;
+        if self.warmup_samples_remaining == 0 {
+            if let Some(sender) = self.warmup_complete.take() {
+                let _ = sender.send(());
+            }
+        }
+        self.pending.extend_from_slice(&samples[discarded..]);
 
         while self.pending.len() >= INPUT_BLOCK_SAMPLES {
             let remaining = self.pending.split_off(INPUT_BLOCK_SAMPLES);
@@ -2280,6 +2310,7 @@ mod tests {
             sender,
             audio_error.clone(),
             dropped_frames.clone(),
+            None,
         );
 
         chunker.push_f32(&vec![0.25; INPUT_BLOCK_SAMPLES * 2]);
@@ -2293,6 +2324,41 @@ mod tests {
     }
 
     #[test]
+    fn startup_warmup_discards_unstable_audio_before_model_input() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        let (warmup_sender, mut warmup_receiver) = tokio::sync::oneshot::channel();
+        let mut chunker = InputChunker::new(
+            REALTIME_SAMPLE_RATE,
+            1,
+            sender,
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicUsize::new(0)),
+            Some(warmup_sender),
+        );
+
+        chunker.push_f32(&vec![0.9; INPUT_BLOCK_SAMPLES]);
+
+        assert!(
+            receiver.try_recv().is_err(),
+            "the first 200 ms of unstable capture must not reach the model"
+        );
+        assert!(
+            warmup_receiver.try_recv().is_ok(),
+            "capture should become ready after the startup warmup"
+        );
+
+        chunker.push_f32(&vec![0.25; INPUT_BLOCK_SAMPLES]);
+        let frame = receiver
+            .try_recv()
+            .expect("post-warmup microphone audio should reach the model");
+        let first_sample = i16::from_le_bytes([frame[0], frame[1]]) as f32 / i16::MAX as f32;
+        assert!(
+            (first_sample - 0.25).abs() < 0.01,
+            "post-warmup audio must retain its original timing and level"
+        );
+    }
+
+    #[test]
     fn microphone_capture_preserves_the_first_speech_sample() {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let mut chunker = InputChunker::new(
@@ -2301,6 +2367,7 @@ mod tests {
             sender,
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicUsize::new(0)),
+            None,
         );
         let mut input = vec![0.0; INPUT_BLOCK_SAMPLES];
         input[0] = 0.8;
@@ -2330,6 +2397,7 @@ mod tests {
             sender,
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicUsize::new(0)),
+            None,
         );
         let block_samples = INPUT_BLOCK_SAMPLES;
         let input_samples = block_samples * 2;
@@ -2465,6 +2533,7 @@ mod tests {
             sender,
             audio_error,
             Arc::new(AtomicUsize::new(0)),
+            None,
         );
         let frames = 48_000;
         let mut input = Vec::with_capacity(frames * 2);
@@ -2505,6 +2574,7 @@ mod tests {
             i16_sender,
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicUsize::new(0)),
+            None,
         );
         let i16_input = source
             .iter()
@@ -2524,6 +2594,7 @@ mod tests {
             u16_sender,
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicUsize::new(0)),
+            None,
         );
         let u16_input = source
             .iter()
