@@ -675,43 +675,36 @@ impl TranslationManager {
                     *current_signal = None;
                 }
             }
-            for (_, item) in &language_items {
-                let _ = item.set_enabled(true);
-            }
-
-            match (result, passthrough_result) {
+            let menu_text = match (result, passthrough_result) {
                 (Ok(()), Ok(())) => {
                     if let Ok(mut error) = last_error.lock() {
                         *error = None;
                     }
-                    set_translation_menu_state(
-                        &start_item,
-                        "Start Translation",
-                        TranslationMenuState::Off,
-                    );
+                    "Start Translation"
                 }
                 (Ok(()), Err(error)) => {
                     eprintln!("Pulse microphone passthrough stopped: {error}");
                     if let Ok(mut last_error) = last_error.lock() {
                         *last_error = Some(error);
                     }
-                    set_translation_menu_state(
-                        &start_item,
-                        "Start Translation",
-                        TranslationMenuState::Off,
-                    );
+                    "Start Translation"
                 }
                 (Err(error), _) => {
                     eprintln!("live translation stopped: {error}");
                     if let Ok(mut last_error) = last_error.lock() {
                         *last_error = Some(error);
                     }
-                    set_translation_menu_state(
-                        &start_item,
-                        "Translation Failed — Retry",
-                        TranslationMenuState::Off,
-                    );
+                    "Translation Failed — Retry"
                 }
+            };
+            // Update the visible row first. On macOS, native menu tracking can
+            // pause Tauri's regular main-thread dispatcher, which is used by
+            // CheckMenuItem::set_enabled. Re-enabling the language choices
+            // before this update would keep the row stuck on "Stopping" until
+            // the menu closed.
+            set_translation_menu_state(&start_item, menu_text, TranslationMenuState::Off);
+            for (_, item) in &language_items {
+                let _ = item.set_enabled(true);
             }
         });
 
