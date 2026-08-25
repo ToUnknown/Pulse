@@ -4,6 +4,8 @@ use tauri::{
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+mod audio_router;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod translation;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod virtual_audio;
@@ -113,6 +115,11 @@ const SETTINGS_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/settings.p
 const QUIT_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/quit.png");
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const TRANSLATION_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/translation.png");
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn run_audio_router_if_requested() -> bool {
+    audio_router::run_if_requested()
+}
 
 #[cfg(target_os = "windows")]
 const APPEARANCE_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/appearance.png");
@@ -359,8 +366,27 @@ fn handle_update_menu(
     if let Some(downloaded) = ready_update {
         set_update_menu(&update_item, true, false);
         tauri::async_runtime::spawn_blocking(move || {
+            if let Some(manager) = app.try_state::<translation::TranslationManager>() {
+                let router_result = manager
+                    .stop_and_wait()
+                    .and_then(|()| manager.stop_audio_router_for_update(&app));
+                if let Err(error) = router_result {
+                    eprintln!("audio router update preparation failed: {error}");
+                    reset_update_status(&status);
+                    set_update_result(
+                        &app,
+                        &update_item,
+                        UpdateResult::Failed("Pulse couldn't prepare the update. Try again."),
+                        true,
+                    );
+                    return;
+                }
+            }
             if let Err(error) = downloaded.update.install(&downloaded.bytes) {
                 eprintln!("update install failed: {error}");
+                if let Some(manager) = app.try_state::<translation::TranslationManager>() {
+                    manager.initialize_audio_router(&app);
+                }
                 reset_update_status(&status);
                 if let Err(error) = refresh_tray_icon(&app, &tray_icon_mode, &status) {
                     eprintln!("default tray icon restore failed: {error}");
@@ -793,17 +819,21 @@ async fn set_translation_enabled(
         if enabled {
             let result = virtual_audio::enable(&app)?;
             manager.set_enabled(true)?;
-            if !result.restart_required {
-                if let Err(error) = manager.start_passthrough() {
-                    eprintln!("Pulse microphone passthrough could not start: {error}");
-                }
-            }
+            manager.enable_audio_router(&app)?;
             Ok(result)
         } else {
             manager.set_enabled(false)?;
             manager.stop_and_wait()?;
-            let result = virtual_audio::disable(&app)?;
-            Ok(result)
+            let router_result = manager.disable_audio_router(&app);
+            let audio_result = virtual_audio::disable(&app);
+            match (router_result, audio_result) {
+                (Ok(()), Ok(result)) => Ok(result),
+                (Err(router_error), Ok(_)) => Err(router_error),
+                (Ok(()), Err(audio_error)) => Err(audio_error),
+                (Err(router_error), Err(audio_error)) => {
+                    Err(format!("{router_error}; {audio_error}"))
+                }
+            }
         }
     })
     .await
@@ -1957,14 +1987,18 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             app.manage(SettingsAttention::default());
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            app.manage(translation::TranslationManager::new(
+            let translation_manager = translation::TranslationManager::new(
                 translation_config_path,
                 menu.clone(),
                 translation_menu.clone(),
                 translation_start.clone(),
                 translation_separator.clone(),
                 translation_language_items,
-            )?);
+            )?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            translation_manager.initialize_audio_router(app.handle());
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            app.manage(translation_manager);
             #[cfg(target_os = "windows")]
             let appearance_controller = WindowsAppearanceController {
                 app: app.handle().clone(),

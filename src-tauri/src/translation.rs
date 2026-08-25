@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use crate::audio_router::{AudioRouterController, AudioRouterLease};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 #[cfg(target_os = "windows")]
 use cpal::SupportedStreamConfig;
@@ -296,11 +297,11 @@ pub(crate) const LANGUAGES: [(&str, &str); 13] = [
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TranslationConfig {
+pub(crate) struct TranslationConfig {
     #[serde(default)]
-    enabled: bool,
+    pub(crate) enabled: bool,
     target_language: String,
-    input_device: Option<String>,
+    pub(crate) input_device: Option<String>,
 }
 
 impl Default for TranslationConfig {
@@ -314,7 +315,7 @@ impl Default for TranslationConfig {
 }
 
 impl TranslationConfig {
-    fn load(path: &Path) -> Self {
+    pub(crate) fn load(path: &Path) -> Self {
         let mut config: Self = fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -364,7 +365,7 @@ pub(crate) struct TranslationManager {
     config: Arc<Mutex<TranslationConfig>>,
     status: Arc<Mutex<TranslationStatus>>,
     stop_signal: Arc<Mutex<Option<Arc<AtomicBool>>>>,
-    passthrough: Arc<Mutex<Option<PassthroughTask>>>,
+    audio_router: AudioRouterController,
     last_error: Arc<Mutex<Option<String>>>,
     session_id: Arc<Mutex<Option<String>>>,
     session_number: Arc<AtomicUsize>,
@@ -387,12 +388,13 @@ impl TranslationManager {
         language_items: Vec<(String, CheckMenuItem<tauri::Wry>)>,
     ) -> tauri::Result<Self> {
         let config = TranslationConfig::load(&config_path);
+        let audio_router = AudioRouterController::new(config_path.clone());
         let manager = Self {
             config_path,
             config: Arc::new(Mutex::new(config)),
             status: Arc::new(Mutex::new(TranslationStatus::Idle)),
             stop_signal: Arc::new(Mutex::new(None)),
-            passthrough: Arc::new(Mutex::new(None)),
+            audio_router,
             last_error: Arc::new(Mutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
             session_number: Arc::new(AtomicUsize::new(0)),
@@ -406,11 +408,6 @@ impl TranslationManager {
         };
         manager.sync_language_menu();
         manager.set_menu_items_visible(manager.is_enabled())?;
-        if manager.is_enabled() {
-            if let Err(error) = manager.start_passthrough() {
-                manager.set_last_error(error);
-            }
-        }
         Ok(manager)
     }
 
@@ -437,8 +434,8 @@ impl TranslationManager {
             Ok(input) => (input, None),
             Err(error) => (Vec::new(), Some(error)),
         };
-        if audio_device_error.is_none() {
-            audio_device_error = self.passthrough_error();
+        if audio_device_error.is_none() && config.enabled {
+            audio_device_error = self.audio_router.error();
         }
         let virtual_output_available = match virtual_microphone_available() {
             Ok(available) => available,
@@ -490,7 +487,6 @@ impl TranslationManager {
         *self.config.lock().map_err(|error| error.to_string())? = next;
         if !enabled {
             self.stop()?;
-            self.stop_passthrough()?;
             if let Ok(mut session_id) = self.session_id.lock() {
                 *session_id = None;
             }
@@ -508,14 +504,8 @@ impl TranslationManager {
         if let Some(name) = name.as_deref() {
             resolve_input_device(Some(name))?;
         }
-        self.stop_passthrough()?;
-        if let Err(error) = self.update_config(|config| config.input_device = name) {
-            if !self.current_status()?.is_active() && self.is_enabled() {
-                let _ = self.start_passthrough();
-            }
-            return Err(error);
-        }
-        self.start_passthrough()
+        self.update_config(|config| config.input_device = name)?;
+        self.audio_router.reload()
     }
 
     pub(crate) fn toggle(&self) -> Result<(), String> {
@@ -577,7 +567,7 @@ impl TranslationManager {
         self.stop()?;
         for _ in 0..100 {
             if !self.current_status()?.is_active() {
-                return self.stop_passthrough();
+                return Ok(());
             }
             thread::sleep(Duration::from_millis(50));
         }
@@ -611,7 +601,7 @@ impl TranslationManager {
         // remain a synchronous, actionable error.
         resolve_input_device(config.input_device.as_deref())?;
         ensure_virtual_microphone_available()?;
-        self.stop_passthrough()?;
+        let audio_router_lease = self.audio_router.pause()?;
 
         let stop_signal = Arc::new(AtomicBool::new(false));
         *self.status.lock().map_err(|error| error.to_string())? = TranslationStatus::Starting;
@@ -631,8 +621,6 @@ impl TranslationManager {
 
         let status = self.status.clone();
         let active_stop_signal = self.stop_signal.clone();
-        let shared_config = self.config.clone();
-        let passthrough = self.passthrough.clone();
         let last_error = self.last_error.clone();
         let session_id = self.session_id.clone();
         let session_number = self.session_number.clone();
@@ -641,6 +629,7 @@ impl TranslationManager {
         let language_items = self.language_items.clone();
 
         thread::spawn(move || {
+            let _audio_router_lease: AudioRouterLease = audio_router_lease;
             let session_context = TranslationSessionContext {
                 stop_signal: stop_signal.clone(),
                 status: status.clone(),
@@ -661,17 +650,6 @@ impl TranslationManager {
                 Err(error) => Err(format!("translation runtime setup failed: {error}")),
             };
 
-            let passthrough_result = shared_config
-                .lock()
-                .map_err(|error| error.to_string())
-                .and_then(|config| {
-                    if config.enabled {
-                        start_passthrough_task(&config, &passthrough)
-                    } else {
-                        Ok(())
-                    }
-                });
-
             if let Ok(mut current_status) = status.lock() {
                 *current_status = TranslationStatus::Idle;
             }
@@ -683,21 +661,14 @@ impl TranslationManager {
                     *current_signal = None;
                 }
             }
-            let menu_text = match (result, passthrough_result) {
-                (Ok(()), Ok(())) => {
+            let menu_text = match result {
+                Ok(()) => {
                     if let Ok(mut error) = last_error.lock() {
                         *error = None;
                     }
                     "Start Translation"
                 }
-                (Ok(()), Err(error)) => {
-                    eprintln!("Pulse microphone passthrough stopped: {error}");
-                    if let Ok(mut last_error) = last_error.lock() {
-                        *last_error = Some(error);
-                    }
-                    "Start Translation"
-                }
-                (Err(error), _) => {
+                Err(error) => {
                     eprintln!("live translation stopped: {error}");
                     if let Ok(mut last_error) = last_error.lock() {
                         *last_error = Some(error);
@@ -719,43 +690,35 @@ impl TranslationManager {
         Ok(())
     }
 
-    pub(crate) fn start_passthrough(&self) -> Result<(), String> {
-        if self.current_status()?.is_active() || !self.is_enabled() {
-            return Ok(());
-        }
-        let config = self
-            .config
-            .lock()
-            .map_err(|error| error.to_string())?
-            .clone();
-        match start_passthrough_task(&config, &self.passthrough) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                self.set_last_error(error.clone());
-                Err(error)
-            }
-        }
-    }
-
-    fn stop_passthrough(&self) -> Result<(), String> {
-        self.passthrough
-            .lock()
-            .map_err(|error| error.to_string())?
-            .take();
-        Ok(())
-    }
-
-    fn passthrough_error(&self) -> Option<String> {
-        self.passthrough
-            .lock()
-            .ok()
-            .and_then(|task| task.as_ref().and_then(PassthroughTask::error))
-    }
-
     fn set_last_error(&self, error: String) {
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = Some(error);
         }
+    }
+
+    pub(crate) fn initialize_audio_router(&self, app: &tauri::AppHandle) {
+        if self.is_enabled() {
+            if let Err(error) = self.audio_router.enable(app) {
+                self.set_last_error(error);
+            }
+        } else if let Err(error) = self.audio_router.disable(app) {
+            eprintln!("stale Pulse audio router cleanup failed: {error}");
+        }
+    }
+
+    pub(crate) fn enable_audio_router(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        self.audio_router.enable(app)
+    }
+
+    pub(crate) fn disable_audio_router(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        self.audio_router.disable(app)
+    }
+
+    pub(crate) fn stop_audio_router_for_update(
+        &self,
+        app: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        self.audio_router.stop_for_update(app)
     }
 
     fn update_config(&self, update: impl FnOnce(&mut TranslationConfig)) -> Result<(), String> {
@@ -918,6 +881,44 @@ fn resolve_input_device(name: Option<&str>) -> Result<Device, String> {
     Ok(device)
 }
 
+fn resolve_router_input_device(name: Option<&str>) -> Result<(Device, String), String> {
+    if let Some(name) = name {
+        if let Ok(device) = find_named_input_device(name) {
+            let resolved_name = device_name(&device)?;
+            if !is_virtual_audio_name(&resolved_name) {
+                return Ok((device, resolved_name));
+            }
+        }
+    }
+
+    let host = cpal::default_host();
+    if let Some(device) = host.default_input_device() {
+        let resolved_name = device_name(&device)?;
+        if !is_virtual_audio_name(&resolved_name) {
+            return Ok((device, resolved_name));
+        }
+    }
+
+    let mut physical_devices = host
+        .input_devices()
+        .map_err(|error| format!("could not list microphones: {error}"))?
+        .filter_map(|device| {
+            let name = device_name(&device).ok()?;
+            (!is_virtual_audio_name(&name)).then_some((name, device))
+        })
+        .collect::<Vec<_>>();
+    physical_devices.sort_by(|left, right| left.0.cmp(&right.0));
+    physical_devices
+        .into_iter()
+        .next()
+        .map(|(name, device)| (device, name))
+        .ok_or_else(|| "no physical microphone is available".to_string())
+}
+
+pub(crate) fn router_input_device_name(config: &TranslationConfig) -> Result<String, String> {
+    resolve_router_input_device(config.input_device.as_deref()).map(|(_, name)| name)
+}
+
 fn find_named_input_device(name: &str) -> Result<Device, String> {
     let device = cpal::default_host()
         .input_devices()
@@ -1024,7 +1025,7 @@ fn is_virtual_audio_name(name: &str) -> bool {
     .any(|candidate| name.contains(candidate))
 }
 
-struct PassthroughTask {
+pub(crate) struct PassthroughTask {
     _input_stream: Stream,
     #[cfg(target_os = "macos")]
     _output_stream: MacosPulseOutput,
@@ -1034,22 +1035,16 @@ struct PassthroughTask {
 }
 
 impl PassthroughTask {
-    fn error(&self) -> Option<String> {
+    pub(crate) fn error(&self) -> Option<String> {
         self.audio_error.lock().ok().and_then(|error| error.clone())
     }
 }
 
-fn start_passthrough_task(
+pub(crate) fn build_passthrough_task(
     config: &TranslationConfig,
-    task: &Arc<Mutex<Option<PassthroughTask>>>,
-) -> Result<(), String> {
-    let mut task = task.lock().map_err(|error| error.to_string())?;
-    if task.as_ref().is_some_and(|task| task.error().is_none()) {
-        return Ok(());
-    }
-    task.take();
-
-    let input_device = resolve_input_device(config.input_device.as_deref())?;
+) -> Result<(PassthroughTask, String), String> {
+    let (input_device, input_device_name) =
+        resolve_router_input_device(config.input_device.as_deref())?;
     ensure_virtual_microphone_available()?;
     let input_config = input_device
         .default_input_config()
@@ -1109,12 +1104,14 @@ fn start_passthrough_task(
         .play()
         .map_err(|error| format!("could not start microphone passthrough: {error}"))?;
 
-    *task = Some(PassthroughTask {
-        _input_stream: input_stream,
-        _output_stream: output_stream,
-        audio_error,
-    });
-    Ok(())
+    Ok((
+        PassthroughTask {
+            _input_stream: input_stream,
+            _output_stream: output_stream,
+            audio_error,
+        },
+        input_device_name,
+    ))
 }
 
 #[derive(Clone)]

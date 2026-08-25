@@ -3,6 +3,6 @@
 <plist version="1.0">
   <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Pulse uses your microphone to translate your speech into the language you select.</string>
+    <string>Pulse uses your microphone to route or translate your speech through the Pulse virtual microphone.</string>
   </dict>
 </plist>
