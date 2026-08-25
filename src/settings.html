@@ -66,14 +66,17 @@
               </span>
             </div>
             <div class="translation-row-controls key-controls">
-              <input
-                id="openai-api-key"
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
-                aria-label="OpenAI API key"
-                placeholder="sk-…"
-              />
+              <div class="api-key-field">
+                <input
+                  id="openai-api-key"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="OpenAI API key"
+                  placeholder="sk-…"
+                />
+                <span id="api-key-mask" class="api-key-mask" aria-hidden="true" hidden>************</span>
+              </div>
               <div class="button-row">
                 <button id="save-api-key" type="button">Save</button>
                 <button id="remove-api-key" class="secondary-button" type="button" hidden>

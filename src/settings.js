@@ -11,6 +11,7 @@ const appearanceSection = document.querySelector("#appearance-section");
 const autoLightStart = document.querySelector("#auto-light-start");
 const autoDarkStart = document.querySelector("#auto-dark-start");
 const apiKeyInput = document.querySelector("#openai-api-key");
+const apiKeyMask = document.querySelector("#api-key-mask");
 const apiKeyStatus = document.querySelector("#api-key-status");
 const saveApiKey = document.querySelector("#save-api-key");
 const removeApiKey = document.querySelector("#remove-api-key");
@@ -307,7 +308,9 @@ async function loadSettings() {
         ? "Stored in macOS Keychain. Enter a new key to replace it."
         : "Stored in Windows Credential Manager. Enter a new key to replace it."
       : "Required for the OpenAI Realtime Translation API.";
-    apiKeyInput.placeholder = translation.apiKeyConfigured ? "************" : "sk-…";
+    apiKeyInput.dataset.configured = String(translation.apiKeyConfigured);
+    apiKeyInput.placeholder = translation.apiKeyConfigured ? "" : "sk-…";
+    apiKeyMask.hidden = !translation.apiKeyConfigured || apiKeyInput.value.trim() !== "";
     saveApiKey.disabled = translationActive || apiKeyInput.value.trim() === "";
   } catch (error) {
     showError(error);
@@ -380,6 +383,8 @@ autoLightStart.addEventListener("change", saveAutoSchedule);
 autoDarkStart.addEventListener("change", saveAutoSchedule);
 
 apiKeyInput.addEventListener("input", () => {
+  apiKeyMask.hidden =
+    apiKeyInput.dataset.configured !== "true" || apiKeyInput.value.trim() !== "";
   saveApiKey.disabled = apiKeyInput.disabled || apiKeyInput.value.trim() === "";
 });
 
