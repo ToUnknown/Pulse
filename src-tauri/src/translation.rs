@@ -345,6 +345,13 @@ impl TranslationManager {
         }
     }
 
+    pub(crate) fn is_transitioning(&self) -> bool {
+        matches!(
+            self.current_status(),
+            Ok(TranslationStatus::Starting | TranslationStatus::Stopping)
+        )
+    }
+
     pub(crate) fn stop(&self) -> Result<(), String> {
         let status = self.current_status()?;
         if !status.is_active() {

@@ -144,6 +144,52 @@ fn reveal_tray_menu(app: &tauri::AppHandle, delay_ms: u64) {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+fn refresh_tray_menu(app: &tauri::AppHandle, menu: Menu<tauri::Wry>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "windows")]
+        let _ = app.run_on_main_thread(|| unsafe {
+            EndMenu();
+        });
+
+        let Some(tray) = app.tray_by_id("pulse-tray") else {
+            return;
+        };
+        let _ = tray.set_menu::<Menu<tauri::Wry>>(None);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = tray.set_menu(Some(menu));
+        let _ = tray.with_inner_tray_icon(|tray| tray.show_menu());
+    });
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn follow_translation_menu_state(app: &tauri::AppHandle, menu: Menu<tauri::Wry>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        reveal_tray_menu(&app, 0);
+
+        if !app
+            .state::<translation::TranslationManager>()
+            .is_transitioning()
+        {
+            return;
+        }
+
+        while app
+            .state::<translation::TranslationManager>()
+            .is_transitioning()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // Give the final menu text and icon update time to finish its main-thread dispatch.
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        refresh_tray_menu(&app, menu);
+    });
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn set_update_result(
     app: &tauri::AppHandle,
     update_item: &IconMenuItem<tauri::Wry>,
@@ -417,8 +463,8 @@ use {
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
-            MessageBoxW, SendMessageTimeoutW, HWND_BROADCAST, MB_ICONERROR, MB_ICONWARNING, MB_OK,
-            SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+            EndMenu, MessageBoxW, SendMessageTimeoutW, HWND_BROADCAST, MB_ICONERROR,
+            MB_ICONWARNING, MB_OK, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
         },
     },
     winreg::{
@@ -1958,6 +2004,8 @@ pub fn run() {
             app.manage(appearance_controller.clone());
             #[cfg(target_os = "windows")]
             let menu_appearance_controller = appearance_controller.clone();
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let menu_for_events = menu.clone();
 
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(tray_icon)
@@ -1980,9 +2028,7 @@ pub fn run() {
                     if event.id().as_ref() == "translation-start" {
                         match app.state::<translation::TranslationManager>().toggle() {
                             Ok(()) => {
-                                // Native tray menus dismiss selected items before this callback
-                                // returns, so reopen after menu tracking has finished.
-                                reveal_tray_menu(app, 75);
+                                follow_translation_menu_state(app, menu_for_events.clone());
                             }
                             Err(error) => {
                                 eprintln!("translation start failed: {error}");
