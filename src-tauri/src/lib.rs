@@ -408,7 +408,7 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded
 use {
     chrono::{Local, Timelike},
     std::{path::PathBuf, thread, time::Duration},
-    tauri::{menu::ContextMenu, Manager},
+    tauri::Manager,
     windows_sys::Win32::{
         System::Registry::{RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET},
         UI::WindowsAndMessaging::{
