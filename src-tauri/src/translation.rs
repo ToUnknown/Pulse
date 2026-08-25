@@ -1245,13 +1245,6 @@ async fn run_translation_session(
         input_processor,
         audio_error.clone(),
     )?;
-    // Capture immediately so speech made while the WebSocket session is being
-    // configured is retained in the bounded input queue. Audio is still sent
-    // only after the server confirms the requested translation configuration.
-    input_stream
-        .play()
-        .map_err(|error| format!("could not start microphone capture: {error}"))?;
-
     let mut request = TRANSLATION_URL
         .into_client_request()
         .map_err(|error| format!("translation request setup failed: {error}"))?;
@@ -1299,7 +1292,12 @@ async fn run_translation_session(
                                         &session_number,
                                     );
                                 }
-                                Some("session.updated") => return Ok(true),
+                                Some("session.updated") => {
+                                    input_stream.play().map_err(|error| {
+                                        format!("could not start microphone capture: {error}")
+                                    })?;
+                                    return Ok(true);
+                                }
                                 Some("error") => return Err(translation_error_message(&event)),
                                 _ => {}
                             }
