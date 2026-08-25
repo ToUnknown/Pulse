@@ -44,6 +44,10 @@ const MAX_PASSTHROUGH_BUFFER_SECONDS: usize = 1;
 const RECONNECT_DELAYS_MS: [u64; 3] = [250, 1_000, 3_000];
 const RESAMPLER_HALF_TAPS: usize = 24;
 #[cfg(target_os = "macos")]
+const TRANSLATION_MENU_INDEX: usize = 0;
+#[cfg(target_os = "windows")]
+const TRANSLATION_MENU_INDEX: usize = 1;
+#[cfg(target_os = "macos")]
 const PULSE_DRIVER_SAMPLE_RATE: u32 = 48_000;
 #[cfg(target_os = "macos")]
 const PULSE_DRIVER_PACKET_SAMPLES: usize = 480;
@@ -385,6 +389,14 @@ impl TranslationManager {
         let language_items = self.language_items.clone();
 
         thread::spawn(move || {
+            let session_context = TranslationSessionContext {
+                stop_signal: stop_signal.clone(),
+                status: status.clone(),
+                start_item: start_item.clone(),
+                session_id,
+                session_number,
+                dropped_input_frames,
+            };
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build();
@@ -392,12 +404,7 @@ impl TranslationManager {
                 Ok(runtime) => runtime.block_on(run_translation_with_reconnect(
                     api_key,
                     config,
-                    stop_signal.clone(),
-                    status.clone(),
-                    start_item.clone(),
-                    session_id,
-                    session_number,
-                    dropped_input_frames,
+                    session_context,
                 )),
                 Err(error) => Err(format!("translation runtime setup failed: {error}")),
             };
@@ -555,8 +562,10 @@ impl TranslationManager {
         }
 
         if visible {
-            self.menu
-                .insert_items(&[&self.language_menu, &self.start_item], 1)?;
+            self.menu.insert_items(
+                &[&self.language_menu, &self.start_item],
+                TRANSLATION_MENU_INDEX,
+            )?;
         } else {
             self.menu.remove(&self.language_menu)?;
             self.menu.remove(&self.start_item)?;
@@ -853,34 +862,30 @@ fn start_passthrough_task(
     Ok(())
 }
 
-async fn run_translation_with_reconnect(
-    api_key: String,
-    config: TranslationConfig,
+#[derive(Clone)]
+struct TranslationSessionContext {
     stop_signal: Arc<AtomicBool>,
     status: Arc<Mutex<TranslationStatus>>,
     start_item: MenuItem<tauri::Wry>,
     session_id: Arc<Mutex<Option<String>>>,
     session_number: Arc<AtomicUsize>,
     dropped_input_frames: Arc<AtomicUsize>,
+}
+
+async fn run_translation_with_reconnect(
+    api_key: String,
+    config: TranslationConfig,
+    context: TranslationSessionContext,
 ) -> Result<(), String> {
     let mut reconnect_attempt = 0;
     loop {
         let connection_started_at = tokio::time::Instant::now();
-        let result = run_translation_session(
-            api_key.clone(),
-            config.clone(),
-            stop_signal.clone(),
-            status.clone(),
-            start_item.clone(),
-            session_id.clone(),
-            session_number.clone(),
-            dropped_input_frames.clone(),
-        )
-        .await;
+        let result =
+            run_translation_session(api_key.clone(), config.clone(), context.clone()).await;
 
         let error = match result {
             Ok(()) => return Ok(()),
-            Err(_) if stop_signal.load(Ordering::Acquire) => return Ok(()),
+            Err(_) if context.stop_signal.load(Ordering::Acquire) => return Ok(()),
             Err(error) => error,
         };
         if connection_started_at.elapsed() >= Duration::from_secs(30) {
@@ -891,15 +896,15 @@ async fn run_translation_with_reconnect(
             return Err(error);
         }
 
-        if let Ok(mut current_status) = status.lock() {
+        if let Ok(mut current_status) = context.status.lock() {
             *current_status = TranslationStatus::Starting;
         }
-        let _ = start_item.set_text("Reconnecting Translation…");
+        let _ = context.start_item.set_text("Reconnecting Translation…");
         eprintln!("OpenAI translation session reconnecting after: {error}");
         let delay = Duration::from_millis(RECONNECT_DELAYS_MS[reconnect_attempt]);
         reconnect_attempt += 1;
         tokio::select! {
-            _ = wait_for_stop(stop_signal.clone()) => return Ok(()),
+            _ = wait_for_stop(context.stop_signal.clone()) => return Ok(()),
             _ = tokio::time::sleep(delay) => {}
         }
     }
@@ -931,13 +936,16 @@ fn session_closed_result(closing: bool) -> Result<(), String> {
 async fn run_translation_session(
     api_key: String,
     config: TranslationConfig,
-    stop_signal: Arc<AtomicBool>,
-    status: Arc<Mutex<TranslationStatus>>,
-    start_item: MenuItem<tauri::Wry>,
-    session_id: Arc<Mutex<Option<String>>>,
-    session_number: Arc<AtomicUsize>,
-    dropped_input_frames: Arc<AtomicUsize>,
+    context: TranslationSessionContext,
 ) -> Result<(), String> {
+    let TranslationSessionContext {
+        stop_signal,
+        status,
+        start_item,
+        session_id,
+        session_number,
+        dropped_input_frames,
+    } = context;
     let input_device = resolve_input_device(config.input_device.as_deref())?;
     ensure_virtual_microphone_available()?;
 

@@ -270,6 +270,7 @@ window.addEventListener("blur", () => openCustomSelect?.close());
 async function loadSettings() {
   try {
     const settings = await invoke("settings_state");
+    document.documentElement.dataset.platform = settings.platform;
     startAtLogin.checked = settings.startAtLogin;
     if (settings.platform === "macos") {
       iconHeading.textContent = "Menu-bar icon";

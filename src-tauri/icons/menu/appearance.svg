@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-labelledby="title">
+  <title id="title">Appearance</title>
+  <defs>
+    <linearGradient id="appearance-bg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFB000"/>
+      <stop offset="0.5" stop-color="#FFB000"/>
+      <stop offset="0.5" stop-color="#5856D6"/>
+      <stop offset="1" stop-color="#5856D6"/>
+    </linearGradient>
+  </defs>
+  <circle cx="16" cy="16" r="13" fill="url(#appearance-bg)"/>
+  <circle cx="16" cy="16" r="6.7" fill="none" stroke="#FFF" stroke-width="2.4"/>
+  <path d="M16 9.3a6.7 6.7 0 0 0 0 13.4z" fill="#FFF"/>
+</svg>
