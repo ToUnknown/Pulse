@@ -33,6 +33,14 @@ const CONSUMER_RELEASE_DELAY: Duration = Duration::from_millis(500);
 
 #[cfg(target_os = "macos")]
 const MACOS_LAUNCH_AGENT_LABEL: &str = "app.pulse.desktop.audio-router";
+#[cfg(target_os = "macos")]
+const MACOS_DRIVER_ADDRESS: &str = "127.0.0.1:41873";
+#[cfg(target_os = "macos")]
+const MACOS_DRIVER_STATUS_QUERY: &[u8] = b"PULSE_STATUS";
+#[cfg(target_os = "macos")]
+const MACOS_DRIVER_STATUS_ACTIVE: &[u8] = b"PULSE_ACTIVE";
+#[cfg(target_os = "macos")]
+const MACOS_DRIVER_STATUS_IDLE: &[u8] = b"PULSE_IDLE";
 #[cfg(target_os = "windows")]
 const WINDOWS_RUN_VALUE: &str = "Pulse Audio Router";
 
@@ -585,123 +593,52 @@ fn unregister_at_login(_app: &AppHandle) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 struct MacosPulseConsumerMonitor {
-    device_id: Option<u32>,
+    socket: Option<UdpSocket>,
 }
 
 #[cfg(target_os = "macos")]
 impl MacosPulseConsumerMonitor {
     fn new() -> Self {
-        Self { device_id: None }
+        Self { socket: None }
     }
 
     fn is_active(&mut self) -> Result<bool, String> {
-        let device_id = match self.device_id {
-            Some(device_id) => device_id,
-            None => {
-                let device_id = find_macos_pulse_device()?;
-                self.device_id = Some(device_id);
-                device_id
-            }
-        };
-        match macos_device_is_running(device_id) {
-            Ok(active) => Ok(active),
-            Err(error) => {
-                self.device_id = None;
-                Err(error)
-            }
+        if self.socket.is_none() {
+            let socket = UdpSocket::bind("127.0.0.1:0")
+                .map_err(|error| format!("could not monitor the Pulse microphone: {error}"))?;
+            socket
+                .connect(MACOS_DRIVER_ADDRESS)
+                .map_err(|error| format!("could not monitor the Pulse microphone: {error}"))?;
+            socket
+                .set_read_timeout(Some(Duration::from_millis(40)))
+                .map_err(|error| format!("could not monitor the Pulse microphone: {error}"))?;
+            self.socket = Some(socket);
         }
+
+        let socket = self.socket.as_ref().expect("Pulse status socket");
+        let result = socket
+            .send(MACOS_DRIVER_STATUS_QUERY)
+            .map_err(|error| error.to_string())
+            .and_then(|_| {
+                let mut response = [0_u8; 32];
+                socket
+                    .recv(&mut response)
+                    .map_err(|error| error.to_string())
+                    .and_then(|length| parse_macos_driver_status(&response[..length]))
+            });
+        if result.is_err() {
+            self.socket = None;
+        }
+        result.map_err(|error| format!("could not inspect Pulse microphone consumers: {error}"))
     }
 }
 
 #[cfg(target_os = "macos")]
-#[repr(C)]
-struct AudioObjectPropertyAddress {
-    selector: u32,
-    scope: u32,
-    element: u32,
-}
-
-#[cfg(target_os = "macos")]
-#[link(name = "CoreAudio", kind = "framework")]
-extern "C" {
-    fn AudioObjectGetPropertyData(
-        object_id: u32,
-        address: *const AudioObjectPropertyAddress,
-        qualifier_size: u32,
-        qualifier_data: *const std::ffi::c_void,
-        data_size: *mut u32,
-        data: *mut std::ffi::c_void,
-    ) -> i32;
-}
-
-#[cfg(target_os = "macos")]
-fn find_macos_pulse_device() -> Result<u32, String> {
-    const PULSE_DEVICE_UID: &str = "app.pulse.desktop.virtual-microphone";
-    coreaudio::audio_unit::macos_helpers::get_audio_device_ids()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|device_id| macos_device_uid(*device_id).as_deref() == Ok(PULSE_DEVICE_UID))
-        .ok_or_else(|| "the Pulse virtual microphone is unavailable".to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn macos_device_uid(device_id: u32) -> Result<String, String> {
-    use core_foundation::{base::TCFType, string::CFString};
-
-    const DEVICE_UID: u32 = u32::from_be_bytes(*b"uid ");
-    const GLOBAL_SCOPE: u32 = u32::from_be_bytes(*b"glob");
-    let address = AudioObjectPropertyAddress {
-        selector: DEVICE_UID,
-        scope: GLOBAL_SCOPE,
-        element: 0,
-    };
-    let mut value: core_foundation::string::CFStringRef = std::ptr::null();
-    let mut size = std::mem::size_of::<core_foundation::string::CFStringRef>() as u32;
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            device_id,
-            &address,
-            0,
-            std::ptr::null(),
-            &mut size,
-            (&mut value as *mut core_foundation::string::CFStringRef).cast(),
-        )
-    };
-    if status != 0 || value.is_null() {
-        return Err(format!(
-            "could not read an audio-device identifier ({status})"
-        ));
-    }
-    Ok(unsafe { CFString::wrap_under_create_rule(value) }.to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn macos_device_is_running(device_id: u32) -> Result<bool, String> {
-    const DEVICE_IS_RUNNING: u32 = u32::from_be_bytes(*b"goin");
-    const GLOBAL_SCOPE: u32 = u32::from_be_bytes(*b"glob");
-    let address = AudioObjectPropertyAddress {
-        selector: DEVICE_IS_RUNNING,
-        scope: GLOBAL_SCOPE,
-        element: 0,
-    };
-    let mut running = 0_u32;
-    let mut size = std::mem::size_of::<u32>() as u32;
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            device_id,
-            &address,
-            0,
-            std::ptr::null(),
-            &mut size,
-            (&mut running as *mut u32).cast(),
-        )
-    };
-    if status == 0 {
-        Ok(running != 0)
-    } else {
-        Err(format!(
-            "could not inspect Pulse microphone consumers ({status})"
-        ))
+fn parse_macos_driver_status(response: &[u8]) -> Result<bool, String> {
+    match response {
+        MACOS_DRIVER_STATUS_ACTIVE => Ok(true),
+        MACOS_DRIVER_STATUS_IDLE => Ok(false),
+        _ => Err("the Pulse audio driver returned an invalid status".to_string()),
     }
 }
 
@@ -809,4 +746,16 @@ fn find_windows_pulse_session_manager(
         }
     }
     Err("the Pulse virtual microphone is unavailable".to_string())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_driver_status_protocol_distinguishes_active_and_idle() {
+        assert_eq!(parse_macos_driver_status(b"PULSE_ACTIVE"), Ok(true));
+        assert_eq!(parse_macos_driver_status(b"PULSE_IDLE"), Ok(false));
+        assert!(parse_macos_driver_status(b"unexpected").is_err());
+    }
 }

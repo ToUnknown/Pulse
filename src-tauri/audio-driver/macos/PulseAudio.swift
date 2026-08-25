@@ -64,6 +64,9 @@ private var gAnchorHostTime: UInt64 = 0
 private let kAudioPort: UInt16 = 41_873
 private let kPacketFrames = 480
 private let kAudioBufferFrames = 96_000
+private let kStatusQuery = Array("PULSE_STATUS".utf8)
+private let kStatusActive = Array("PULSE_ACTIVE".utf8)
+private let kStatusIdle = Array("PULSE_IDLE".utf8)
 private let gAudioLock: UnsafeMutablePointer<os_unfair_lock> = {
     let p = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
     p.initialize(to: os_unfair_lock())
@@ -77,6 +80,7 @@ private let gAudioBuffer: UnsafeMutablePointer<Float32> = {
 private var gAudioReadIndex = 0
 private var gAudioWriteIndex = 0
 private var gAudioAvailable = 0
+private var gLastAudioReadHostTime: UInt64 = 0
 private var gReceiverStarted = false
 
 // MARK: - Format helpers
@@ -300,7 +304,7 @@ private func value(for object: AudioObjectID,
         case kAudioDevicePropertyClockDomain:    return .uint32(0)
         case kAudioDevicePropertyDeviceIsAlive:  return .uint32(1)
         case kAudioDevicePropertyDeviceIsRunning:
-            lock(); let running = gIOCount > 0; unlock()
+            let running = pulseIsBeingRead()
             return .uint32(running ? 1 : 0)
         case kAudioDevicePropertyDeviceCanBeDefaultDevice,
              kAudioDevicePropertyDeviceCanBeDefaultSystemDevice: return .uint32(1)
@@ -445,14 +449,43 @@ private func audioReceiverLoop() {
     }
 
     while true {
-        let byteCount = Darwin.recv(
-            socketFD,
-            UnsafeMutableRawPointer(packet),
-            kPacketFrames * MemoryLayout<Float32>.size,
-            0)
+        var senderAddress = sockaddr_storage()
+        var senderLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let byteCount = withUnsafeMutablePointer(to: &senderAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { address in
+                Darwin.recvfrom(
+                    socketFD,
+                    UnsafeMutableRawPointer(packet),
+                    kPacketFrames * MemoryLayout<Float32>.size,
+                    0,
+                    address,
+                    &senderLength)
+            }
+        }
         if byteCount < 0 {
             if errno == EINTR { continue }
             usleep(10_000)
+            continue
+        }
+        let statusQuery = kStatusQuery.withUnsafeBytes { query in
+            byteCount == query.count && memcmp(packet, query.baseAddress, query.count) == 0
+        }
+        if statusQuery {
+            let active = pulseIsBeingRead()
+            let response = active ? kStatusActive : kStatusIdle
+            response.withUnsafeBytes { bytes in
+                withUnsafePointer(to: &senderAddress) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { address in
+                        _ = Darwin.sendto(
+                            socketFD,
+                            bytes.baseAddress,
+                            bytes.count,
+                            0,
+                            address,
+                            senderLength)
+                    }
+                }
+            }
             continue
         }
         if byteCount == 1 {
@@ -493,6 +526,7 @@ private func appendAudio(_ samples: UnsafePointer<Float32>, sampleCount: Int) {
 @inline(__always)
 private func readAudio(into output: UnsafeMutablePointer<Float32>, frameCount: Int) {
     os_unfair_lock_lock(gAudioLock)
+    gLastAudioReadHostTime = mach_absolute_time()
     let readable = min(frameCount, gAudioAvailable)
     for index in 0..<readable {
         output[index] = gAudioBuffer[gAudioReadIndex]
@@ -504,6 +538,19 @@ private func readAudio(into output: UnsafeMutablePointer<Float32>, frameCount: I
     if readable < frameCount {
         memset(output.advanced(by: readable), 0, (frameCount - readable) * MemoryLayout<Float32>.size)
     }
+}
+
+private func pulseIsBeingRead() -> Bool {
+    os_unfair_lock_lock(gAudioLock)
+    let lastRead = gLastAudioReadHostTime
+    os_unfair_lock_unlock(gAudioLock)
+    guard lastRead > 0 else { return false }
+
+    var timebase = mach_timebase_info_data_t()
+    mach_timebase_info(&timebase)
+    let elapsedTicks = mach_absolute_time() - lastRead
+    let elapsedNanoseconds = Double(elapsedTicks) * Double(timebase.numer) / Double(timebase.denom)
+    return elapsedNanoseconds < 250_000_000
 }
 
 // MARK: - IO
