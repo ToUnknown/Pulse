@@ -75,15 +75,7 @@ function enhanceSelect(select) {
     if (!selectedOption) {
       return;
     }
-    const closedLabel = select.dataset.closedLabel;
-    if (closedLabel) {
-      trigger.replaceChildren();
-      const text = document.createElement("span");
-      text.textContent = closedLabel;
-      trigger.append(text);
-    } else {
-      fillOption(trigger, selectedOption);
-    }
+    fillOption(trigger, selectedOption);
     trigger.disabled = select.disabled;
     for (const button of optionButtons) {
       const isSelected = button.dataset.value === select.value;
