@@ -843,9 +843,9 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window
     } else {
         #[cfg(target_os = "windows")]
-        let window_height = 650.0;
+        let window_height = 800.0;
         #[cfg(target_os = "macos")]
-        let window_height = 590.0;
+        let window_height = 660.0;
 
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Pulse Settings")
