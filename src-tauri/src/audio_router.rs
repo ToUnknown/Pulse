@@ -644,108 +644,32 @@ fn parse_macos_driver_status(response: &[u8]) -> Result<bool, String> {
 
 #[cfg(target_os = "windows")]
 struct WindowsPulseConsumerMonitor {
-    session_manager: Option<windows::Win32::Media::Audio::IAudioSessionManager2>,
+    driver: Option<crate::windows_audio::PulseDriver>,
 }
 
 #[cfg(target_os = "windows")]
 impl WindowsPulseConsumerMonitor {
     fn new() -> Self {
-        unsafe {
-            let _ = windows::Win32::System::Com::CoInitializeEx(
-                None,
-                windows::Win32::System::Com::COINIT_MULTITHREADED,
-            );
-        }
-        Self {
-            session_manager: None,
-        }
+        Self { driver: None }
     }
 
     fn is_active(&mut self) -> Result<bool, String> {
-        if self.session_manager.is_none() {
-            self.session_manager = Some(find_windows_pulse_session_manager()?);
+        if self.driver.is_none() {
+            self.driver = Some(crate::windows_audio::PulseDriver::open_monitor()?);
         }
-        let Some(manager) = self.session_manager.as_ref() else {
+        let Some(driver) = self.driver.as_ref() else {
             return Ok(false);
         };
-
-        let result = unsafe {
-            let sessions = manager
-                .GetSessionEnumerator()
-                .map_err(|error| error.to_string())?;
-            for index in 0..sessions.GetCount().map_err(|error| error.to_string())? {
-                if sessions
-                    .GetSession(index)
-                    .and_then(|session| session.GetState())
-                    .map_err(|error| error.to_string())?
-                    == windows::Win32::Media::Audio::AudioSessionStateActive
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        };
-        match result {
-            Ok(active) => Ok(active),
+        match driver.consumer_state() {
+            Ok(state) => Ok(state.is_active()),
             Err(error) => {
-                self.session_manager = None;
+                self.driver = None;
                 Err(format!(
                     "could not inspect Pulse microphone consumers: {error}"
                 ))
             }
         }
     }
-}
-
-#[cfg(target_os = "windows")]
-fn find_windows_pulse_session_manager(
-) -> Result<windows::Win32::Media::Audio::IAudioSessionManager2, String> {
-    use windows::Win32::{
-        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Media::Audio::{
-            eCapture, IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
-            DEVICE_STATE_ACTIVE,
-        },
-        System::Com::{
-            CoCreateInstance, StructuredStorage::PropVariantToString, CLSCTX_ALL, STGM_READ,
-        },
-    };
-
-    unsafe {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|error| format!("could not inspect Windows microphones: {error}"))?;
-        let devices = enumerator
-            .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
-            .map_err(|error| format!("could not inspect Windows microphones: {error}"))?;
-        for index in 0..devices
-            .GetCount()
-            .map_err(|error| format!("could not inspect Windows microphones: {error}"))?
-        {
-            let device = devices
-                .Item(index)
-                .map_err(|error| format!("could not inspect Windows microphones: {error}"))?;
-            let properties = device
-                .OpenPropertyStore(STGM_READ)
-                .map_err(|error| format!("could not inspect Windows microphones: {error}"))?;
-            let value = properties
-                .GetValue(&PKEY_Device_FriendlyName)
-                .map_err(|error| format!("could not inspect Windows microphones: {error}"))?;
-            let mut name = [0_u16; 512];
-            PropVariantToString(&value, &mut name)
-                .map_err(|error| format!("could not inspect Windows microphones: {error}"))?;
-            let length = name
-                .iter()
-                .position(|character| *character == 0)
-                .unwrap_or(name.len());
-            if String::from_utf16_lossy(&name[..length]).eq_ignore_ascii_case("Pulse") {
-                return device
-                    .Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)
-                    .map_err(|error| format!("could not monitor the Pulse microphone: {error}"));
-            }
-        }
-    }
-    Err("the Pulse virtual microphone is unavailable".to_string())
 }
 
 #[cfg(all(test, target_os = "macos"))]

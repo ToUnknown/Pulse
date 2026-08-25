@@ -9,6 +9,8 @@ mod audio_router;
 mod translation;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod virtual_audio;
+#[cfg(target_os = "windows")]
+mod windows_audio;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use {

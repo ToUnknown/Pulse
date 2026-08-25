@@ -12,8 +12,6 @@ use std::{
 
 use crate::audio_router::{AudioRouterController, AudioRouterLease};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-#[cfg(target_os = "windows")]
-use cpal::SupportedStreamConfig;
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Device, SampleFormat, Stream, StreamConfig,
@@ -927,14 +925,6 @@ fn find_named_input_device(name: &str) -> Result<Device, String> {
     device.ok_or_else(|| format!("audio device is unavailable: {name}"))
 }
 
-#[cfg(target_os = "windows")]
-fn resolve_virtual_output_device() -> Result<Device, String> {
-    find_virtual_output_device()?.ok_or_else(|| {
-        "the Pulse virtual microphone is unavailable; finish its installation or restart the computer"
-            .to_string()
-    })
-}
-
 #[cfg(target_os = "macos")]
 fn virtual_microphone_available() -> Result<bool, String> {
     if !Path::new(INSTALLED_PULSE_DRIVER).is_dir() {
@@ -952,7 +942,7 @@ fn virtual_microphone_available() -> Result<bool, String> {
 
 #[cfg(target_os = "windows")]
 fn virtual_microphone_available() -> Result<bool, String> {
-    find_virtual_output_device().map(|device| device.is_some())
+    Ok(crate::windows_audio::interface_available())
 }
 
 fn ensure_virtual_microphone_available() -> Result<(), String> {
@@ -963,46 +953,6 @@ fn ensure_virtual_microphone_available() -> Result<(), String> {
         let message = "the Pulse virtual microphone is unavailable; finish its installation or restart the computer";
         message.to_string()
     })
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn virtual_output_priority(name: &str) -> Option<u8> {
-    let name = name.to_ascii_lowercase();
-    if name == "pulse" {
-        return Some(0);
-    }
-    if name.contains("cable input") {
-        return Some(1);
-    }
-    if name.contains("vb-cable") || name.contains("vb cable") {
-        return Some(2);
-    }
-    [
-        "blackhole",
-        "virtual audio cable",
-        "voicemeeter input",
-        "loopback audio",
-        "soundflower",
-    ]
-    .iter()
-    .position(|candidate| name.contains(candidate))
-    .map(|position| position as u8 + 3)
-}
-
-#[cfg(target_os = "windows")]
-fn find_virtual_output_device() -> Result<Option<Device>, String> {
-    let devices = cpal::default_host()
-        .output_devices()
-        .map_err(|error| format!("could not list audio outputs: {error}"))?;
-    let mut candidates = devices
-        .filter_map(|device| {
-            let name = device_name(&device).ok()?;
-            let priority = virtual_output_priority(&name)?;
-            Some((priority, name.to_ascii_lowercase(), device))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
-    Ok(candidates.into_iter().next().map(|(_, _, device)| device))
 }
 
 fn is_virtual_audio_name(name: &str) -> bool {
@@ -1030,7 +980,7 @@ pub(crate) struct PassthroughTask {
     #[cfg(target_os = "macos")]
     _output_stream: MacosPulseOutput,
     #[cfg(target_os = "windows")]
-    _output_stream: Stream,
+    _output_stream: WindowsPulseOutput,
     audio_error: Arc<Mutex<Option<String>>>,
 }
 
@@ -1053,13 +1003,7 @@ pub(crate) fn build_passthrough_task(
     #[cfg(target_os = "macos")]
     let output_sample_rate = PULSE_DRIVER_SAMPLE_RATE;
     #[cfg(target_os = "windows")]
-    let (output_device, output_config) = {
-        let device = resolve_virtual_output_device()?;
-        let config = preferred_output_config(&device)?;
-        (device, config)
-    };
-    #[cfg(target_os = "windows")]
-    let output_sample_rate = output_config.sample_rate();
+    let output_sample_rate = crate::windows_audio::SAMPLE_RATE;
 
     let max_output_samples = output_sample_rate as usize * MAX_PASSTHROUGH_BUFFER_SECONDS;
     let output_queue = Arc::new(Mutex::new(OutputBuffer::with_prebuffer(
@@ -1072,13 +1016,7 @@ pub(crate) fn build_passthrough_task(
     #[cfg(target_os = "macos")]
     let output_stream = MacosPulseOutput::new(output_queue.clone(), audio_error.clone())?;
     #[cfg(target_os = "windows")]
-    let output_stream = build_output_stream(
-        &output_device,
-        output_config.sample_format(),
-        output_config.into(),
-        output_queue.clone(),
-        audio_error.clone(),
-    )?;
+    let output_stream = WindowsPulseOutput::new(output_queue.clone(), audio_error.clone())?;
 
     let input_processor = PassthroughChunker::new(
         input_config.sample_rate(),
@@ -1097,9 +1035,7 @@ pub(crate) fn build_passthrough_task(
     #[cfg(target_os = "macos")]
     output_stream.play()?;
     #[cfg(target_os = "windows")]
-    output_stream
-        .play()
-        .map_err(|error| format!("could not start virtual microphone output: {error}"))?;
+    output_stream.play()?;
     input_stream
         .play()
         .map_err(|error| format!("could not start microphone passthrough: {error}"))?;
@@ -1211,13 +1147,7 @@ async fn run_translation_session(
     #[cfg(target_os = "macos")]
     let output_sample_rate = PULSE_DRIVER_SAMPLE_RATE;
     #[cfg(target_os = "windows")]
-    let (output_device, output_config) = {
-        let device = resolve_virtual_output_device()?;
-        let config = preferred_output_config(&device)?;
-        (device, config)
-    };
-    #[cfg(target_os = "windows")]
-    let output_sample_rate = output_config.sample_rate();
+    let output_sample_rate = crate::windows_audio::SAMPLE_RATE;
     let max_output_samples = output_sample_rate as usize * MAX_OUTPUT_BUFFER_SECONDS;
     let output_queue = Arc::new(Mutex::new(OutputBuffer::new(
         output_sample_rate,
@@ -1227,13 +1157,7 @@ async fn run_translation_session(
     #[cfg(target_os = "macos")]
     let output_stream = MacosPulseOutput::new(output_queue.clone(), audio_error.clone())?;
     #[cfg(target_os = "windows")]
-    let output_stream = build_output_stream(
-        &output_device,
-        output_config.sample_format(),
-        output_config.into(),
-        output_queue.clone(),
-        audio_error.clone(),
-    )?;
+    let output_stream = WindowsPulseOutput::new(output_queue.clone(), audio_error.clone())?;
 
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel(INPUT_QUEUE_BLOCKS);
     let (warmup_tx, mut warmup_rx) = tokio::sync::oneshot::channel();
@@ -1336,9 +1260,7 @@ async fn run_translation_session(
     #[cfg(target_os = "macos")]
     output_stream.play()?;
     #[cfg(target_os = "windows")]
-    output_stream
-        .play()
-        .map_err(|error| format!("could not start virtual microphone output: {error}"))?;
+    output_stream.play()?;
 
     if let Ok(mut current_status) = status.lock() {
         *current_status = TranslationStatus::Running;
@@ -1636,35 +1558,99 @@ impl Drop for MacosPulseOutput {
 }
 
 #[cfg(target_os = "windows")]
-fn preferred_output_config(device: &Device) -> Result<SupportedStreamConfig, String> {
-    let native_model_rate = device.supported_output_configs().ok().and_then(|configs| {
-        configs
-            .filter(|config| {
-                matches!(
-                    config.sample_format(),
-                    SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16
-                )
-            })
-            .filter_map(|config| config.try_with_sample_rate(REALTIME_SAMPLE_RATE))
-            .min_by_key(|config| {
-                let channels = config.channels();
-                let channel_rank = if channels == 1 { 0 } else { channels };
-                let format_rank = match config.sample_format() {
-                    SampleFormat::F32 => 0,
-                    SampleFormat::I16 => 1,
-                    SampleFormat::U16 => 2,
-                    _ => 3,
-                };
-                (channel_rank, format_rank)
-            })
-    });
+struct WindowsPulseOutput {
+    started: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
 
-    match native_model_rate {
-        Some(config) => Ok(config),
-        None => device
-            .default_output_config()
-            .map_err(|error| format!("virtual output format is unavailable: {error}")),
+#[cfg(target_os = "windows")]
+impl WindowsPulseOutput {
+    fn new(
+        queue: Arc<Mutex<OutputBuffer>>,
+        audio_error: Arc<Mutex<Option<String>>>,
+    ) -> Result<Self, String> {
+        let driver = crate::windows_audio::PulseDriver::open_writer()?;
+        let started = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_started = started.clone();
+        let thread_stop = stop.clone();
+        let handle = thread::Builder::new()
+            .name("pulse-virtual-microphone".to_string())
+            .spawn(move || {
+                let period = Duration::from_millis(10);
+                let mut next_packet = std::time::Instant::now();
+                let mut sequence = 0_u32;
+                let mut samples = [0_i16; crate::windows_audio::PACKET_SAMPLES];
+
+                while !thread_stop.load(Ordering::Acquire) {
+                    if !thread_started.load(Ordering::Acquire) {
+                        thread::sleep(period);
+                        next_packet = std::time::Instant::now();
+                        continue;
+                    }
+
+                    if let Ok(mut queue) = queue.lock() {
+                        for sample in &mut samples {
+                            *sample = f32_to_pcm16(queue.next_sample());
+                        }
+                    } else {
+                        samples.fill(0);
+                    }
+
+                    if let Err(error) = driver.write_audio(sequence, &samples) {
+                        if let Ok(mut stored_error) = audio_error.lock() {
+                            *stored_error = Some(error);
+                        }
+                        break;
+                    }
+                    sequence = sequence.wrapping_add(1);
+
+                    next_packet += period;
+                    let now = std::time::Instant::now();
+                    if next_packet > now {
+                        thread::sleep(next_packet - now);
+                    } else if now.duration_since(next_packet) > Duration::from_millis(100) {
+                        next_packet = now;
+                    }
+                }
+                let _ = driver.reset();
+            })
+            .map_err(|error| format!("could not start the Pulse audio channel: {error}"))?;
+
+        Ok(Self {
+            started,
+            stop,
+            thread: Some(handle),
+        })
     }
+
+    fn play(&self) -> Result<(), String> {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+        {
+            return Err("the Pulse audio channel stopped unexpectedly".to_string());
+        }
+        self.started.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsPulseOutput {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn f32_to_pcm16(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
 }
 
 trait MicrophoneProcessor: Send + 'static {
@@ -1714,52 +1700,6 @@ fn build_input_stream<Processor: MicrophoneProcessor>(
             .map_err(|error| format!("could not open microphone: {error}")),
         _ => Err(format!(
             "the microphone uses an unsupported sample format: {sample_format}"
-        )),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn build_output_stream(
-    device: &Device,
-    sample_format: SampleFormat,
-    config: StreamConfig,
-    queue: Arc<Mutex<OutputBuffer>>,
-    audio_error: Arc<Mutex<Option<String>>>,
-) -> Result<Stream, String> {
-    let channels = config.channels as usize;
-    let error_callback = move |error| {
-        if let Ok(mut stored_error) = audio_error.lock() {
-            *stored_error = Some(format!("virtual microphone output failed: {error}"));
-        }
-    };
-
-    match sample_format {
-        SampleFormat::F32 => device
-            .build_output_stream(
-                config,
-                move |data: &mut [f32], _| fill_output_f32(data, channels, &queue),
-                error_callback,
-                None,
-            )
-            .map_err(|error| format!("could not open virtual microphone output: {error}")),
-        SampleFormat::I16 => device
-            .build_output_stream(
-                config,
-                move |data: &mut [i16], _| fill_output_i16(data, channels, &queue),
-                error_callback,
-                None,
-            )
-            .map_err(|error| format!("could not open virtual microphone output: {error}")),
-        SampleFormat::U16 => device
-            .build_output_stream(
-                config,
-                move |data: &mut [u16], _| fill_output_u16(data, channels, &queue),
-                error_callback,
-                None,
-            )
-            .map_err(|error| format!("could not open virtual microphone output: {error}")),
-        _ => Err(format!(
-            "the virtual microphone uses an unsupported sample format: {sample_format}"
         )),
     }
 }
@@ -2182,7 +2122,7 @@ impl OutputBuffer {
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn fill_output_f32(data: &mut [f32], channels: usize, queue: &Arc<Mutex<OutputBuffer>>) {
     let Ok(mut queue) = queue.lock() else {
         data.fill(0.0);
@@ -2190,31 +2130,6 @@ fn fill_output_f32(data: &mut [f32], channels: usize, queue: &Arc<Mutex<OutputBu
     };
     for frame in data.chunks_mut(channels) {
         let sample = queue.next_sample();
-        frame.fill(sample);
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn fill_output_i16(data: &mut [i16], channels: usize, queue: &Arc<Mutex<OutputBuffer>>) {
-    let Ok(mut queue) = queue.lock() else {
-        data.fill(0);
-        return;
-    };
-    for frame in data.chunks_mut(channels) {
-        let sample = (queue.next_sample().clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-        frame.fill(sample);
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn fill_output_u16(data: &mut [u16], channels: usize, queue: &Arc<Mutex<OutputBuffer>>) {
-    let Ok(mut queue) = queue.lock() else {
-        data.fill(32_768);
-        return;
-    };
-    for frame in data.chunks_mut(channels) {
-        let normalized = queue.next_sample().clamp(-1.0, 1.0);
-        let sample = ((normalized + 1.0) * 32_767.5) as u16;
         frame.fill(sample);
     }
 }
@@ -2541,14 +2456,12 @@ mod tests {
     }
 
     #[test]
-    fn pulse_output_routing_is_fixed_and_deterministic() {
-        assert_eq!(virtual_output_priority("Pulse"), Some(0));
-        assert_eq!(
-            virtual_output_priority("CABLE Input (VB-Audio Virtual Cable)"),
-            Some(1)
-        );
-        assert_eq!(virtual_output_priority("VB-Cable"), Some(2));
-        assert_eq!(virtual_output_priority("MacBook Pro Speakers"), None);
+    fn driver_pcm16_conversion_clamps_and_preserves_polarity() {
+        assert_eq!(f32_to_pcm16(0.0), 0);
+        assert_eq!(f32_to_pcm16(0.5), 16_384);
+        assert_eq!(f32_to_pcm16(-0.5), -16_384);
+        assert_eq!(f32_to_pcm16(2.0), i16::MAX);
+        assert_eq!(f32_to_pcm16(-2.0), -i16::MAX);
     }
 
     #[test]
