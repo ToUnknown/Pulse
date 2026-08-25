@@ -421,14 +421,10 @@ const TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-iconTemplate@2x.png");
 
 #[cfg(target_os = "macos")]
-// Update icons stay non-template to preserve the blue badge, so Pulse selects
-// a contrasting waveform for the current macOS appearance.
+// Update icons stay non-template to preserve the blue badge. The default
+// macOS update waveform is always white; the red style remains red.
 const UPDATE_DARK_TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-update-macos@2x.png");
-
-#[cfg(target_os = "macos")]
-const UPDATE_LIGHT_TRAY_ICON_BYTES: &[u8] =
-    include_bytes!("../icons/tray/pulse-tray-expanded-update-macos-light@2x.png");
 
 #[cfg(target_os = "windows")]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
@@ -706,7 +702,6 @@ enum MacosAppearance {
 enum MacosTrayIconAsset {
     DefaultTemplate,
     Red,
-    UpdateBlack,
     UpdateWhite,
     UpdateRed,
 }
@@ -939,8 +934,7 @@ impl TrayIconMode {
         match (self, appearance, update_ready) {
             (Self::Default, _, false) => MacosTrayIconAsset::DefaultTemplate,
             (Self::Red, _, false) => MacosTrayIconAsset::Red,
-            (Self::Default, MacosAppearance::Light, true) => MacosTrayIconAsset::UpdateBlack,
-            (Self::Default, MacosAppearance::Dark, true) => MacosTrayIconAsset::UpdateWhite,
+            (Self::Default, _, true) => MacosTrayIconAsset::UpdateWhite,
             (Self::Red, _, true) => MacosTrayIconAsset::UpdateRed,
         }
     }
@@ -974,7 +968,6 @@ impl TrayIconMode {
         match self.macos_asset(appearance, update_ready) {
             MacosTrayIconAsset::DefaultTemplate => TRAY_ICON_BYTES,
             MacosTrayIconAsset::Red => RED_TRAY_ICON_BYTES,
-            MacosTrayIconAsset::UpdateBlack => UPDATE_LIGHT_TRAY_ICON_BYTES,
             MacosTrayIconAsset::UpdateWhite => UPDATE_DARK_TRAY_ICON_BYTES,
             MacosTrayIconAsset::UpdateRed => UPDATE_RED_TRAY_ICON_BYTES,
         }
@@ -2250,10 +2243,10 @@ mod tests {
     }
 
     #[test]
-    fn macos_update_default_tray_icon_follows_appearance() {
+    fn macos_update_default_tray_icon_is_always_white() {
         assert_eq!(
             TrayIconMode::Default.macos_asset(MacosAppearance::Light, true),
-            MacosTrayIconAsset::UpdateBlack
+            MacosTrayIconAsset::UpdateWhite
         );
         assert_eq!(
             TrayIconMode::Default.macos_asset(MacosAppearance::Dark, true),
