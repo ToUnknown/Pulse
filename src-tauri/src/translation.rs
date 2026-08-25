@@ -1508,7 +1508,8 @@ fn translation_session_update(config: &TranslationConfig) -> serde_json::Value {
                 },
                 "output": {
                     "format": {
-                        "type": "audio/pcm"
+                        "type": "audio/pcm",
+                        "rate": REALTIME_SAMPLE_RATE
                     },
                     "voice": REALTIME_INTERPRETER_VOICE
                 }
@@ -2155,7 +2156,8 @@ mod tests {
                         },
                         "output": {
                             "format": {
-                                "type": "audio/pcm"
+                                "type": "audio/pcm",
+                                "rate": 24_000
                             },
                             "voice": "marin"
                         }
