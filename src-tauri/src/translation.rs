@@ -55,8 +55,8 @@ const MISSING_API_KEY_ERROR: &str = "add an OpenAI API key in Settings before st
 const TRANSLATION_URL: &str =
     "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate";
 const REALTIME_SAMPLE_RATE: u32 = 24_000;
-const INPUT_BLOCK_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 40 / 1_000;
-const INPUT_QUEUE_BLOCKS: usize = 50;
+const INPUT_BLOCK_SAMPLES: usize = REALTIME_SAMPLE_RATE as usize * 200 / 1_000;
+const INPUT_QUEUE_BLOCKS: usize = 10;
 const OUTPUT_PREBUFFER_MS: usize = 200;
 const PASSTHROUGH_PREBUFFER_MS: usize = 20;
 const MAX_OUTPUT_BUFFER_SECONDS: usize = 10;
@@ -2196,19 +2196,19 @@ mod tests {
 
         let first_block = receiver
             .try_recv()
-            .expect("the first 40 ms of captured speech should be queued immediately");
+            .expect("the first 200 ms of captured speech should be queued immediately");
         let second_block = receiver
             .try_recv()
-            .expect("the next 40 ms of captured speech should be queued separately");
+            .expect("the next 200 ms of captured speech should be queued separately");
         assert_eq!(
             first_block.len(),
             block_samples * 2,
-            "the first API block should contain 40 ms of PCM16 audio"
+            "the first API block should contain 200 ms of PCM16 audio"
         );
         assert_eq!(second_block.len(), block_samples * 2);
         assert!(
             receiver.try_recv().is_err(),
-            "80 ms of input must produce exactly two API blocks"
+            "400 ms of input must produce exactly two API blocks"
         );
         let final_sample = i16::from_le_bytes([
             second_block[second_block.len() - 2],
