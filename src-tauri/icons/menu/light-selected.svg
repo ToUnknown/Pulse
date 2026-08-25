@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-labelledby="title">
+  <title id="title">Light appearance selected</title>
+  <circle cx="16" cy="16" r="13" fill="#FFB000"/>
+  <circle cx="16" cy="16" r="4.2" fill="#FFF"/>
+  <g stroke="#FFF" stroke-width="2.2" stroke-linecap="round">
+    <path d="M16 7v2.3M16 22.7V25M7 16h2.3M22.7 16H25M9.6 9.6l1.7 1.7M20.7 20.7l1.7 1.7M22.4 9.6l-1.7 1.7M11.3 20.7l-1.7 1.7"/>
+  </g>
+  <circle cx="24" cy="24" r="4" fill="#FFF"/>
+  <circle cx="24" cy="24" r="2" fill="#1C1C1E"/>
+</svg>

@@ -18,7 +18,14 @@ tauri = { version = "2", features = ["image-png", "tray-icon"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppearance", "NSApplication", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSDistributedNotificationCenter", "NSNotification", "NSObject", "NSOperation", "NSString", "block2", "std"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
