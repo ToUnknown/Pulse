@@ -25,7 +25,8 @@ Both paths keep the stream's first channel for the entire run instead of changin
 audio callbacks. The passthrough path performs band-limited resampling to the virtual device's
 native rate and uses a 20 ms buffer for stable,
 low-latency routing. The translation path performs band-limited resampling to mono 24 kHz PCM16
-and sends continuous 200 ms frames to the dedicated OpenAI Realtime Translation WebSocket. Pulse
+and sends a 600 ms initial context block followed by continuous 200 ms blocks to the dedicated
+OpenAI Realtime Translation WebSocket. Pulse
 starts local capture while the API session is being prepared, retaining up to two seconds of source
 audio so the beginning of the first sentence is not clipped. It configures the selected output
 language, enables OpenAI `near_field` input noise reduction, and keeps optional input transcription
@@ -44,7 +45,8 @@ The translation session uses:
 - model: `gpt-realtime-translate`
 - endpoint: `wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate`
 - client audio: mono 24 kHz PCM16 little-endian
-- client frame size: 200 ms, including captured silence between phrases
+- client block size: 600 ms initially, then 200 ms continuously, including captured silence
+  between phrases
 - output languages: English, Spanish, Portuguese, French, Japanese, Russian, Chinese,
   German, Korean, Hindi, Indonesian, Vietnamese, and Italian
 
@@ -104,8 +106,8 @@ enabled state, selected language, and physical input-device name.
 - Pulse records the current OpenAI session ID, reconnect count, and dropped input-frame count in
   memory. It also logs every session and reconnect. Settings shows these diagnostics while
   translation is active. They are not written to disk and cannot resume or change a model session.
-- Temporary input backpressure drops a frame instead of killing the session. The capture queue
-  holds up to two seconds of 200 ms frames before it starts dropping new frames.
+- Temporary input backpressure drops a block instead of killing the session. The capture queue
+  holds up to two seconds of startup audio before it starts dropping new blocks.
 - API rejection, microphone loss, or removal of the virtual device stops the session and leaves
   a failure message in Settings.
 - Selecting Stop immediately pauses physical microphone capture, requests a graceful
