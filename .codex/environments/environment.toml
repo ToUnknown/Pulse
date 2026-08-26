@@ -14,10 +14,8 @@ command = "pnpm tauri dev"
 name = "Build DMG"
 icon = "run"
 command = "node ./scripts/codex/build-desktop-installer.mjs macos"
-platform = "darwin"
 
 [[actions]]
 name = "Build EXE"
 icon = "run"
 command = "node ./scripts/codex/build-desktop-installer.mjs windows"
-platform = "win32"
