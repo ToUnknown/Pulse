@@ -17,18 +17,24 @@ void FreeNotificationList(_Inout_ LIST_ENTRY* Head)
 }
 }
 
-#pragma code_seg("PAGE")
+#pragma code_seg()
 PulseWaveRTStream::~PulseWaveRTStream()
 {
-    PAGED_CODE();
-    if (m_State == KSSTATE_RUN)
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_PositionLock, &oldIrql);
+    const bool wasRunning = m_State == KSSTATE_RUN;
+    m_State = KSSTATE_STOP;
+    PEX_TIMER timerToDelete = m_Timer;
+    m_Timer = nullptr;
+    KeReleaseSpinLock(&m_PositionLock, oldIrql);
+
+    if (timerToDelete != nullptr)
+    {
+        ExDeleteTimer(timerToDelete, TRUE, TRUE, nullptr);
+    }
+    if (wasRunning)
     {
         g_PulseAudioRing.SetCaptureRunning(false);
-    }
-    if (m_Timer != nullptr)
-    {
-        ExDeleteTimer(m_Timer, TRUE, TRUE, nullptr);
-        m_Timer = nullptr;
     }
     FreeNotificationList(&m_NotificationList);
     if (m_Miniport != nullptr)
@@ -39,6 +45,7 @@ PulseWaveRTStream::~PulseWaveRTStream()
     }
 }
 
+#pragma code_seg("PAGE")
 NTSTATUS PulseWaveRTStream::Init(
     PulseWaveRTMiniport* Miniport,
     PPORTWAVERTSTREAM PortStream,
@@ -52,16 +59,8 @@ NTSTATUS PulseWaveRTStream::Init(
     m_Miniport = Miniport;
     m_Miniport->AddRef();
     m_PortStream = PortStream;
-    KeInitializeSpinLock(&m_PositionLock);
-    KeInitializeSpinLock(&m_NotificationLock);
-    InitializeListHead(&m_NotificationList);
     g_PulseAudioRing.StartReader(&m_RingCursor, &m_ResetGeneration);
 
-    m_Timer = ExAllocateTimer(PulseStreamTimer, this, EX_TIMER_HIGH_RESOLUTION);
-    if (m_Timer == nullptr)
-    {
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
     return STATUS_SUCCESS;
 }
 
@@ -115,9 +114,9 @@ VOID PulseWaveRTStream::FreeBufferWithNotification(PMDL Mdl, ULONG Size)
     FreeAudioBuffer(Mdl, Size);
 }
 
+#pragma code_seg()
 NTSTATUS PulseWaveRTStream::RegisterNotificationEvent(PKEVENT NotificationEvent)
 {
-    PAGED_CODE();
     if (NotificationEvent == nullptr)
     {
         return STATUS_INVALID_PARAMETER;
@@ -149,7 +148,6 @@ NTSTATUS PulseWaveRTStream::RegisterNotificationEvent(PKEVENT NotificationEvent)
 
 NTSTATUS PulseWaveRTStream::UnregisterNotificationEvent(PKEVENT NotificationEvent)
 {
-    PAGED_CODE();
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NotificationLock, &oldIrql);
     for (PLIST_ENTRY entry = m_NotificationList.Flink; entry != &m_NotificationList; entry = entry->Flink)
@@ -167,6 +165,7 @@ NTSTATUS PulseWaveRTStream::UnregisterNotificationEvent(PKEVENT NotificationEven
     return STATUS_NOT_FOUND;
 }
 
+#pragma code_seg("PAGE")
 NTSTATUS PulseWaveRTStream::GetClockRegister(PKSRTAUDIO_HWREGISTER Register)
 {
     UNREFERENCED_PARAMETER(Register);
@@ -249,17 +248,54 @@ NTSTATUS PulseWaveRTStream::AllocateAudioBuffer(
     return STATUS_SUCCESS;
 }
 
+#pragma code_seg()
 NTSTATUS PulseWaveRTStream::SetState(KSSTATE State)
 {
-    PAGED_CODE();
     if (State < KSSTATE_STOP || State > KSSTATE_RUN)
     {
         return STATUS_INVALID_PARAMETER;
     }
 
+    PEX_TIMER newTimer = nullptr;
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_PositionLock, &oldIrql);
     const KSSTATE oldState = m_State;
+    KeReleaseSpinLock(&m_PositionLock, oldIrql);
+
+    if (oldState != KSSTATE_RUN && State == KSSTATE_RUN)
+    {
+        newTimer = ExAllocateTimer(PulseStreamTimer, this, EX_TIMER_HIGH_RESOLUTION);
+        if (newTimer == nullptr)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+    }
+
+    PEX_TIMER timerToDelete = nullptr;
+    KeAcquireSpinLock(&m_PositionLock, &oldIrql);
+    if (m_State != oldState)
+    {
+        KeReleaseSpinLock(&m_PositionLock, oldIrql);
+        if (newTimer != nullptr)
+        {
+            ExDeleteTimer(newTimer, TRUE, TRUE, nullptr);
+        }
+        return STATUS_DEVICE_BUSY;
+    }
+    if (oldState == KSSTATE_RUN && State != KSSTATE_RUN)
+    {
+        timerToDelete = m_Timer;
+        m_Timer = nullptr;
+    }
+    else if (oldState != KSSTATE_RUN && State == KSSTATE_RUN)
+    {
+        if (newTimer == nullptr)
+        {
+            KeReleaseSpinLock(&m_PositionLock, oldIrql);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        m_Timer = newTimer;
+    }
     m_State = State;
     if (State == KSSTATE_STOP)
     {
@@ -272,18 +308,23 @@ NTSTATUS PulseWaveRTStream::SetState(KSSTATE State)
 
     if (oldState == KSSTATE_RUN && State != KSSTATE_RUN)
     {
-        ExCancelTimer(m_Timer, nullptr);
+        if (timerToDelete != nullptr)
+        {
+            ExDeleteTimer(timerToDelete, TRUE, TRUE, nullptr);
+        }
         g_PulseAudioRing.SetCaptureRunning(false);
     }
     else if (oldState != KSSTATE_RUN && State == KSSTATE_RUN)
     {
         g_PulseAudioRing.StartReader(&m_RingCursor, &m_ResetGeneration);
         g_PulseAudioRing.SetCaptureRunning(true);
-        ExSetTimer(m_Timer, -PacketPeriod100ns, PacketPeriod100ns, nullptr);
+        _Analysis_assume_(newTimer != nullptr);
+        ExSetTimer(newTimer, -PacketPeriod100ns, PacketPeriod100ns, nullptr);
     }
     return STATUS_SUCCESS;
 }
 
+#pragma code_seg("PAGE")
 NTSTATUS PulseWaveRTStream::SetFormat(PKSDATAFORMAT DataFormat)
 {
     PAGED_CODE();
@@ -418,6 +459,7 @@ void PulseWaveRTStream::TransferPacket()
     KeReleaseSpinLock(&m_NotificationLock, oldIrql);
 }
 
+_Use_decl_annotations_
 void PulseStreamTimer(PEX_TIMER Timer, PVOID Context)
 {
     UNREFERENCED_PARAMETER(Timer);

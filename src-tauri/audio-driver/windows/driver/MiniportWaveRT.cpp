@@ -203,6 +203,7 @@ NTSTATUS PulseWaveRTMiniport::IsFormatSupported(ULONG Pin, BOOLEAN Capture, PKSD
 
 void PulseWaveRTMiniport::StreamClosed()
 {
+    PAGED_CODE();
     InterlockedDecrement(&m_AllocatedStreams);
 }
 

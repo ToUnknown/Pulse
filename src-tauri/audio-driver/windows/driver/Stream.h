@@ -21,6 +21,9 @@ public:
     explicit PulseWaveRTStream(_In_opt_ PUNKNOWN OuterUnknown)
         : CUnknown(OuterUnknown)
     {
+        KeInitializeSpinLock(&m_PositionLock);
+        KeInitializeSpinLock(&m_NotificationLock);
+        InitializeListHead(&m_NotificationList);
     }
     ~PulseWaveRTStream();
 
@@ -52,8 +55,8 @@ private:
     LONGLONG m_PacketCounter = 0;
     ULONG m_LastReadPacket = MAXULONG;
     ULONG64 m_LastPacketQpc = 0;
-    KSPIN_LOCK m_PositionLock;
-    KSPIN_LOCK m_NotificationLock;
-    LIST_ENTRY m_NotificationList;
+    KSPIN_LOCK m_PositionLock = {};
+    KSPIN_LOCK m_NotificationLock = {};
+    LIST_ENTRY m_NotificationList = {};
 };
 

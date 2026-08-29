@@ -11,6 +11,13 @@ PDRIVER_DISPATCH g_PortClsCleanup = nullptr;
 PDRIVER_DISPATCH g_PortClsPnp = nullptr;
 PDRIVER_UNLOAD g_PortClsUnload = nullptr;
 
+_Dispatch_type_(IRP_MJ_DEVICE_CONTROL)
+DRIVER_DISPATCH PulseDeviceControl;
+_Dispatch_type_(IRP_MJ_CLEANUP)
+DRIVER_DISPATCH PulseCleanup;
+_Dispatch_type_(IRP_MJ_PNP)
+DRIVER_DISPATCH PulsePnp;
+
 class PulseAdapter final : public IUnknown, public CUnknown
 {
 public:
@@ -91,7 +98,8 @@ NTSTATUS InstallSubdevice(
     return status;
 }
 
-NTSTATUS PulseDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP Irp)
+_Use_decl_annotations_
+NTSTATUS PulseDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
     const ULONG code = stack->Parameters.DeviceIoControl.IoControlCode;
@@ -164,14 +172,16 @@ NTSTATUS PulseDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP Irp)
     return g_PortClsDeviceControl(DeviceObject, Irp);
 }
 
-NTSTATUS PulseCleanup(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP Irp)
+_Use_decl_annotations_
+NTSTATUS PulseCleanup(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
     g_PulseAudioRing.ReleaseWriter(stack->FileObject);
     return g_PortClsCleanup(DeviceObject, Irp);
 }
 
-NTSTATUS PulsePnp(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP Irp)
+_Use_decl_annotations_
+NTSTATUS PulsePnp(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     const UCHAR minor = IoGetCurrentIrpStackLocation(Irp)->MinorFunction;
     if (minor == IRP_MN_STOP_DEVICE || minor == IRP_MN_SURPRISE_REMOVAL || minor == IRP_MN_REMOVE_DEVICE)
