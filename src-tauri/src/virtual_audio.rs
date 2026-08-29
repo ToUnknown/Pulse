@@ -12,6 +12,13 @@ const OWNER_MARKER: &str = "pulse-installed-vb-cable";
 #[cfg(target_os = "windows")]
 const WINDOWS_PACKAGE: &str = "resources/virtual-audio/windows/x64";
 #[cfg(target_os = "windows")]
+const WINDOWS_PACKAGE_FILES: [&str; 4] = [
+    "PulseVirtualMic.inf",
+    "PulseVirtualMic.sys",
+    "PulseVirtualMic.cat",
+    "PulseDriverInstaller.exe",
+];
+#[cfg(target_os = "windows")]
 const WINDOWS_INSTALLER: &str = "PulseDriverInstaller.exe";
 #[cfg(target_os = "macos")]
 const MACOS_DRIVER: &str = "target/pulse-audio-driver/Pulse.driver";
@@ -153,13 +160,46 @@ fn bundled_macos_driver(app: &AppHandle) -> Result<PathBuf, String> {
 
 #[cfg(target_os = "windows")]
 fn bundled_windows_package(app: &AppHandle) -> Result<PathBuf, String> {
-    let path = app
+    let bundled = app
         .path()
         .resolve(WINDOWS_PACKAGE, BaseDirectory::Resource)
         .map_err(|error| format!("could not locate the bundled Pulse audio component: {error}"))?;
-    path.is_dir()
-        .then_some(path)
-        .ok_or_else(|| "the bundled PulseVirtualMic driver package is missing".to_string())
+    if windows_package_missing_files(&bundled).is_empty() {
+        return Ok(bundled);
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let development = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/audio-driver/windows/x64/Release/package");
+        let missing = windows_package_missing_files(&development);
+        if missing.is_empty() {
+            return Ok(development);
+        }
+        Err(format!(
+            "the PulseVirtualMic development package is incomplete at {} (missing {}); install the Windows WDK, run scripts/build-windows-driver.ps1 -Configuration Release with a test certificate, then restart pnpm tauri dev",
+            development.display(),
+            missing.join(", ")
+        ))
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let missing = windows_package_missing_files(&bundled);
+        Err(format!(
+            "the bundled PulseVirtualMic driver package is incomplete (missing {}); reinstall Pulse",
+            missing.join(", ")
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_package_missing_files(package: &Path) -> Vec<&'static str> {
+    WINDOWS_PACKAGE_FILES
+        .iter()
+        .copied()
+        .filter(|name| !package.join(name).is_file())
+        .collect()
 }
 
 fn owner_marker(app: &AppHandle) -> Result<PathBuf, String> {
@@ -651,6 +691,24 @@ mod ownership_tests {
         assert!(inf.contains("%DeviceDescription%=PulseVirtualMic,ROOT\\PulseVirtualMic"));
         assert!(inf.contains("EndpointName=\"Pulse\""));
         assert!(inf.contains("PKEY_AudioEndpoint_FormFactor%"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_driver_package_requires_every_installation_file() {
+        use super::{windows_package_missing_files, WINDOWS_PACKAGE_FILES};
+        use std::fs;
+
+        let directory = tempfile::tempdir().expect("temporary driver package");
+        assert_eq!(
+            windows_package_missing_files(directory.path()),
+            WINDOWS_PACKAGE_FILES
+        );
+
+        for name in WINDOWS_PACKAGE_FILES {
+            fs::write(directory.path().join(name), []).expect("driver package file");
+        }
+        assert!(windows_package_missing_files(directory.path()).is_empty());
     }
 }
 
