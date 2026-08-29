@@ -6,7 +6,18 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::path::Path;
+#[cfg(target_os = "windows")]
+use std::{ffi::OsString, mem, os::windows::ffi::OsStrExt};
 use tauri::{path::BaseDirectory, AppHandle, Manager};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, ERROR_CANCELLED, WAIT_OBJECT_0},
+    System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE},
+    UI::{
+        Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+        WindowsAndMessaging::SW_HIDE,
+    },
+};
 
 const OWNER_MARKER: &str = "pulse-installed-vb-cable";
 #[cfg(target_os = "windows")]
@@ -400,28 +411,20 @@ fn run_windows_installer(
         .map_err(|error| format!("could not prepare the Pulse driver installer: {error}"))?;
     let result_path = result_directory.path().join("result.json");
 
-    const LAUNCH: &str = r#"$ErrorActionPreference = 'Stop'
-$process = Start-Process -FilePath $env:PULSE_DRIVER_INSTALLER -ArgumentList $env:PULSE_DRIVER_OPERATION -Verb RunAs -Wait -PassThru
-exit $process.ExitCode"#;
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", LAUNCH])
-        .env("PULSE_DRIVER_INSTALLER", &installer)
-        .env("PULSE_DRIVER_OPERATION", operation)
-        .env("PULSE_DRIVER_PACKAGE", package)
-        .env("PULSE_DRIVER_RESULT", &result_path)
-        .status()
-        .map_err(|error| format!("could not start the Pulse driver installer: {error}"))?;
+    let exit_code = run_windows_installer_elevated(&installer, package, &result_path, operation)?;
 
     let contents = fs::read_to_string(&result_path).map_err(|error| {
-        if status.success() {
+        if exit_code == 0 {
             format!("the Pulse driver installer did not return a result: {error}")
         } else {
-            "Pulse driver installation was cancelled or could not be elevated".to_string()
+            format!(
+                "the elevated Pulse driver installer exited with code {exit_code} without returning a result"
+            )
         }
     })?;
     let result: WindowsInstallerResult = serde_json::from_str(&contents)
         .map_err(|error| format!("the Pulse driver installer returned invalid status: {error}"))?;
-    if !result.ok || !status.success() {
+    if !result.ok || exit_code != 0 {
         let details = if result.inf_name.is_empty() {
             String::new()
         } else {
@@ -433,6 +436,81 @@ exit $process.ExitCode"#;
         ));
     }
     Ok(result)
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_installer_elevated(
+    installer: &Path,
+    package: &Path,
+    result_path: &Path,
+    operation: &str,
+) -> Result<u32, String> {
+    let verb = "runas\0".encode_utf16().collect::<Vec<_>>();
+    let installer = installer
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut parameters = OsString::from(operation);
+    parameters.push(" --package \"");
+    parameters.push(package.as_os_str());
+    parameters.push("\" --result \"");
+    parameters.push(result_path.as_os_str());
+    parameters.push("\"");
+    let parameters = parameters.encode_wide().chain(Some(0)).collect::<Vec<_>>();
+
+    let mut execute = SHELLEXECUTEINFOW {
+        cbSize: mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: verb.as_ptr(),
+        lpFile: installer.as_ptr(),
+        lpParameters: parameters.as_ptr(),
+        nShow: SW_HIDE,
+        ..Default::default()
+    };
+
+    // ShellExecuteExW is the supported Windows path for requesting UAC elevation. The strings
+    // above remain alive until the call returns, and a successful call owns hProcess below.
+    if unsafe { ShellExecuteExW(&mut execute) } == 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+            Err("Pulse driver installation was cancelled at the Windows UAC prompt".to_string())
+        } else {
+            Err(format!(
+                "could not elevate the Pulse driver installer: {error}"
+            ))
+        };
+    }
+    if execute.hProcess.is_null() {
+        return Err(
+            "Windows elevated the Pulse driver installer without returning a process handle"
+                .to_string(),
+        );
+    }
+
+    let wait = unsafe { WaitForSingleObject(execute.hProcess, INFINITE) };
+    if wait != WAIT_OBJECT_0 {
+        let error = std::io::Error::last_os_error();
+        unsafe {
+            CloseHandle(execute.hProcess);
+        }
+        return Err(format!(
+            "could not wait for the elevated Pulse driver installer: {error}"
+        ));
+    }
+
+    let mut exit_code = 0;
+    let exit_result = unsafe { GetExitCodeProcess(execute.hProcess, &mut exit_code) };
+    let exit_error = (exit_result == 0).then(std::io::Error::last_os_error);
+    unsafe {
+        CloseHandle(execute.hProcess);
+    }
+    if let Some(error) = exit_error {
+        return Err(format!(
+            "could not read the Pulse driver installer exit code: {error}"
+        ));
+    }
+    Ok(exit_code)
 }
 
 #[cfg(target_os = "windows")]
