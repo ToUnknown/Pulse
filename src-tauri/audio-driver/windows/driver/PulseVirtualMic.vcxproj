@@ -45,11 +45,8 @@
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>portcls.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>portcls.lib;stdunk.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
-    <Inf>
-      <TimeStamp>$(PulseDriverTimestamp)</TimeStamp>
-    </Inf>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Driver.cpp" />

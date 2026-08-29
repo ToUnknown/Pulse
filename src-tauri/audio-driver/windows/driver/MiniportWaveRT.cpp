@@ -5,6 +5,21 @@
 
 extern "C" PKSDATAFORMAT_WAVEFORMATEXTENSIBLE PulseGetNativeFormat();
 
+namespace
+{
+PWAVEFORMATEX PulseGetWaveFormatEx(_In_ PKSDATAFORMAT DataFormat)
+{
+    if (DataFormat == nullptr ||
+        DataFormat->FormatSize < sizeof(KSDATAFORMAT) + sizeof(WAVEFORMATEX) ||
+        !IsEqualGUIDAligned(DataFormat->MajorFormat, KSDATAFORMAT_TYPE_AUDIO) ||
+        !IsEqualGUIDAligned(DataFormat->Specifier, KSDATAFORMAT_SPECIFIER_WAVEFORMATEX))
+    {
+        return nullptr;
+    }
+    return reinterpret_cast<PWAVEFORMATEX>(DataFormat + 1);
+}
+}
+
 #pragma code_seg("PAGE")
 NTSTATUS PulseCreateWaveMiniport(PUNKNOWN* Unknown)
 {
@@ -55,7 +70,7 @@ STDMETHODIMP PulseWaveRTMiniport::DataRangeIntersection(
     return STATUS_NOT_IMPLEMENTED;
 }
 
-STDMETHODIMP PulseWaveRTMiniport::GetDescription(PPCFILTER_DESCRIPTOR OutFilterDescriptor)
+STDMETHODIMP PulseWaveRTMiniport::GetDescription(PPCFILTER_DESCRIPTOR* OutFilterDescriptor)
 {
     PAGED_CODE();
     if (OutFilterDescriptor == nullptr)
@@ -172,7 +187,7 @@ NTSTATUS PulseWaveRTMiniport::IsFormatSupported(ULONG Pin, BOOLEAN Capture, PKSD
         return STATUS_NO_MATCH;
     }
 
-    const PWAVEFORMATEX format = GetWaveFormatEx(DataFormat);
+    const PWAVEFORMATEX format = PulseGetWaveFormatEx(DataFormat);
     if (format == nullptr || format->nChannels != 1 || format->nSamplesPerSec != PULSE_SAMPLE_RATE ||
         format->wBitsPerSample != 16 || format->nBlockAlign != sizeof(INT16) ||
         format->nAvgBytesPerSec != PULSE_SAMPLE_RATE * sizeof(INT16))

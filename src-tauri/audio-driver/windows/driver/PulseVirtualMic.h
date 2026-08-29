@@ -2,6 +2,7 @@
 
 #include <ntddk.h>
 #include <portcls.h>
+#define _NEW_DELETE_OPERATORS_
 #include <stdunk.h>
 #include <ks.h>
 #include <ksmedia.h>
@@ -105,5 +106,5 @@ extern "C" NTSTATUS PulseStartDevice(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP
 NTSTATUS PulseCreateWaveMiniport(_Out_ PUNKNOWN* Unknown);
 NTSTATUS PulseCreateTopologyMiniport(_Out_ PUNKNOWN* Unknown);
 
-extern PCFILTER_DESCRIPTOR g_PulseWaveFilterDescriptor;
-extern PCFILTER_DESCRIPTOR g_PulseTopologyFilterDescriptor;
+extern PPCFILTER_DESCRIPTOR g_PulseWaveFilterDescriptor;
+extern PPCFILTER_DESCRIPTOR g_PulseTopologyFilterDescriptor;

@@ -3,21 +3,21 @@
 
 void* __cdecl operator new(size_t Size, POOL_FLAGS PoolFlags, ULONG Tag)
 {
-    return ExAllocatePool2(PoolFlags, Size, Tag);
-}
-
-void __cdecl operator delete(void* Allocation)
-{
-    if (Allocation != nullptr)
+    void* allocation = ExAllocatePool2(PoolFlags, Size, Tag);
+    if (allocation != nullptr)
     {
-        ExFreePoolWithTag(Allocation, PULSE_POOL_TAG);
+        RtlZeroMemory(allocation, Size);
     }
+    return allocation;
 }
 
 void __cdecl operator delete(void* Allocation, size_t Size)
 {
     UNREFERENCED_PARAMETER(Size);
-    operator delete(Allocation);
+    if (Allocation != nullptr)
+    {
+        ExFreePool(Allocation);
+    }
 }
 
 void __cdecl operator delete(void* Allocation, POOL_FLAGS PoolFlags, ULONG Tag)

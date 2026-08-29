@@ -23,7 +23,10 @@ $visualStudio = & $vswhere -latest -products * -requires Microsoft.Component.MSB
 if (-not $visualStudio) {
     throw 'Visual Studio 2022 with MSBuild could not be found.'
 }
-$msbuild = Join-Path $visualStudio 'MSBuild\Current\Bin\MSBuild.exe'
+$msbuild = Join-Path $visualStudio 'MSBuild\Current\Bin\amd64\MSBuild.exe'
+if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) {
+    $msbuild = Join-Path $visualStudio 'MSBuild\Current\Bin\MSBuild.exe'
+}
 if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) {
     throw "MSBuild is missing from $visualStudio."
 }
@@ -59,7 +62,9 @@ if (-not (Test-Path -LiteralPath $signTool -PathType Leaf)) {
 
 $driverToolset = Get-ChildItem -LiteralPath (Join-Path $visualStudio 'MSBuild\Microsoft\VC') -Directory -Filter 'v*' |
     Sort-Object Name -Descending |
-    ForEach-Object { Join-Path $_.FullName 'BuildCustomizations\WindowsDriver.common.targets' } |
+    ForEach-Object {
+        Join-Path $_.FullName 'Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0\Toolset.targets'
+    } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
     Select-Object -First 1
 if (-not $driverToolset) {
@@ -68,7 +73,7 @@ if (-not $driverToolset) {
 
 $configurations = if ($Configuration -eq 'Both') { @('Debug', 'Release') } else { @($Configuration) }
 foreach ($current in $configurations) {
-    & $msbuild (Join-Path $driverRoot 'PulseVirtualMic.sln') /m /t:Build "/p:Configuration=$current" /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$wdkVersion" /v:minimal
+    & $msbuild (Join-Path $driverRoot 'PulseVirtualMic.sln') /m /t:Build "/p:Configuration=$current" /p:Platform=x64 "/p:WindowsTargetPlatformVersion=$wdkVersion" /p:SignMode=Off /p:EnableTestSign=false /p:EnableInf2cat=false /v:minimal
     if ($LASTEXITCODE -ne 0) {
         throw "$current x64 Pulse driver build failed with exit code $LASTEXITCODE."
     }
@@ -139,10 +144,14 @@ foreach ($current in $configurations) {
         }
     }
 
-    Get-ChildItem -LiteralPath $package -File | Sort-Object Name | ForEach-Object {
+    $hashLines = Get-ChildItem -LiteralPath $package -File |
+        Where-Object Name -ne 'SHA256SUMS.txt' |
+        Sort-Object Name |
+        ForEach-Object {
         $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
         "{0}  {1}" -f $hash.Hash.ToLowerInvariant(), $_.Name
-    } | Out-File -LiteralPath (Join-Path $package 'SHA256SUMS.txt') -Encoding ascii
+    }
+    $hashLines | Out-File -LiteralPath (Join-Path $package 'SHA256SUMS.txt') -Encoding ascii
 
     Write-Host "Staged $current x64 package at $package"
 }

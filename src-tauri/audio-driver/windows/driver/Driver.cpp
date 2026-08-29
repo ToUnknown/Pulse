@@ -11,7 +11,7 @@ PDRIVER_DISPATCH g_PortClsCleanup = nullptr;
 PDRIVER_DISPATCH g_PortClsPnp = nullptr;
 PDRIVER_UNLOAD g_PortClsUnload = nullptr;
 
-class PulseAdapter final : public CUnknown
+class PulseAdapter final : public IUnknown, public CUnknown
 {
 public:
     explicit PulseAdapter(_In_opt_ PUNKNOWN OuterUnknown)
@@ -20,23 +20,23 @@ public:
     }
 
     DECLARE_STD_UNKNOWN();
+};
 
-    STDMETHODIMP NonDelegatingQueryInterface(REFIID Interface, PVOID* Object) override
+STDMETHODIMP PulseAdapter::NonDelegatingQueryInterface(REFIID Interface, PVOID* Object)
+{
+    if (Object == nullptr)
     {
-        if (Object == nullptr)
-        {
-            return STATUS_INVALID_PARAMETER;
-        }
-        if (IsEqualGUIDAligned(Interface, IID_IUnknown))
-        {
-            *Object = static_cast<PUNKNOWN>(this);
-            AddRef();
-            return STATUS_SUCCESS;
-        }
-        *Object = nullptr;
         return STATUS_INVALID_PARAMETER;
     }
-};
+    if (IsEqualGUIDAligned(Interface, IID_IUnknown))
+    {
+        *Object = static_cast<PUNKNOWN>(this);
+        PUNKNOWN(*Object)->AddRef();
+        return STATUS_SUCCESS;
+    }
+    *Object = nullptr;
+    return STATUS_INVALID_PARAMETER;
+}
 
 NTSTATUS CompleteIrp(_In_ PIRP Irp, _In_ NTSTATUS Status, _In_ ULONG_PTR Information)
 {
@@ -53,8 +53,14 @@ NTSTATUS InstallSubdevice(
     _In_ PUNKNOWN Adapter,
     _In_ REFGUID PortClassId,
     _In_ PCWSTR Name,
-    _In_ bool Wave)
+    _In_ bool Wave,
+    _Out_ PUNKNOWN* PortUnknown)
 {
+    if (PortUnknown == nullptr)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *PortUnknown = nullptr;
     PPORT port = nullptr;
     PUNKNOWN miniport = nullptr;
     NTSTATUS status = PcNewPort(&port, PortClassId);
@@ -69,6 +75,10 @@ NTSTATUS InstallSubdevice(
     if (NT_SUCCESS(status))
     {
         status = PcRegisterSubdevice(DeviceObject, const_cast<PWSTR>(Name), port);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = port->QueryInterface(IID_IUnknown, reinterpret_cast<PVOID*>(PortUnknown));
     }
     if (miniport != nullptr)
     {
@@ -242,23 +252,33 @@ extern "C" NTSTATUS PulseStartDevice(PDEVICE_OBJECT DeviceObject, PIRP Irp, PRES
     }
     adapter->AddRef();
 
+    PUNKNOWN topologyPort = nullptr;
+    PUNKNOWN wavePort = nullptr;
+
     NTSTATUS status = InstallSubdevice(
-        DeviceObject, Irp, ResourceList, adapter, CLSID_PortTopology, PULSE_TOPOLOGY_NAME, false);
+        DeviceObject, Irp, ResourceList, adapter, CLSID_PortTopology, PULSE_TOPOLOGY_NAME, false,
+        &topologyPort);
     if (NT_SUCCESS(status))
     {
         status = InstallSubdevice(
-            DeviceObject, Irp, ResourceList, adapter, CLSID_PortWaveRT, PULSE_WAVE_NAME, true);
+            DeviceObject, Irp, ResourceList, adapter, CLSID_PortWaveRT, PULSE_WAVE_NAME, true,
+            &wavePort);
     }
     if (NT_SUCCESS(status))
     {
-        status = PcRegisterPhysicalConnection(
-            DeviceObject,
-            const_cast<PWSTR>(PULSE_TOPOLOGY_NAME), 1,
-            const_cast<PWSTR>(PULSE_WAVE_NAME), 0);
+        status = PcRegisterPhysicalConnection(DeviceObject, topologyPort, 1, wavePort, 0);
     }
     if (NT_SUCCESS(status))
     {
         status = IoSetDeviceInterfaceState(&g_PulseControlInterface, TRUE);
+    }
+    if (wavePort != nullptr)
+    {
+        wavePort->Release();
+    }
+    if (topologyPort != nullptr)
+    {
+        topologyPort->Release();
     }
     adapter->Release();
     return status;

@@ -39,7 +39,7 @@ STDMETHODIMP PulseTopologyMiniport::DataRangeIntersection(
     return STATUS_NOT_IMPLEMENTED;
 }
 
-STDMETHODIMP PulseTopologyMiniport::GetDescription(PPCFILTER_DESCRIPTOR OutFilterDescriptor)
+STDMETHODIMP PulseTopologyMiniport::GetDescription(PPCFILTER_DESCRIPTOR* OutFilterDescriptor)
 {
     PAGED_CODE();
     if (OutFilterDescriptor == nullptr)

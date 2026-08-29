@@ -170,8 +170,8 @@ PCFILTER_DESCRIPTOR PulseTopologyFilter =
 };
 }
 
-PCFILTER_DESCRIPTOR g_PulseWaveFilterDescriptor = &PulseWaveFilter;
-PCFILTER_DESCRIPTOR g_PulseTopologyFilterDescriptor = &PulseTopologyFilter;
+PPCFILTER_DESCRIPTOR g_PulseWaveFilterDescriptor = &PulseWaveFilter;
+PPCFILTER_DESCRIPTOR g_PulseTopologyFilterDescriptor = &PulseTopologyFilter;
 
 extern "C" PKSDATAFORMAT_WAVEFORMATEXTENSIBLE PulseGetNativeFormat()
 {
