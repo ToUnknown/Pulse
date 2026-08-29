@@ -167,6 +167,11 @@ if (requestedBuild === "macos") {
     installerName,
   );
 
+  if (!process.env.PULSE_SIGNED_DRIVER_PACKAGE) {
+    fail(
+      "Windows installers require PULSE_SIGNED_DRIVER_PACKAGE pointing to a Microsoft-signed PulseVirtualMic package. Build test packages separately and install them only in a disposable VM.",
+    );
+  }
   run("rustup", ["target", "add", target]);
   const driverBuildArguments = [
     "-NoProfile",
@@ -178,18 +183,11 @@ if (requestedBuild === "macos") {
     "-Configuration",
     "Release",
   ];
-  if (process.env.PULSE_SIGNED_DRIVER_PACKAGE) {
-    driverBuildArguments.push(
-      "-SignedPackagePath",
-      process.env.PULSE_SIGNED_DRIVER_PACKAGE,
-      "-RequireMicrosoftSignature",
-    );
-  } else if (process.env.PULSE_DRIVER_TEST_CERTIFICATE_THUMBPRINT) {
-    driverBuildArguments.push(
-      "-TestCertificateThumbprint",
-      process.env.PULSE_DRIVER_TEST_CERTIFICATE_THUMBPRINT,
-    );
-  }
+  driverBuildArguments.push(
+    "-SignedPackagePath",
+    process.env.PULSE_SIGNED_DRIVER_PACKAGE,
+    "-RequireMicrosoftSignature",
+  );
   run("powershell.exe", driverBuildArguments);
   run(process.execPath, [
     tauriCli,

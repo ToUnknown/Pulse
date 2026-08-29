@@ -148,6 +148,8 @@ foreach ($current in $configurations) {
         if ($LASTEXITCODE -ne 0) {
             throw "PulseVirtualMic.sys is not covered by the trusted PulseVirtualMic.cat. Supply a complete Microsoft-signed package with -SignedPackagePath."
         }
+        'Microsoft kernel-mode signature verified by scripts/build-windows-driver.ps1.' |
+            Out-File -LiteralPath (Join-Path $package 'MICROSOFT_SIGNED') -Encoding ascii
     }
 
     $hashLines = Get-ChildItem -LiteralPath $package -File |

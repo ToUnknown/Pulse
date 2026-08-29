@@ -55,7 +55,8 @@ input. On macOS, it removes the Pulse driver; upgrading from the earlier experim
 removes the Pulse-owned VB-CABLE driver and aggregate device. On Windows, it stops the
 background microphone router and removes the Pulse-owned devnode and Driver Store package.
 Migration removes legacy VB-CABLE only when Pulse's ownership marker says Pulse installed it.
-Windows may require a restart to finish adding or removing the endpoint.
+Windows may require a restart to finish adding or removing the endpoint. Pulse refuses to
+install test-signed Windows driver packages; kernel-driver testing belongs in a disposable VM.
 
 Pulse cannot make translated audio appear under the original hardware microphone's name.
 Desktop applications bind to operating-system audio endpoints, so the call app must use

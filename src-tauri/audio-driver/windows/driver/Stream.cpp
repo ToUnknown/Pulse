@@ -26,6 +26,10 @@ PulseWaveRTStream::~PulseWaveRTStream()
     m_State = KSSTATE_STOP;
     PEX_TIMER timerToDelete = m_Timer;
     m_Timer = nullptr;
+    if (timerToDelete != nullptr)
+    {
+        ExCancelTimer(timerToDelete, nullptr);
+    }
     KeReleaseSpinLock(&m_PositionLock, oldIrql);
 
     if (timerToDelete != nullptr)
@@ -61,6 +65,11 @@ NTSTATUS PulseWaveRTStream::Init(
     m_PortStream = PortStream;
     g_PulseAudioRing.StartReader(&m_RingCursor, &m_ResetGeneration);
 
+    m_Timer = ExAllocateTimer(PulseStreamTimer, this, EX_TIMER_HIGH_RESOLUTION);
+    if (m_Timer == nullptr)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -256,45 +265,13 @@ NTSTATUS PulseWaveRTStream::SetState(KSSTATE State)
         return STATUS_INVALID_PARAMETER;
     }
 
-    PEX_TIMER newTimer = nullptr;
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_PositionLock, &oldIrql);
     const KSSTATE oldState = m_State;
-    KeReleaseSpinLock(&m_PositionLock, oldIrql);
-
-    if (oldState != KSSTATE_RUN && State == KSSTATE_RUN)
-    {
-        newTimer = ExAllocateTimer(PulseStreamTimer, this, EX_TIMER_HIGH_RESOLUTION);
-        if (newTimer == nullptr)
-        {
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-    }
-
-    PEX_TIMER timerToDelete = nullptr;
-    KeAcquireSpinLock(&m_PositionLock, &oldIrql);
-    if (m_State != oldState)
+    if (m_Timer == nullptr)
     {
         KeReleaseSpinLock(&m_PositionLock, oldIrql);
-        if (newTimer != nullptr)
-        {
-            ExDeleteTimer(newTimer, TRUE, TRUE, nullptr);
-        }
-        return STATUS_DEVICE_BUSY;
-    }
-    if (oldState == KSSTATE_RUN && State != KSSTATE_RUN)
-    {
-        timerToDelete = m_Timer;
-        m_Timer = nullptr;
-    }
-    else if (oldState != KSSTATE_RUN && State == KSSTATE_RUN)
-    {
-        if (newTimer == nullptr)
-        {
-            KeReleaseSpinLock(&m_PositionLock, oldIrql);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        m_Timer = newTimer;
+        return STATUS_DEVICE_NOT_READY;
     }
     m_State = State;
     if (State == KSSTATE_STOP)
@@ -304,23 +281,18 @@ NTSTATUS PulseWaveRTStream::SetState(KSSTATE State)
         m_LastReadPacket = MAXULONG;
         m_LastPacketQpc = 0;
     }
-    KeReleaseSpinLock(&m_PositionLock, oldIrql);
-
     if (oldState == KSSTATE_RUN && State != KSSTATE_RUN)
     {
-        if (timerToDelete != nullptr)
-        {
-            ExDeleteTimer(timerToDelete, TRUE, TRUE, nullptr);
-        }
+        ExCancelTimer(m_Timer, nullptr);
         g_PulseAudioRing.SetCaptureRunning(false);
     }
     else if (oldState != KSSTATE_RUN && State == KSSTATE_RUN)
     {
         g_PulseAudioRing.StartReader(&m_RingCursor, &m_ResetGeneration);
         g_PulseAudioRing.SetCaptureRunning(true);
-        _Analysis_assume_(newTimer != nullptr);
-        ExSetTimer(newTimer, -PacketPeriod100ns, PacketPeriod100ns, nullptr);
+        ExSetTimer(m_Timer, -PacketPeriod100ns, PacketPeriod100ns, nullptr);
     }
+    KeReleaseSpinLock(&m_PositionLock, oldIrql);
     return STATUS_SUCCESS;
 }
 

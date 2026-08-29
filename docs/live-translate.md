@@ -94,6 +94,10 @@ restores an unowned renamed VB-CABLE capture endpoint to `CABLE Output`, and rem
 package only when Pulse's existing ownership marker says Pulse installed it. A restart-required
 result is shown when Windows needs a reboot to finish the lifecycle operation.
 
+Pulse installs a Windows package only after the build pipeline has verified its Microsoft
+kernel-mode signature. Debug and Release builds reject test-signed packages. Test the development
+driver manually inside a disposable VM; do not enable Windows TESTSIGNING on a normal workstation.
+
 ## Credentials and local data
 
 The OpenAI API key is stored through the operating system's credential service: macOS

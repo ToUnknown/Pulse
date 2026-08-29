@@ -106,6 +106,7 @@ fn prepare_windows_audio_driver_resource() {
             "PulseVirtualMic.sys",
             "PulseVirtualMic.cat",
             "PulseDriverInstaller.exe",
+            "MICROSOFT_SIGNED",
         ] {
             let path = package.join(required);
             assert!(
@@ -114,6 +115,14 @@ fn prepare_windows_audio_driver_resource() {
                 path.display()
             );
         }
+        let marker = package.join("MICROSOFT_SIGNED");
+        let marker_contents = fs::read_to_string(&marker)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", marker.display()));
+        assert_eq!(
+            marker_contents.trim(),
+            "Microsoft kernel-mode signature verified by scripts/build-windows-driver.ps1.",
+            "the release driver package has an invalid Microsoft-signature verification marker"
+        );
     }
 }
 

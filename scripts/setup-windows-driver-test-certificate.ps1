@@ -1,8 +1,14 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$DisposableVmAcknowledged
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+if (-not $DisposableVmAcknowledged) {
+    throw 'Pulse test drivers must only be installed in a disposable Windows virtual machine. Re-run with -DisposableVmAcknowledged inside that VM.'
+}
 
 $principal = [Security.Principal.WindowsPrincipal]::new(
     [Security.Principal.WindowsIdentity]::GetCurrent()

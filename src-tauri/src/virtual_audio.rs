@@ -23,12 +23,16 @@ const OWNER_MARKER: &str = "pulse-installed-vb-cable";
 #[cfg(target_os = "windows")]
 const WINDOWS_PACKAGE: &str = "resources/virtual-audio/windows/x64";
 #[cfg(target_os = "windows")]
-const WINDOWS_PACKAGE_FILES: [&str; 4] = [
+const WINDOWS_PACKAGE_FILES: [&str; 5] = [
     "PulseVirtualMic.inf",
     "PulseVirtualMic.sys",
     "PulseVirtualMic.cat",
     "PulseDriverInstaller.exe",
+    "MICROSOFT_SIGNED",
 ];
+#[cfg(target_os = "windows")]
+const WINDOWS_SIGNED_MARKER: &str =
+    "Microsoft kernel-mode signature verified by scripts/build-windows-driver.ps1.";
 #[cfg(target_os = "windows")]
 const WINDOWS_INSTALLER: &str = "PulseDriverInstaller.exe";
 #[cfg(target_os = "macos")]
@@ -188,7 +192,7 @@ fn bundled_windows_package(app: &AppHandle) -> Result<PathBuf, String> {
             return Ok(development);
         }
         Err(format!(
-            "the PulseVirtualMic development package is incomplete at {} (missing {}); install the Windows WDK, run scripts/build-windows-driver.ps1 -Configuration Release with a test certificate, then restart pnpm tauri dev",
+            "Pulse will not install a test-signed kernel driver; stage a Microsoft-signed PulseVirtualMic package at {} (missing {}) or test the development package manually in a disposable virtual machine",
             development.display(),
             missing.join(", ")
         ))
@@ -198,7 +202,7 @@ fn bundled_windows_package(app: &AppHandle) -> Result<PathBuf, String> {
     {
         let missing = windows_package_missing_files(&bundled);
         Err(format!(
-            "the bundled PulseVirtualMic driver package is incomplete (missing {}); reinstall Pulse",
+            "the bundled PulseVirtualMic driver package is incomplete or was not verified as Microsoft-signed (missing {}); reinstall Pulse",
             missing.join(", ")
         ))
     }
@@ -209,7 +213,16 @@ fn windows_package_missing_files(package: &Path) -> Vec<&'static str> {
     WINDOWS_PACKAGE_FILES
         .iter()
         .copied()
-        .filter(|name| !package.join(name).is_file())
+        .filter(|name| {
+            let path = package.join(name);
+            if *name == "MICROSOFT_SIGNED" {
+                fs::read_to_string(path)
+                    .map(|contents| contents.trim() != WINDOWS_SIGNED_MARKER)
+                    .unwrap_or(true)
+            } else {
+                !path.is_file()
+            }
+        })
         .collect()
 }
 
@@ -774,7 +787,7 @@ mod ownership_tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_driver_package_requires_every_installation_file() {
-        use super::{windows_package_missing_files, WINDOWS_PACKAGE_FILES};
+        use super::{windows_package_missing_files, WINDOWS_PACKAGE_FILES, WINDOWS_SIGNED_MARKER};
         use std::fs;
 
         let directory = tempfile::tempdir().expect("temporary driver package");
@@ -786,7 +799,38 @@ mod ownership_tests {
         for name in WINDOWS_PACKAGE_FILES {
             fs::write(directory.path().join(name), []).expect("driver package file");
         }
+        assert_eq!(
+            windows_package_missing_files(directory.path()),
+            ["MICROSOFT_SIGNED"]
+        );
+        fs::write(
+            directory.path().join("MICROSOFT_SIGNED"),
+            WINDOWS_SIGNED_MARKER,
+        )
+        .expect("verified marker");
         assert!(windows_package_missing_files(directory.path()).is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_wave_rt_timer_lives_for_the_stream_lifetime() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("audio-driver/windows/driver/Stream.cpp"),
+        )
+        .expect("Pulse WaveRT stream source");
+        let set_state = source
+            .split("NTSTATUS PulseWaveRTStream::SetState")
+            .nth(1)
+            .and_then(|tail| tail.split("NTSTATUS PulseWaveRTStream::SetFormat").next())
+            .expect("SetState implementation");
+
+        assert_eq!(source.matches("ExAllocateTimer").count(), 1);
+        assert_eq!(source.matches("ExDeleteTimer").count(), 1);
+        assert!(!set_state.contains("ExAllocateTimer"));
+        assert!(!set_state.contains("ExDeleteTimer"));
+        assert!(set_state.contains("ExCancelTimer(m_Timer"));
+        assert!(set_state.contains("ExSetTimer(m_Timer"));
     }
 }
 

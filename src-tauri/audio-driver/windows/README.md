@@ -34,19 +34,21 @@ Microsoft-signed INF/SYS/CAT directory with `-SignedPackagePath`, plus
 Generated build and package files are written only below
 `src-tauri/target/audio-driver/windows/x64/<Configuration>`.
 
-For local installation tests, create and trust a non-exportable test certificate from an elevated
-PowerShell session, then rebuild both packages with that certificate:
+Run local installation tests only in a disposable Windows virtual machine. Do not enable
+TESTSIGNING on a normal workstation. BCD changes can trigger Windows or BitLocker recovery, and a
+kernel-driver defect can stop the guest. Inside the disposable VM, create and trust a
+non-exportable test certificate from an elevated PowerShell session, then rebuild both packages:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-driver-test-certificate.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-driver-test-certificate.ps1 -DisposableVmAcknowledged
 $thumbprint = Get-Content src-tauri/target/audio-driver/test-signing/thumbprint.txt
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-driver.ps1 -Configuration Both -TestCertificateThumbprint $thumbprint
 ```
 
-Debug Pulse builds read the staged Release package directly from `src-tauri/target`, so restart
-`pnpm tauri dev` after building. Windows must be in TESTSIGNING mode before it can load this
-development certificate. Enabling TESTSIGNING changes BCD and requires a reboot; Pulse does not
-perform that change automatically.
+Pulse rejects test-signed packages in both Debug and Release builds. The build script writes the
+`MICROSOFT_SIGNED` package marker only after `signtool verify /kp` accepts both the catalog and its
+coverage of the SYS file. Install a test package manually in the disposable VM. TESTSIGNING
+changes BCD and requires a reboot; Pulse does not perform that change automatically.
 
 The implementation follows Microsoft's current
 [SysVAD sample](https://github.com/microsoft/Windows-driver-samples/tree/main/audio/sysvad) for
