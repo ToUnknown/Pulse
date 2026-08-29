@@ -118,25 +118,6 @@ jobs:
           RELEASE_VERSION: ${{ needs.plan-release.outputs.version }}
         run: node .github/scripts/apply-release-version.mjs
 
-      - name: Build and stage Microsoft-signed Pulse driver
-        if: ${{ matrix.name == 'Windows' }}
-        shell: pwsh
-        env:
-          PULSE_SIGNED_DRIVER_PACKAGE_URL: ${{ secrets.PULSE_SIGNED_DRIVER_PACKAGE_URL }}
-        run: |
-          if (-not $env:PULSE_SIGNED_DRIVER_PACKAGE_URL) {
-            throw 'Add PULSE_SIGNED_DRIVER_PACKAGE_URL pointing to the Microsoft-signed PulseVirtualMic INF/SYS/CAT ZIP package.'
-          }
-          $archive = Join-Path $env:RUNNER_TEMP 'PulseVirtualMic-signed.zip'
-          $signedPackage = Join-Path $env:RUNNER_TEMP 'PulseVirtualMic-signed'
-          Invoke-WebRequest -Uri $env:PULSE_SIGNED_DRIVER_PACKAGE_URL -OutFile $archive
-          Expand-Archive -LiteralPath $archive -DestinationPath $signedPackage -Force
-          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-            -File .\scripts\build-windows-driver.ps1 `
-            -Configuration Release `
-            -SignedPackagePath $signedPackage `
-            -RequireMicrosoftSignature
-
       - name: Validate updater configuration
         shell: bash
         env:

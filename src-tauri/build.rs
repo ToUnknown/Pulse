@@ -87,49 +87,8 @@ fn build_macos_audio_driver() {
     fs::remove_dir_all(&build).expect("remove Pulse driver intermediate files");
 }
 
-#[cfg(target_os = "windows")]
-fn prepare_windows_audio_driver_resource() {
-    use std::{env, fs, path::PathBuf};
-
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
-
-    let manifest =
-        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
-    let package = manifest.join("target/audio-driver/windows/x64/Release/package");
-    fs::create_dir_all(&package).expect("Pulse Windows driver package directory");
-
-    if env::var("PROFILE").as_deref() == Ok("release") {
-        for required in [
-            "PulseVirtualMic.inf",
-            "PulseVirtualMic.sys",
-            "PulseVirtualMic.cat",
-            "PulseDriverInstaller.exe",
-            "MICROSOFT_SIGNED",
-        ] {
-            let path = package.join(required);
-            assert!(
-                path.is_file(),
-                "the release driver package is incomplete: {} is missing; run scripts/build-windows-driver.ps1 first",
-                path.display()
-            );
-        }
-        let marker = package.join("MICROSOFT_SIGNED");
-        let marker_contents = fs::read_to_string(&marker)
-            .unwrap_or_else(|error| panic!("could not read {}: {error}", marker.display()));
-        assert_eq!(
-            marker_contents.trim(),
-            "Microsoft kernel-mode signature verified by scripts/build-windows-driver.ps1.",
-            "the release driver package has an invalid Microsoft-signature verification marker"
-        );
-    }
-}
-
 fn main() {
     #[cfg(target_os = "macos")]
     build_macos_audio_driver();
-    #[cfg(target_os = "windows")]
-    prepare_windows_audio_driver_resource();
     tauri_build::build()
 }

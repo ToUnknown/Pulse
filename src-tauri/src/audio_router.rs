@@ -12,9 +12,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use tauri::AppHandle;
-#[cfg(target_os = "macos")]
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 
 use crate::translation::{build_passthrough_task, PassthroughTask, TranslationConfig};
 
@@ -31,18 +29,11 @@ const STARTUP_GRACE: Duration = Duration::from_millis(1_000);
 const CONSUMER_REFRESH: Duration = Duration::from_millis(50);
 const CONSUMER_RELEASE_DELAY: Duration = Duration::from_millis(500);
 
-#[cfg(target_os = "macos")]
 const MACOS_LAUNCH_AGENT_LABEL: &str = "app.pulse.desktop.audio-router";
-#[cfg(target_os = "macos")]
 const MACOS_DRIVER_ADDRESS: &str = "127.0.0.1:41873";
-#[cfg(target_os = "macos")]
 const MACOS_DRIVER_STATUS_QUERY: &[u8] = b"PULSE_STATUS";
-#[cfg(target_os = "macos")]
 const MACOS_DRIVER_STATUS_ACTIVE: &[u8] = b"PULSE_ACTIVE";
-#[cfg(target_os = "macos")]
 const MACOS_DRIVER_STATUS_IDLE: &[u8] = b"PULSE_IDLE";
-#[cfg(target_os = "windows")]
-const WINDOWS_RUN_VALUE: &str = "Pulse Audio Router";
 
 #[derive(Clone)]
 pub(crate) struct AudioRouterController {
@@ -206,10 +197,7 @@ fn run_router(config_path: PathBuf) -> Result<(), String> {
     let mut consumer_active = false;
     let mut consumer_detected = false;
     let mut consumer_release_at = Instant::now();
-    #[cfg(target_os = "macos")]
     let mut consumer_monitor = MacosPulseConsumerMonitor::new();
-    #[cfg(target_os = "windows")]
-    let mut consumer_monitor = WindowsPulseConsumerMonitor::new();
     let mut next_consumer_refresh = Instant::now();
     let mut last_config_modified = None::<SystemTime>;
     let mut next_device_refresh = Instant::now();
@@ -387,20 +375,12 @@ fn spawn_router(config_path: &Path) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
-        command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
-    }
-
     command
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("could not launch the Pulse audio router: {error}"))
 }
 
-#[cfg(target_os = "macos")]
 fn register_at_login(app: &AppHandle, config_path: &Path) -> Result<(), String> {
     if cfg!(debug_assertions) {
         return Ok(());
@@ -444,7 +424,6 @@ fn register_at_login(app: &AppHandle, config_path: &Path) -> Result<(), String> 
         .ok_or_else(|| "macOS could not register the Pulse audio router".to_string())
 }
 
-#[cfg(target_os = "macos")]
 fn unregister_at_login(app: &AppHandle) -> Result<(), String> {
     if cfg!(debug_assertions) {
         return Ok(());
@@ -459,7 +438,6 @@ fn unregister_at_login(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn stop_macos_launch_agent(_app: &AppHandle) -> Result<(), String> {
     if cfg!(debug_assertions) {
         return Ok(());
@@ -478,7 +456,6 @@ fn stop_macos_launch_agent(_app: &AppHandle) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn macos_launch_agent_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .home_dir()
@@ -489,7 +466,6 @@ fn macos_launch_agent_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "macos")]
 fn macos_launch_domain() -> Result<String, String> {
     let output = Command::new("/usr/bin/id")
         .arg("-u")
@@ -502,7 +478,6 @@ fn macos_launch_domain() -> Result<String, String> {
     Ok(format!("gui/{user_id}"))
 }
 
-#[cfg(target_os = "macos")]
 fn macos_launch_agent_contents(executable: &Path, config_path: &Path) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -530,7 +505,6 @@ fn macos_launch_agent_contents(executable: &Path, config_path: &Path) -> String 
     )
 }
 
-#[cfg(target_os = "macos")]
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -540,63 +514,10 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-#[cfg(target_os = "windows")]
-fn register_at_login(_app: &AppHandle, config_path: &Path) -> Result<(), String> {
-    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-
-    if cfg!(debug_assertions) {
-        return Ok(());
-    }
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("could not locate the Pulse audio router: {error}"))?;
-    let command = format!(
-        "\"{}\" {ROUTER_ARGUMENT} \"{}\"",
-        executable.display(),
-        config_path.display()
-    );
-    let current_user = RegKey::predef(HKEY_CURRENT_USER);
-    let (run, _) = current_user
-        .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
-        .map_err(|error| format!("could not register the Pulse audio router: {error}"))?;
-    run.set_value(WINDOWS_RUN_VALUE, &command)
-        .map_err(|error| format!("could not register the Pulse audio router: {error}"))
-}
-
-#[cfg(target_os = "windows")]
-fn unregister_at_login(_app: &AppHandle) -> Result<(), String> {
-    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-
-    if cfg!(debug_assertions) {
-        return Ok(());
-    }
-    let current_user = RegKey::predef(HKEY_CURRENT_USER);
-    let run = match current_user.open_subkey_with_flags(
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-        winreg::enums::KEY_SET_VALUE,
-    ) {
-        Ok(run) => run,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!(
-                "could not unregister the Pulse audio router: {error}"
-            ))
-        }
-    };
-    match run.delete_value(WINDOWS_RUN_VALUE) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "could not unregister the Pulse audio router: {error}"
-        )),
-    }
-}
-
-#[cfg(target_os = "macos")]
 struct MacosPulseConsumerMonitor {
     socket: Option<UdpSocket>,
 }
 
-#[cfg(target_os = "macos")]
 impl MacosPulseConsumerMonitor {
     fn new() -> Self {
         Self { socket: None }
@@ -633,7 +554,6 @@ impl MacosPulseConsumerMonitor {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn parse_macos_driver_status(response: &[u8]) -> Result<bool, String> {
     match response {
         MACOS_DRIVER_STATUS_ACTIVE => Ok(true),
@@ -642,37 +562,7 @@ fn parse_macos_driver_status(response: &[u8]) -> Result<bool, String> {
     }
 }
 
-#[cfg(target_os = "windows")]
-struct WindowsPulseConsumerMonitor {
-    driver: Option<crate::windows_audio::PulseDriver>,
-}
-
-#[cfg(target_os = "windows")]
-impl WindowsPulseConsumerMonitor {
-    fn new() -> Self {
-        Self { driver: None }
-    }
-
-    fn is_active(&mut self) -> Result<bool, String> {
-        if self.driver.is_none() {
-            self.driver = Some(crate::windows_audio::PulseDriver::open_monitor()?);
-        }
-        let Some(driver) = self.driver.as_ref() else {
-            return Ok(false);
-        };
-        match driver.consumer_state() {
-            Ok(state) => Ok(state.is_active()),
-            Err(error) => {
-                self.driver = None;
-                Err(format!(
-                    "could not inspect Pulse microphone consumers: {error}"
-                ))
-            }
-        }
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

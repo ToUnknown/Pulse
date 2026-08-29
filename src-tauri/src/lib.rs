@@ -3,35 +3,30 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 mod audio_router;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 mod translation;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 mod virtual_audio;
-#[cfg(target_os = "windows")]
-mod windows_audio;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use {
     std::{
         fs,
         path::Path,
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, Mutex,
-        },
+        sync::{Arc, Mutex},
     },
     tauri_plugin_autostart::{MacosLauncher, ManagerExt},
     tauri_plugin_dialog::{DialogExt, MessageDialogKind},
     tauri_plugin_updater::{Update, UpdaterExt},
 };
 
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use tauri::{
-    menu::{CheckMenuItem, IsMenuItem, Submenu},
-    Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{menu::Submenu, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
 use {
@@ -42,7 +37,10 @@ use {
         NSArray, NSDistributedNotificationCenter, NSNotification, NSOperationQueue, NSString,
     },
     std::ptr::NonNull,
-    tauri::Manager as _,
+    tauri::{
+        menu::{CheckMenuItem, IsMenuItem},
+        Emitter, Manager as _,
+    },
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -51,13 +49,13 @@ struct DownloadedUpdate {
     bytes: Vec<u8>,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct SettingsAttention {
     api_key_required: AtomicBool,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 impl SettingsAttention {
     fn request_api_key(&self) {
         self.api_key_required.store(true, Ordering::Release);
@@ -115,10 +113,10 @@ const RESTART_TO_UPDATE_MENU_ICON_BYTES: &[u8] =
 const SETTINGS_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/settings.png");
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const QUIT_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/quit.png");
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 const TRANSLATION_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/translation.png");
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub fn run_audio_router_if_requested() -> bool {
     audio_router::run_if_requested()
 }
@@ -368,6 +366,7 @@ fn handle_update_menu(
     if let Some(downloaded) = ready_update {
         set_update_menu(&update_item, true, false);
         tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(target_os = "macos")]
             if let Some(manager) = app.try_state::<translation::TranslationManager>() {
                 let router_result = manager
                     .stop_and_wait()
@@ -386,6 +385,7 @@ fn handle_update_menu(
             }
             if let Err(error) = downloaded.update.install(&downloaded.bytes) {
                 eprintln!("update install failed: {error}");
+                #[cfg(target_os = "macos")]
                 if let Some(manager) = app.try_state::<translation::TranslationManager>() {
                     manager.initialize_audio_router(&app);
                 }
@@ -769,25 +769,33 @@ fn settings_state(app: tauri::AppHandle) -> serde_json::Value {
     #[cfg(target_os = "macos")]
     let auto_schedule: Option<serde_json::Value> = None;
 
-    let translation = app
-        .try_state::<translation::TranslationManager>()
-        .map(|manager| manager.state_json())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let api_key_attention_required = app
-        .try_state::<SettingsAttention>()
-        .is_some_and(|attention| attention.take_api_key_request());
-
-    serde_json::json!({
+    let state = serde_json::json!({
         "platform": std::env::consts::OS,
         "startAtLogin": start_at_login,
         "trayIcon": tray_icon,
         "autoSchedule": auto_schedule,
-        "translation": translation,
-        "apiKeyAttentionRequired": api_key_attention_required,
-    })
+    });
+
+    #[cfg(target_os = "windows")]
+    return state;
+
+    #[cfg(target_os = "macos")]
+    {
+        let translation = app
+            .try_state::<translation::TranslationManager>()
+            .map(|manager| manager.state_json())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let api_key_attention_required = app
+            .try_state::<SettingsAttention>()
+            .is_some_and(|attention| attention.take_api_key_request());
+        let mut state = state;
+        state["translation"] = translation;
+        state["apiKeyAttentionRequired"] = serde_json::json!(api_key_attention_required);
+        state
+    }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn set_openai_api_key(app: tauri::AppHandle, api_key: String) -> Result<(), String> {
     translation::save_api_key(&api_key)?;
@@ -796,7 +804,7 @@ fn set_openai_api_key(app: tauri::AppHandle, api_key: String) -> Result<(), Stri
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn clear_openai_api_key(app: tauri::AppHandle) -> Result<(), String> {
     translation::clear_api_key()?;
@@ -805,7 +813,7 @@ fn clear_openai_api_key(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn set_translation_enabled(
     app: tauri::AppHandle,
@@ -837,7 +845,7 @@ async fn set_translation_enabled(
     .map_err(|error| format!("Pulse audio lifecycle task failed: {error}"))?
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn set_translation_input_device(app: tauri::AppHandle, name: Option<String>) -> Result<(), String> {
     app.state::<translation::TranslationManager>()
@@ -1673,7 +1681,7 @@ fn start_auto_scheduler(controller: WindowsAppearanceController) {
     });
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 type TranslationControls = (
     Submenu<tauri::Wry>,
     IconMenuItem<tauri::Wry>,
@@ -1681,7 +1689,7 @@ type TranslationControls = (
     Vec<(String, CheckMenuItem<tauri::Wry>)>,
 );
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn build_translation_controls(app: &tauri::App<tauri::Wry>) -> tauri::Result<TranslationControls> {
     let language_items = translation::LANGUAGES
         .iter()
@@ -1729,11 +1737,7 @@ pub fn run() {
         settings_state,
         set_start_at_login,
         set_tray_icon_mode,
-        set_auto_schedule,
-        set_openai_api_key,
-        clear_openai_api_key,
-        set_translation_enabled,
-        set_translation_input_device
+        set_auto_schedule
     ]);
 
     #[cfg(target_os = "macos")]
@@ -1859,14 +1863,14 @@ pub fn run() {
             )?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let update_status = Arc::new(Mutex::new(UpdateStatus::Idle));
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             let (
                 translation_menu,
                 translation_start,
                 translation_separator,
                 translation_language_items,
             ) = build_translation_controls(app)?;
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             let translation_config_path = app.path().app_config_dir()?.join("live-translate.json");
 
             #[cfg(target_os = "windows")]
@@ -1921,9 +1925,6 @@ pub fn run() {
                     app,
                     &[
                         &appearance,
-                        &translation_menu,
-                        &translation_start,
-                        &translation_separator,
                         &settings,
                         &update_item,
                         &quit_separator,
@@ -1979,9 +1980,9 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 appearance: Arc::new(Mutex::new(initial_macos_appearance)),
             });
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             app.manage(SettingsAttention::default());
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             let translation_manager = translation::TranslationManager::new(
                 translation_config_path,
                 menu.clone(),
@@ -1990,9 +1991,9 @@ pub fn run() {
                 translation_separator.clone(),
                 translation_language_items,
             )?;
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             translation_manager.initialize_audio_router(app.handle());
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             app.manage(translation_manager);
             #[cfg(target_os = "windows")]
             let appearance_controller = WindowsAppearanceController {
@@ -2021,7 +2022,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| {
-                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    #[cfg(target_os = "macos")]
                     if let Some(code) = event.id().as_ref().strip_prefix("translation-language-") {
                         if let Err(error) = app
                             .state::<translation::TranslationManager>()
@@ -2031,7 +2032,7 @@ pub fn run() {
                         }
                     }
 
-                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    #[cfg(target_os = "macos")]
                     if event.id().as_ref() == "translation-start" {
                         match app.state::<translation::TranslationManager>().toggle() {
                             Ok(()) => {
@@ -2102,7 +2103,7 @@ pub fn run() {
                     }
 
                     if event.id().as_ref() == "quit" {
-                        #[cfg(any(target_os = "macos", target_os = "windows"))]
+                        #[cfg(target_os = "macos")]
                         if let Some(manager) = app.try_state::<translation::TranslationManager>() {
                             if let Err(error) = manager.stop() {
                                 eprintln!("translation shutdown failed: {error}");
@@ -2112,17 +2113,6 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
-
-            #[cfg(target_os = "windows")]
-            {
-                if let Some(tray) = app.tray_by_id("pulse-tray") {
-                    let window = tray.with_inner_tray_icon(|tray| tray.window_handle() as isize)?
-                        as windows_sys::Win32::Foundation::HWND;
-                    if let Err(error) = translation::install_windows_menu_dispatch(window) {
-                        eprintln!("Windows translation menu updates unavailable: {error}");
-                    }
-                }
-            }
 
             #[cfg(target_os = "macos")]
             start_macos_appearance_watcher(app.handle().clone());
@@ -2151,11 +2141,6 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Pulse");
-}
-
-#[cfg(target_os = "windows")]
-pub fn run_windows_uninstall_maintenance_if_requested() -> Option<Result<(), String>> {
-    virtual_audio::run_uninstall_maintenance_if_requested()
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 const startAtLogin = document.querySelector("#start-at-login");
+const translationSetting = document.querySelector("#translation-setting");
 const translationEnabled = document.querySelector("#translation-enabled");
 const translationLifecycleStatus = document.querySelector("#translation-lifecycle-status");
 const translationSection = document.querySelector("#translation-section");
@@ -303,34 +304,35 @@ async function loadSettings() {
       appearanceSection.hidden = false;
     }
 
-    const translation = settings.translation;
-    translationEnabled.checked = translation.enabled;
-    translationSection.hidden = !translation.enabled;
-    configureDeviceSelect(
-      translationInputDevice,
-      translation.inputDevices ?? [],
-      translation.inputDevice,
-      "System default",
-    );
-    const translationActive = translation.status !== "idle";
-    setSelectDisabled(translationInputDevice, translationActive);
-    apiKeyInput.disabled = translationActive;
-    removeApiKey.disabled = translationActive;
-    removeApiKey.hidden = !translation.apiKeyConfigured;
-    apiKeyStatus.textContent = translation.apiKeyConfigured
-      ? settings.platform === "macos"
+    if (settings.platform === "macos") {
+      translationSetting.hidden = false;
+      const translation = settings.translation;
+      translationEnabled.checked = translation.enabled;
+      translationSection.hidden = !translation.enabled;
+      configureDeviceSelect(
+        translationInputDevice,
+        translation.inputDevices ?? [],
+        translation.inputDevice,
+        "System default",
+      );
+      const translationActive = translation.status !== "idle";
+      setSelectDisabled(translationInputDevice, translationActive);
+      apiKeyInput.disabled = translationActive;
+      removeApiKey.disabled = translationActive;
+      removeApiKey.hidden = !translation.apiKeyConfigured;
+      apiKeyStatus.textContent = translation.apiKeyConfigured
         ? "Stored in macOS Keychain. Enter a new key to replace it."
-        : "Stored in Windows Credential Manager. Enter a new key to replace it."
-      : "Required for the OpenAI Live Translation API.";
-    apiKeyInput.dataset.configured = String(translation.apiKeyConfigured);
-    apiKeyInput.placeholder = translation.apiKeyConfigured ? "" : "sk-…";
-    apiKeyMask.hidden = !translation.apiKeyConfigured || apiKeyInput.value.trim() !== "";
-    saveApiKey.disabled = translationActive || apiKeyInput.value.trim() === "";
-    if (
-      settings.apiKeyAttentionRequired &&
-      apiKeyInteractionVersion === apiKeyInteractionAtLoad
-    ) {
-      showApiKeyAttention();
+        : "Required for the OpenAI Live Translation API.";
+      apiKeyInput.dataset.configured = String(translation.apiKeyConfigured);
+      apiKeyInput.placeholder = translation.apiKeyConfigured ? "" : "sk-…";
+      apiKeyMask.hidden = !translation.apiKeyConfigured || apiKeyInput.value.trim() !== "";
+      saveApiKey.disabled = translationActive || apiKeyInput.value.trim() === "";
+      if (
+        settings.apiKeyAttentionRequired &&
+        apiKeyInteractionVersion === apiKeyInteractionAtLoad
+      ) {
+        showApiKeyAttention();
+      }
     }
   } catch (error) {
     showError(error);

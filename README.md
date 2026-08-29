@@ -19,7 +19,6 @@ Pulse is a tray/menu-bar utility for macOS and Windows.
 - Default and Red tray icons
 - In-app update checks and restart
 - Auto, Light, and Dark appearance modes with configurable start times
-- Experimental live speech translation to a virtual microphone
 
 Closing Settings hides the window without quitting Pulse. Opening it again brings it to the front.
 
@@ -31,17 +30,15 @@ When translation is stopped, that same `Pulse` microphone carries the selected p
 microphone unchanged, so call apps can leave it selected. When translation is active, Pulse
 outputs only translated speech. It never plays translated speech through the user's speakers.
 
-Live Translate is off by default. On macOS, turning it on installs Pulse's bundled,
-input-only Core Audio driver after administrator approval. It publishes exactly one system
-audio endpoint named `Pulse`, with no public render side. On Windows, Pulse installs its own
-root-enumerated, capture-only WaveRT driver. It also publishes exactly one recording endpoint
-named `Pulse`, with no playback endpoint or separate driver application. Select `Pulse` as the
-microphone in the call app.
+Live Translate is a macOS-only feature and is off by default. Turning it on installs Pulse's
+bundled, input-only Core Audio driver after administrator approval. It publishes exactly one
+system audio endpoint named `Pulse`, with no public render side. Select `Pulse` as the microphone
+in the call app.
 
 In Pulse Settings, save an OpenAI API key and choose the physical microphone. Output routing
 is fixed internally to the Pulse virtual microphone and has no user-selectable destination.
-The key is stored in macOS Keychain or Windows Credential Manager, not in Pulse's config
-file. From the tray, choose `Translate to`, select one of the 13 output languages, and click
+The key is stored in macOS Keychain, not in Pulse's config file. From the menu-bar menu, choose
+`Translate to`, select one of the 13 output languages, and click
 `Start Translation`.
 
 The dedicated Realtime Translation API currently selects its own native translation voice.
@@ -50,13 +47,9 @@ voice-agent sessions. Pulse therefore uses the model's returned audio directly i
 adding a second text-to-speech pass that would increase latency and change the audio path.
 
 The General `Live Translate` switch controls the feature globally. Turning it off stops
-translation, removes its controls from the menu-bar or tray menu, and removes the `Pulse`
-input. On macOS, it removes the Pulse driver; upgrading from the earlier experiment also
-removes the Pulse-owned VB-CABLE driver and aggregate device. On Windows, it stops the
-background microphone router and removes the Pulse-owned devnode and Driver Store package.
-Migration removes legacy VB-CABLE only when Pulse's ownership marker says Pulse installed it.
-Windows may require a restart to finish adding or removing the endpoint. Pulse refuses to
-install test-signed Windows driver packages; kernel-driver testing belongs in a disposable VM.
+translation, removes its controls from the menu-bar menu, and removes the `Pulse` input. It also
+removes the Pulse driver. Upgrading from the earlier experiment removes the Pulse-owned VB-CABLE
+driver and aggregate device.
 
 Pulse cannot make translated audio appear under the original hardware microphone's name.
 Desktop applications bind to operating-system audio endpoints, so the call app must use

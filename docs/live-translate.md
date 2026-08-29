@@ -72,36 +72,20 @@ required because AudioServer plug-ins live in `/Library/Audio/Plug-Ins/HAL`.
 The macOS property and timing implementation is adapted from the MIT-licensed
 [Hush](https://github.com/timschmolka/hush) driver; attribution is bundled with the app.
 
-On Windows, Pulse uses its own minimal root-enumerated WDM/PortCls WaveRT driver. The driver
-publishes one 48 kHz mono PCM16 capture pin and one recording endpoint named `Pulse`. It has no
-render pin, playback endpoint, APO, monitoring path, or visible driver application. Pulse and
-its background router inject fixed 10 ms PCM16 packets through a private device interface. The
-driver reports whether any capture pin is running, so the router leaves the physical microphone
-closed when no application consumes `Pulse`.
-
 Pulse never changes the operating-system default microphone. The receiving application selects
 `Pulse` once; stopped translation carries the selected physical microphone, while active
 translation carries only the model output. This avoids unexpectedly changing microphone routing
 for unrelated apps.
 
-Live Translate is disabled by default. Enabling it installs the platform component and records
-Pulse's ownership in the app config directory. On macOS, enabling also migrates the earlier
+Live Translate is disabled by default. Enabling it installs the macOS component and records
+Pulse's ownership in the app config directory. Enabling also migrates the earlier
 Pulse-managed VB-CABLE experiment by deleting its aggregate device, driver, and launch daemon
 before installing `Pulse.driver`. Disabling first waits for translation to stop, then removes
-`Pulse.driver`. On Windows, enabling installs and verifies `PulseVirtualMic`; disabling removes
-the background router, the Pulse devnode, and the Pulse-owned Driver Store package. Migration
-restores an unowned renamed VB-CABLE capture endpoint to `CABLE Output`, and removes the legacy
-package only when Pulse's existing ownership marker says Pulse installed it. A restart-required
-result is shown when Windows needs a reboot to finish the lifecycle operation.
-
-Pulse installs a Windows package only after the build pipeline has verified its Microsoft
-kernel-mode signature. Debug and Release builds reject test-signed packages. Test the development
-driver manually inside a disposable VM; do not enable Windows TESTSIGNING on a normal workstation.
+`Pulse.driver`.
 
 ## Credentials and local data
 
-The OpenAI API key is stored through the operating system's credential service: macOS
-Keychain or Windows Credential Manager. Pulse's JSON translation config stores only the
+The OpenAI API key is stored in macOS Keychain. Pulse's JSON translation config stores only the
 enabled state, selected language, and physical input-device name.
 
 ## Operational limits
@@ -124,7 +108,7 @@ enabled state, selected language, and physical input-device name.
   selection.
 - Pulse rejects known virtual devices as its capture microphone to prevent translated audio
   from feeding back into the translation session.
-- Both macOS and Windows use Pulse-owned, capture-only drivers, so each platform exposes one
-  `Pulse` input and no Pulse playback endpoint.
+- The Pulse-owned, capture-only macOS driver exposes one `Pulse` input and no Pulse playback
+  endpoint.
 - The API is billed to the supplied OpenAI account. Current availability and pricing are
   documented on the [`gpt-realtime-translate` model page](https://developers.openai.com/api/docs/models/gpt-realtime-translate).

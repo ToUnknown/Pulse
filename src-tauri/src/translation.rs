@@ -28,21 +28,6 @@ use tokio_tungstenite::{
         Message,
     },
 };
-#[cfg(target_os = "windows")]
-use windows_sys::core::BOOL;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    Graphics::Gdi::{RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW},
-    System::Threading::GetCurrentThreadId,
-    UI::{
-        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-        WindowsAndMessaging::{
-            EnumThreadWindows, GetClassNameW, PostMessageW, WM_APP, WM_NCDESTROY,
-        },
-    },
-};
-#[cfg(target_os = "macos")]
 use {
     block2::RcBlock,
     objc2_foundation::{NSArray, NSRunLoop, NSRunLoopCommonModes},
@@ -70,45 +55,16 @@ const MAX_OUTPUT_BUFFER_SECONDS: usize = 10;
 const MAX_PASSTHROUGH_BUFFER_SECONDS: usize = 1;
 const RECONNECT_DELAYS_MS: [u64; 3] = [250, 1_000, 3_000];
 const RESAMPLER_HALF_TAPS: usize = 24;
-#[cfg(target_os = "macos")]
 const TRANSLATION_MENU_INDEX: usize = 0;
-#[cfg(target_os = "windows")]
-const TRANSLATION_MENU_INDEX: usize = 1;
-#[cfg(target_os = "macos")]
 const PULSE_DRIVER_SAMPLE_RATE: u32 = 48_000;
-#[cfg(target_os = "macos")]
 const PULSE_DRIVER_PACKET_SAMPLES: usize = 480;
-#[cfg(target_os = "macos")]
 const PULSE_DRIVER_ADDRESS: &str = "127.0.0.1:41873";
-#[cfg(target_os = "macos")]
 const INSTALLED_PULSE_DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/Pulse.driver";
 const TRANSLATION_OFF_MENU_ICON_BYTES: &[u8] = include_bytes!("../icons/menu/translation-off.png");
 const TRANSLATION_BOOTING_MENU_ICON_BYTES: &[u8] =
     include_bytes!("../icons/menu/translation-booting.png");
 const TRANSLATION_READY_MENU_ICON_BYTES: &[u8] =
     include_bytes!("../icons/menu/translation-ready.png");
-#[cfg(target_os = "windows")]
-const WINDOWS_TRANSLATION_MENU_MESSAGE: u32 = WM_APP + 0x51;
-#[cfg(target_os = "windows")]
-const WINDOWS_TRANSLATION_MENU_SUBCLASS_ID: usize = 0x5055_4c53;
-#[cfg(target_os = "windows")]
-const WINDOWS_MENU_WINDOW_CLASS: [u16; 6] = [
-    b'#' as u16,
-    b'3' as u16,
-    b'2' as u16,
-    b'7' as u16,
-    b'6' as u16,
-    b'8' as u16,
-];
-#[cfg(target_os = "windows")]
-static WINDOWS_TRAY_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-#[cfg(target_os = "windows")]
-static WINDOWS_MENU_TASKS: std::sync::OnceLock<Mutex<VecDeque<WindowsMenuTask>>> =
-    std::sync::OnceLock::new();
-
-#[cfg(target_os = "windows")]
-type WindowsMenuTask = Box<dyn FnOnce() + Send>;
-
 pub(crate) fn is_missing_api_key_error(error: &str) -> bool {
     error == MISSING_API_KEY_ERROR
 }
@@ -136,7 +92,6 @@ fn apply_translation_menu_state(
     let _ = item.set_icon(icon);
 }
 
-#[cfg(target_os = "macos")]
 fn set_translation_menu_state(
     item: &IconMenuItem<tauri::Wry>,
     text: &str,
@@ -153,128 +108,6 @@ fn set_translation_menu_state(
     unsafe {
         NSRunLoop::mainRunLoop().performInModes_block(&modes, &block);
     }
-}
-
-#[cfg(target_os = "windows")]
-fn set_translation_menu_state(
-    item: &IconMenuItem<tauri::Wry>,
-    text: &str,
-    state: TranslationMenuState,
-) {
-    let item = item.clone();
-    let text = text.to_string();
-    let task: WindowsMenuTask = Box::new(move || {
-        apply_translation_menu_state(&item, &text, state);
-    });
-
-    if let Err(task) = dispatch_windows_menu_task(task) {
-        task();
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn dispatch_windows_menu_task(task: WindowsMenuTask) -> Result<(), WindowsMenuTask> {
-    let window = WINDOWS_TRAY_WINDOW.load(Ordering::Acquire) as HWND;
-    if window.is_null() {
-        return Err(task);
-    }
-
-    let tasks = WINDOWS_MENU_TASKS.get_or_init(|| Mutex::new(VecDeque::new()));
-    let mut tasks = tasks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    tasks.push_back(task);
-    let posted = unsafe { PostMessageW(window, WINDOWS_TRANSLATION_MENU_MESSAGE, 0, 0) };
-    if posted == 0 {
-        return Err(tasks
-            .pop_back()
-            .expect("the translation menu task was just queued"));
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn redraw_active_menu_window(window: HWND, _parameter: LPARAM) -> BOOL {
-    let mut class_name = [0_u16; 16];
-    let length = unsafe { GetClassNameW(window, class_name.as_mut_ptr(), class_name.len() as i32) };
-    if length > 0 && class_name[..length as usize] == WINDOWS_MENU_WINDOW_CLASS {
-        unsafe {
-            RedrawWindow(
-                window,
-                std::ptr::null(),
-                std::ptr::null_mut(),
-                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
-            );
-        }
-    }
-    1
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn translation_menu_window_proc(
-    window: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _subclass_id: usize,
-    _reference_data: usize,
-) -> LRESULT {
-    if message == WINDOWS_TRANSLATION_MENU_MESSAGE {
-        let task = WINDOWS_MENU_TASKS.get().and_then(|tasks| {
-            tasks
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pop_front()
-        });
-        if let Some(task) = task {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
-            unsafe {
-                EnumThreadWindows(GetCurrentThreadId(), Some(redraw_active_menu_window), 0);
-            }
-        }
-        return 0;
-    }
-
-    if message == WM_NCDESTROY {
-        WINDOWS_TRAY_WINDOW.store(0, Ordering::Release);
-        if let Some(tasks) = WINDOWS_MENU_TASKS.get() {
-            tasks
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clear();
-        }
-        unsafe {
-            RemoveWindowSubclass(
-                window,
-                Some(translation_menu_window_proc),
-                WINDOWS_TRANSLATION_MENU_SUBCLASS_ID,
-            );
-        }
-    }
-
-    unsafe { DefSubclassProc(window, message, wparam, lparam) }
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn install_windows_menu_dispatch(window: HWND) -> Result<(), String> {
-    let installed = unsafe {
-        SetWindowSubclass(
-            window,
-            Some(translation_menu_window_proc),
-            WINDOWS_TRANSLATION_MENU_SUBCLASS_ID,
-            0,
-        )
-    };
-    if installed == 0 {
-        return Err(format!(
-            "could not connect translation updates to the tray menu: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-
-    WINDOWS_TRAY_WINDOW.store(window as isize, Ordering::Release);
-    Ok(())
 }
 
 pub(crate) const LANGUAGES: [(&str, &str); 13] = [
@@ -925,7 +758,6 @@ fn find_named_input_device(name: &str) -> Result<Device, String> {
     device.ok_or_else(|| format!("audio device is unavailable: {name}"))
 }
 
-#[cfg(target_os = "macos")]
 fn virtual_microphone_available() -> Result<bool, String> {
     if !Path::new(INSTALLED_PULSE_DRIVER).is_dir() {
         return Ok(false);
@@ -940,17 +772,9 @@ fn virtual_microphone_available() -> Result<bool, String> {
         })
 }
 
-#[cfg(target_os = "windows")]
-fn virtual_microphone_available() -> Result<bool, String> {
-    Ok(crate::windows_audio::interface_available())
-}
-
 fn ensure_virtual_microphone_available() -> Result<(), String> {
     virtual_microphone_available()?.then_some(()).ok_or_else(|| {
-        #[cfg(target_os = "macos")]
         let message = "the Pulse virtual microphone is unavailable; turn Live Translate off and back on once to install or migrate it";
-        #[cfg(target_os = "windows")]
-        let message = "the Pulse virtual microphone is unavailable; finish its installation or restart the computer";
         message.to_string()
     })
 }
@@ -977,10 +801,7 @@ fn is_virtual_audio_name(name: &str) -> bool {
 
 pub(crate) struct PassthroughTask {
     _input_stream: Stream,
-    #[cfg(target_os = "macos")]
     _output_stream: MacosPulseOutput,
-    #[cfg(target_os = "windows")]
-    _output_stream: WindowsPulseOutput,
     audio_error: Arc<Mutex<Option<String>>>,
 }
 
@@ -1000,10 +821,7 @@ pub(crate) fn build_passthrough_task(
         .default_input_config()
         .map_err(|error| format!("microphone format is unavailable: {error}"))?;
 
-    #[cfg(target_os = "macos")]
     let output_sample_rate = PULSE_DRIVER_SAMPLE_RATE;
-    #[cfg(target_os = "windows")]
-    let output_sample_rate = crate::windows_audio::SAMPLE_RATE;
 
     let max_output_samples = output_sample_rate as usize * MAX_PASSTHROUGH_BUFFER_SECONDS;
     let output_queue = Arc::new(Mutex::new(OutputBuffer::with_prebuffer(
@@ -1013,10 +831,7 @@ pub(crate) fn build_passthrough_task(
     )));
     let audio_error = Arc::new(Mutex::new(None::<String>));
 
-    #[cfg(target_os = "macos")]
     let output_stream = MacosPulseOutput::new(output_queue.clone(), audio_error.clone())?;
-    #[cfg(target_os = "windows")]
-    let output_stream = WindowsPulseOutput::new(output_queue.clone(), audio_error.clone())?;
 
     let input_processor = PassthroughChunker::new(
         input_config.sample_rate(),
@@ -1032,9 +847,6 @@ pub(crate) fn build_passthrough_task(
         audio_error.clone(),
     )?;
 
-    #[cfg(target_os = "macos")]
-    output_stream.play()?;
-    #[cfg(target_os = "windows")]
     output_stream.play()?;
     input_stream
         .play()
@@ -1144,20 +956,14 @@ async fn run_translation_session(
     let input_config = input_device
         .default_input_config()
         .map_err(|error| format!("microphone format is unavailable: {error}"))?;
-    #[cfg(target_os = "macos")]
     let output_sample_rate = PULSE_DRIVER_SAMPLE_RATE;
-    #[cfg(target_os = "windows")]
-    let output_sample_rate = crate::windows_audio::SAMPLE_RATE;
     let max_output_samples = output_sample_rate as usize * MAX_OUTPUT_BUFFER_SECONDS;
     let output_queue = Arc::new(Mutex::new(OutputBuffer::new(
         output_sample_rate,
         max_output_samples,
     )));
     let audio_error = Arc::new(Mutex::new(None::<String>));
-    #[cfg(target_os = "macos")]
     let output_stream = MacosPulseOutput::new(output_queue.clone(), audio_error.clone())?;
-    #[cfg(target_os = "windows")]
-    let output_stream = WindowsPulseOutput::new(output_queue.clone(), audio_error.clone())?;
 
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel(INPUT_QUEUE_BLOCKS);
     let (warmup_tx, mut warmup_rx) = tokio::sync::oneshot::channel();
@@ -1257,9 +1063,6 @@ async fn run_translation_session(
         return Ok(());
     }
 
-    #[cfg(target_os = "macos")]
-    output_stream.play()?;
-    #[cfg(target_os = "windows")]
     output_stream.play()?;
 
     if let Ok(mut current_status) = status.lock() {
@@ -1454,14 +1257,12 @@ fn translation_error_message(event: &serde_json::Value) -> String {
         .to_string()
 }
 
-#[cfg(target_os = "macos")]
 struct MacosPulseOutput {
     started: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
-#[cfg(target_os = "macos")]
 impl MacosPulseOutput {
     fn new(
         queue: Arc<Mutex<OutputBuffer>>,
@@ -1547,7 +1348,6 @@ impl MacosPulseOutput {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Drop for MacosPulseOutput {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -1557,98 +1357,7 @@ impl Drop for MacosPulseOutput {
     }
 }
 
-#[cfg(target_os = "windows")]
-struct WindowsPulseOutput {
-    started: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-#[cfg(target_os = "windows")]
-impl WindowsPulseOutput {
-    fn new(
-        queue: Arc<Mutex<OutputBuffer>>,
-        audio_error: Arc<Mutex<Option<String>>>,
-    ) -> Result<Self, String> {
-        let driver = crate::windows_audio::PulseDriver::open_writer()?;
-        let started = Arc::new(AtomicBool::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_started = started.clone();
-        let thread_stop = stop.clone();
-        let handle = thread::Builder::new()
-            .name("pulse-virtual-microphone".to_string())
-            .spawn(move || {
-                let period = Duration::from_millis(10);
-                let mut next_packet = std::time::Instant::now();
-                let mut sequence = 0_u32;
-                let mut samples = [0_i16; crate::windows_audio::PACKET_SAMPLES];
-
-                while !thread_stop.load(Ordering::Acquire) {
-                    if !thread_started.load(Ordering::Acquire) {
-                        thread::sleep(period);
-                        next_packet = std::time::Instant::now();
-                        continue;
-                    }
-
-                    if let Ok(mut queue) = queue.lock() {
-                        for sample in &mut samples {
-                            *sample = f32_to_pcm16(queue.next_sample());
-                        }
-                    } else {
-                        samples.fill(0);
-                    }
-
-                    if let Err(error) = driver.write_audio(sequence, &samples) {
-                        if let Ok(mut stored_error) = audio_error.lock() {
-                            *stored_error = Some(error);
-                        }
-                        break;
-                    }
-                    sequence = sequence.wrapping_add(1);
-
-                    next_packet += period;
-                    let now = std::time::Instant::now();
-                    if next_packet > now {
-                        thread::sleep(next_packet - now);
-                    } else if now.duration_since(next_packet) > Duration::from_millis(100) {
-                        next_packet = now;
-                    }
-                }
-                let _ = driver.reset();
-            })
-            .map_err(|error| format!("could not start the Pulse audio channel: {error}"))?;
-
-        Ok(Self {
-            started,
-            stop,
-            thread: Some(handle),
-        })
-    }
-
-    fn play(&self) -> Result<(), String> {
-        if self
-            .thread
-            .as_ref()
-            .is_some_and(thread::JoinHandle::is_finished)
-        {
-            return Err("the Pulse audio channel stopped unexpectedly".to_string());
-        }
-        self.started.store(true, Ordering::Release);
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for WindowsPulseOutput {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn f32_to_pcm16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
 }
@@ -2137,158 +1846,6 @@ fn fill_output_f32(data: &mut [f32], channels: usize, queue: &Arc<Mutex<OutputBu
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(target_os = "windows")]
-    fn probe_metrics(samples: &[f32], sample_rate: u32) -> (f64, f64, usize) {
-        let start = (sample_rate as usize / 2).min(samples.len());
-        let samples = &samples[start..];
-        let rms = (samples
-            .iter()
-            .map(|sample| (*sample as f64) * (*sample as f64))
-            .sum::<f64>()
-            / samples.len().max(1) as f64)
-            .sqrt();
-        let positive_crossings = samples
-            .windows(2)
-            .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
-            .count();
-        let duration = samples.len() as f64 / sample_rate as f64;
-        let frequency = positive_crossings as f64 / duration.max(f64::EPSILON);
-        let clipped = samples.iter().filter(|sample| sample.abs() >= 0.99).count();
-        (rms, frequency, clipped)
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    #[ignore = "requires an installed test-signed PulseVirtualMic driver"]
-    fn driver_tone_probe_records_tone_then_silence_and_recovers() {
-        use cpal::{SampleFormat, StreamConfig};
-
-        let host = cpal::default_host();
-        let device = host
-            .input_devices()
-            .expect("enumerate recording devices")
-            .find(|device| {
-                device
-                    .description()
-                    .is_ok_and(|description| description.name().eq_ignore_ascii_case("Pulse"))
-            })
-            .expect("Pulse recording endpoint");
-        let supported = device.default_input_config().expect("Pulse default format");
-        let sample_format = supported.sample_format();
-        let config: StreamConfig = supported.into();
-        assert_eq!(config.sample_rate, 48_000);
-        assert_eq!(config.channels, 1);
-
-        let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let error = |error| panic!("Pulse capture failed: {error}");
-        let stream = match sample_format {
-            SampleFormat::F32 => {
-                let recorded = recorded.clone();
-                device.build_input_stream(
-                    config,
-                    move |data: &[f32], _| recorded.lock().expect("capture lock").extend(data),
-                    error,
-                    None,
-                )
-            }
-            SampleFormat::I16 => {
-                let recorded = recorded.clone();
-                device.build_input_stream(
-                    config,
-                    move |data: &[i16], _| {
-                        recorded
-                            .lock()
-                            .expect("capture lock")
-                            .extend(data.iter().map(|sample| *sample as f32 / i16::MAX as f32))
-                    },
-                    error,
-                    None,
-                )
-            }
-            SampleFormat::U16 => {
-                let recorded = recorded.clone();
-                device.build_input_stream(
-                    config,
-                    move |data: &[u16], _| {
-                        recorded.lock().expect("capture lock").extend(
-                            data.iter()
-                                .map(|sample| (*sample as f32 - 32_768.0) / 32_768.0),
-                        )
-                    },
-                    error,
-                    None,
-                )
-            }
-            format => panic!("unexpected Pulse shared-mode sample format: {format:?}"),
-        }
-        .expect("build Pulse capture stream");
-
-        let tone = (0..48_000 * 7)
-            .map(|index| (std::f32::consts::TAU * 1_000.0 * index as f32 / 48_000.0).sin() * 0.5)
-            .collect::<Vec<_>>();
-        let queue = Arc::new(Mutex::new(OutputBuffer::with_prebuffer(
-            48_000,
-            tone.len(),
-            0,
-        )));
-        queue.lock().expect("output lock").push(tone.clone());
-        let transport_error = Arc::new(Mutex::new(None));
-        let output =
-            WindowsPulseOutput::new(queue, transport_error.clone()).expect("open Pulse writer");
-        output.play().expect("start Pulse writer");
-        stream.play().expect("start Pulse capture");
-        thread::sleep(Duration::from_millis(5_500));
-
-        let captured_tone = std::mem::take(&mut *recorded.lock().expect("capture lock"));
-        let (rms, frequency, clipped) = probe_metrics(&captured_tone, 48_000);
-        println!(
-            "tone: samples={} rms={rms:.4} frequency={frequency:.1}Hz clipped={clipped}",
-            captured_tone.len()
-        );
-        assert!(rms > 0.2 && rms < 0.5, "unexpected tone RMS {rms}");
-        assert!(
-            (frequency - 1_000.0).abs() < 20.0,
-            "unexpected frequency {frequency}"
-        );
-        assert_eq!(clipped, 0, "tone must not clip");
-        assert!(transport_error.lock().expect("transport lock").is_none());
-
-        drop(output);
-        recorded.lock().expect("capture lock").clear();
-        thread::sleep(Duration::from_millis(600));
-        let silence = std::mem::take(&mut *recorded.lock().expect("capture lock"));
-        let (silence_rms, _, _) = probe_metrics(&silence, 48_000);
-        println!("underflow: samples={} rms={silence_rms:.6}", silence.len());
-        assert!(
-            silence_rms < 0.001,
-            "stale audio remained after writer close"
-        );
-
-        let queue = Arc::new(Mutex::new(OutputBuffer::with_prebuffer(
-            48_000,
-            tone.len(),
-            0,
-        )));
-        queue.lock().expect("output lock").push(tone);
-        let recovery_error = Arc::new(Mutex::new(None));
-        let recovery =
-            WindowsPulseOutput::new(queue, recovery_error.clone()).expect("reopen Pulse writer");
-        recovery.play().expect("restart Pulse writer");
-        recorded.lock().expect("capture lock").clear();
-        thread::sleep(Duration::from_millis(1_200));
-        let recovered = std::mem::take(&mut *recorded.lock().expect("capture lock"));
-        let (recovered_rms, recovered_frequency, recovered_clipped) =
-            probe_metrics(&recovered, 48_000);
-        println!(
-            "recovery: samples={} rms={recovered_rms:.4} frequency={recovered_frequency:.1}Hz clipped={recovered_clipped}",
-            recovered.len()
-        );
-        assert!(recovered_rms > 0.2);
-        assert!((recovered_frequency - 1_000.0).abs() < 20.0);
-        assert_eq!(recovered_clipped, 0);
-        assert!(recovery_error.lock().expect("transport lock").is_none());
-    }
 
     fn received_rms(receiver: &mut tokio::sync::mpsc::Receiver<Vec<u8>>) -> f64 {
         let mut sum_squares = 0.0_f64;
