@@ -113,12 +113,18 @@ foreach ($current in $configurations) {
     }
     else {
         if ($TestCertificateThumbprint) {
-            & $signTool sign /v /fd SHA256 /sha1 $TestCertificateThumbprint /s My /sm (Join-Path $package 'PulseVirtualMic.sys')
+            & $signTool sign /v /fd SHA256 /ph /sha1 $TestCertificateThumbprint /s My /sm (Join-Path $package 'PulseVirtualMic.sys')
             if ($LASTEXITCODE -ne 0) {
                 throw "Test-signing PulseVirtualMic.sys failed with exit code $LASTEXITCODE."
             }
         }
 
+        if ($TestCertificateThumbprint) {
+            & $signTool verify /v /pa /ph (Join-Path $package 'PulseVirtualMic.sys')
+            if ($LASTEXITCODE -ne 0) {
+                throw "PulseVirtualMic.sys does not contain a valid embedded test signature with page hashes."
+            }
+        }
         & $inf2Cat "/driver:$package" /os:10_X64
         if ($LASTEXITCODE -ne 0) {
             throw "Inf2Cat failed for the $current package with exit code $LASTEXITCODE."
