@@ -1909,8 +1909,20 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Pulse");
+        .build(tauri::generate_context!())
+        .expect("error while building Pulse")
+        .run(|_app, _event| {
+            // The selector may be the only Tauri window. Keep the tray app and
+            // shortcut hook alive while its replacement is prepared. Explicit
+            // Quit and updater restarts have an exit code and still go through.
+            #[cfg(target_os = "windows")]
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = _event
+            {
+                api.prevent_exit();
+            }
+        });
 }
 
 #[cfg(test)]
