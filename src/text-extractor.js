@@ -258,7 +258,7 @@ async function runExtraction(initial = false, force = false) {
     phase("flying");
     details.hidden = true;
     details.inert = true;
-    result.inert = true;
+    modeControl.inert = true;
     editor.disabled = true;
     document.body.dataset.zoomed = "false";
     if (!reducedMotion.matches) {
@@ -269,7 +269,7 @@ async function runExtraction(initial = false, force = false) {
       ], { duration: 540, easing: "cubic-bezier(.2,.8,.2,1)" });
     }
     if (current !== generation || closing) return;
-    result.inert = false;
+    modeControl.inert = false;
     phase("basic-reading");
   } else if (mode === "basic" || cached) {
     phase("basic-reading");
