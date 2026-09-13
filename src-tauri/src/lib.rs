@@ -786,14 +786,14 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
             .primary_monitor()?
             .map(|monitor| {
                 (f64::from(monitor.size().height) / monitor.scale_factor() - 120.0)
-                    .clamp(360.0, 720.0)
+                    .clamp(360.0, 500.0)
             })
-            .unwrap_or(720.0);
+            .unwrap_or(500.0);
         #[cfg(target_os = "macos")]
         let window_height = 288.0;
 
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-            .title("Pulse Settings")
+            .title("Settings")
             .inner_size(460.0, window_height)
             .resizable(false)
             .maximizable(false)
