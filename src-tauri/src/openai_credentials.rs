@@ -2,7 +2,8 @@
 //! The secret never leaves the Rust backend after Settings saves it.
 const API_KEY_SERVICE: &str = "app.pulse.desktop";
 const API_KEY_ACCOUNT: &str = "openai-api-key";
-pub const MISSING_KEY: &str = "Add an OpenAI API key in Settings before enabling Text Extractor.";
+pub const MISSING_KEY: &str =
+    "Add an OpenAI API key in Pulse Settings to use Advanced or Translate.";
 
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(API_KEY_SERVICE, API_KEY_ACCOUNT)

@@ -1581,8 +1581,10 @@ pub fn run() {
         text_extractor::set_text_extractor,
         text_extractor::record_text_extractor_shortcut,
         text_extractor::text_extractor_capture,
+        text_extractor::text_extractor_capabilities,
         text_extractor::text_extractor_show,
         text_extractor::extract_screen_text,
+        text_extractor::cancel_text_extraction,
         text_extractor::translate_extracted_text,
         text_extractor::copy_extracted_text,
         text_extractor::close_text_extractor

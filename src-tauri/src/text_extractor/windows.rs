@@ -1,5 +1,5 @@
 use super::{
-    capture,
+    capture, ocr,
     protocol::{self, Crop, Preferences},
 };
 use crate::openai_credentials;
@@ -39,7 +39,8 @@ struct Session {
     label: String,
     image: Arc<RgbaImage>,
     cancel: CancellationToken,
-    extracting: bool,
+    request_id: u32,
+    request_cancel: CancellationToken,
     shown: bool,
 }
 
@@ -81,22 +82,8 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes).unwrap_or_default(),
         Err(_) => Preferences::default(),
     };
-    let mut error = None;
     if shortcut(&preferences.shortcut).is_err() {
         preferences = Preferences::default();
-    }
-    if preferences.enabled {
-        match openai_credentials::is_configured() {
-            Ok(true) => {}
-            Ok(false) => {
-                preferences.enabled = false;
-                error = Some(openai_credentials::MISSING_KEY.into());
-            }
-            Err(reason) => {
-                preferences.enabled = false;
-                error = Some(reason);
-            }
-        }
     }
     app.manage(TextExtractor {
         preferences: Mutex::new(preferences.clone()),
@@ -105,7 +92,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         starting: AtomicBool::new(false),
         recording_shortcut: AtomicBool::new(false),
         next_id: AtomicU64::new(1),
-        error: Mutex::new(error),
+        error: Mutex::new(None),
     });
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
@@ -153,11 +140,17 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
 pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Result<Value, String> {
     settings_only(&window)?;
     let state = app.state::<TextExtractor>();
-    let configured = openai_credentials::is_configured()?;
+    let credential_state = openai_credentials::is_configured();
+    let configured = credential_state.as_ref().copied().unwrap_or(false);
     let preferences = state.preferences.lock().unwrap().clone();
-    let error = state.error.lock().unwrap().clone();
+    let error = state
+        .error
+        .lock()
+        .unwrap()
+        .clone()
+        .or_else(|| credential_state.err());
     Ok(
-        json!({"enabled": preferences.enabled && configured, "shortcut": preferences.shortcut,
+        json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut,
         "apiKeyConfigured": configured, "error": error}),
     )
 }
@@ -196,9 +189,6 @@ pub async fn set_text_extractor(
 ) -> Result<(), String> {
     settings_only(&window)?;
     let next_shortcut = shortcut(&shortcut_value)?;
-    if enabled && !openai_credentials::is_configured()? {
-        return Err(openai_credentials::MISSING_KEY.into());
-    }
     let state = app.state::<TextExtractor>();
     let mut current = state.preferences.lock().unwrap();
     let old_shortcut = shortcut(&current.shortcut)?;
@@ -289,9 +279,6 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
     if !state.preferences.lock().unwrap().enabled {
         return Ok(());
     }
-    if !openai_credentials::is_configured()? {
-        return Err(openai_credentials::MISSING_KEY.into());
-    }
     let capture = tauri::async_runtime::spawn_blocking(capture::monitor_at_pointer)
         .await
         .map_err(|_| "Screen capture stopped unexpectedly.")??;
@@ -311,7 +298,8 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
             label: label.clone(),
             image: Arc::new(capture.image),
             cancel: CancellationToken::new(),
-            extracting: false,
+            request_id: 0,
+            request_cancel: CancellationToken::new(),
             shown: false,
         });
     }
@@ -369,6 +357,7 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
             };
             if let Some(session) = stalled {
                 session.cancel.cancel();
+                session.request_cancel.cancel();
                 if let Some(window) = app.get_webview_window(&session.label) {
                     let _ = window.destroy();
                 }
@@ -407,7 +396,10 @@ pub async fn text_extractor_capture(
         session.image.clone()
     };
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(json!({"width": image.width(), "height": image.height(), "imageUrl": png_url(&image)?}))
+        Ok(
+            json!({"width": image.width(), "height": image.height(), "imageUrl": png_url(&image)?,
+            "advancedAvailable": openai_credentials::is_configured().unwrap_or(false)}),
+        )
     })
     .await
     .map_err(|_| "Could not load this capture.")?
@@ -453,30 +445,78 @@ fn ensure_session(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), 
 }
 
 #[tauri::command]
+pub fn text_extractor_capabilities(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<bool, String> {
+    ensure_session(&app, &window)?;
+    // Credential storage failure must not prevent local OCR.
+    Ok(openai_credentials::is_configured().unwrap_or(false))
+}
+
+/// Request IDs also order cancellation IPC, so a late request can never replace a
+/// newer mode's work or clear its cancellation token.
+fn begin_request(session: &mut Session, request_id: u32) -> Result<CancellationToken, String> {
+    if request_id <= session.request_id {
+        return Err("Capture cancelled.".into());
+    }
+    session.request_cancel.cancel();
+    session.request_id = request_id;
+    session.request_cancel = session.cancel.child_token();
+    Ok(session.request_cancel.clone())
+}
+
+#[tauri::command]
+pub fn cancel_text_extraction(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    request_id: u32,
+) -> Result<(), String> {
+    let state = app.state::<TextExtractor>();
+    let mut active = state.session.lock().unwrap();
+    let session = active
+        .as_mut()
+        .filter(|s| s.label == window.label())
+        .ok_or("This capture has ended.")?;
+    begin_request(session, request_id)?.cancel();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn extract_screen_text(
     app: tauri::AppHandle,
     window: WebviewWindow,
     crop: Crop,
+    mode: String,
+    request_id: u32,
 ) -> Result<String, String> {
+    if mode != "basic" && mode != "advanced" {
+        return Err("Choose Basic or Advanced.".into());
+    }
     let (image, cancel) = {
         let state = app.state::<TextExtractor>();
-        let mut session = state.session.lock().unwrap();
-        let session = session
+        let mut active = state.session.lock().unwrap();
+        let session = active
             .as_mut()
             .filter(|s| s.label == window.label())
             .ok_or("This capture has ended.")?;
         crop.validate(session.image.width(), session.image.height())?;
-        if session.extracting {
-            return Err("A text request is already running.".into());
-        }
-        session.extracting = true;
-        (session.image.clone(), session.cancel.clone())
+        (session.image.clone(), begin_request(session, request_id)?)
     };
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
-        result = extract(image, crop) => result,
+        result = async {
+            if mode == "basic" {
+                tauri::async_runtime::spawn_blocking(move || {
+                    let crop = image::imageops::crop_imm(image.as_ref(), crop.x, crop.y, crop.width, crop.height).to_image();
+                    ocr::recognize(crop)
+                }).await.map_err(|_| "Windows text recognition stopped unexpectedly.".to_string())?
+            } else {
+                extract(image, crop).await
+            }
+        } => result,
     };
-    finish_request(&app, &window, result)
+    finish_request(&app, &window, request_id, result)
 }
 
 #[tauri::command]
@@ -485,6 +525,7 @@ pub async fn translate_extracted_text(
     window: WebviewWindow,
     text: String,
     language: String,
+    request_id: u32,
 ) -> Result<String, String> {
     let body = protocol::translation_body(&text, &language)?;
     let cancel = {
@@ -494,29 +535,26 @@ pub async fn translate_extracted_text(
             .as_mut()
             .filter(|s| s.label == window.label())
             .ok_or("This capture has ended.")?;
-        if session.extracting {
-            return Err("A text request is already running.".into());
-        }
-        session.extracting = true;
-        session.cancel.clone()
+        begin_request(session, request_id)?
     };
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
         result = request_text(body) => result,
     };
-    finish_request(&app, &window, result)
+    finish_request(&app, &window, request_id, result)
 }
 
 fn finish_request(
     app: &tauri::AppHandle,
     window: &WebviewWindow,
+    request_id: u32,
     result: Result<String, String>,
 ) -> Result<String, String> {
     let state = app.state::<TextExtractor>();
-    let mut session = state.session.lock().unwrap();
-    if let Some(session) = session.as_mut().filter(|s| s.label == window.label()) {
-        session.extracting = false;
-    } else {
+    let active = state.session.lock().unwrap();
+    if !active.as_ref().is_some_and(|s| {
+        s.label == window.label() && s.request_id == request_id && !s.request_cancel.is_cancelled()
+    }) {
         return Err("Capture cancelled.".into());
     }
     result
@@ -606,6 +644,7 @@ fn close_active(app: &tauri::AppHandle) {
     let session = app.state::<TextExtractor>().session.lock().unwrap().take();
     if let Some(session) = session {
         session.cancel.cancel();
+        session.request_cancel.cancel();
         if let Some(window) = app.get_webview_window(&session.label) {
             let _ = window.destroy();
         }
@@ -621,6 +660,33 @@ pub fn window_destroyed(app: &tauri::AppHandle, label: &str) {
     if active.as_ref().is_some_and(|s| s.label == label) {
         if let Some(session) = active.take() {
             session.cancel.cancel();
+            session.request_cancel.cancel();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_switch_cancels_old_work_and_rejects_out_of_order_requests() {
+        let mut session = Session {
+            label: "text-extractor-test".into(),
+            image: Arc::new(RgbaImage::new(4, 4)),
+            cancel: CancellationToken::new(),
+            request_id: 0,
+            request_cancel: CancellationToken::new(),
+            shown: true,
+        };
+        let basic = begin_request(&mut session, 1).unwrap();
+        let advanced = begin_request(&mut session, 3).unwrap();
+        assert!(basic.is_cancelled());
+        assert!(!advanced.is_cancelled());
+        assert!(begin_request(&mut session, 2).is_err());
+        assert!(begin_request(&mut session, 3).is_err());
+        assert!(!advanced.is_cancelled());
+        session.cancel.cancel();
+        assert!(advanced.is_cancelled());
     }
 }
