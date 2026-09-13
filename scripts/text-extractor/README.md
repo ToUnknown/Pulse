@@ -55,4 +55,17 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 
 ## Windows acceptance pass still required
 
+### Native selector startup measured on 2026-09-13
+
+The Windows debug build at `c2ad44a` still captured and PNG-encoded the full monitor before showing the selection window. Rebuilding the preview from `28c4b0c` removed that startup work and used the preloaded transparent selector. Three native editor activations on Windows 11 build 26200 measured:
+
+| Build | Activation to visible selector, milliseconds |
+| --- | --- |
+| `c2ad44a`, screenshot before selection | 2291, 2225, 2226 |
+| `28c4b0c`, preloaded live selector | 38, 31, 16 |
+
+The isolated probes called the native editor entry point and waited for the session's `shown` flag, which is set after the frontend enables selection and the native window is shown and focused. The feature had three seconds to initialize before the first activation and two seconds between activations. A hidden blank window kept the older probe alive between captures. Temporary preferences enabled only the probe, credential availability was stubbed off, and the probes dismissed without selecting an area, running OCR, or calling OpenAI. These timings cover an initialized app; they do not establish cold application launch time, immediate activation after enabling, physical keyboard-hook behavior, or first-paint/input latency measured by a camera.
+
+The corrected clean debug executable was built separately so the Windows checkout's uncommitted files could remain intact. When reproducing a startup report, check the executable's build revision as well as the checked-out branch: an older running executable can still have the screenshot-before-selection pipeline after the branch has been updated.
+
 On a Windows desktop, verify both shortcuts suppress Snipping Tool, key-up/repeat behavior, enable/disable and shortcut recording, cold/warm launch latency, transparency and mouse capture over live video, Quick Copy with no result UI, editor crop alignment on release, native custom-hotkey registration and conflicts, Windows Credential Manager sharing, local OCR with installed and missing language packs, OCR on large/portrait selections, repeat capture/dismissal, focus restoration, clipboard ownership, Pulse Appearance changes and Auto scheduling while the overlay is open, protected content, mixed 100/125/150/200% DPI, portrait displays, negative monitor origins, and disconnecting a monitor during capture. Browser fixtures and compilation do not prove these native behaviors. Live API behavior was deliberately not tested for this prototype.
