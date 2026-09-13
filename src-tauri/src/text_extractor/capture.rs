@@ -1,3 +1,4 @@
+use super::protocol::Crop;
 use image::RgbaImage;
 use std::{mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
@@ -14,10 +15,12 @@ use windows_sys::Win32::{
     },
 };
 
-pub struct Capture {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Monitor {
     pub x: i32,
     pub y: i32,
-    pub image: RgbaImage,
+    pub width: u32,
+    pub height: u32,
 }
 
 struct GdiCapture {
@@ -46,11 +49,11 @@ impl Drop for GdiCapture {
     }
 }
 
-pub fn monitor_at_pointer() -> Result<Capture, String> {
+pub fn monitor_at_pointer() -> Result<Monitor, String> {
     // Use physical desktop coordinates even when monitors have different DPI.
     unsafe {
         let previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        let result = capture_monitor();
+        let result = monitor_info(None);
         if !previous_dpi.is_null() {
             SetThreadDpiAwarenessContext(previous_dpi);
         }
@@ -58,11 +61,16 @@ pub fn monitor_at_pointer() -> Result<Capture, String> {
     }
 }
 
-unsafe fn capture_monitor() -> Result<Capture, String> {
-    let mut point: POINT = std::mem::zeroed();
-    if GetCursorPos(&mut point) == 0 {
-        return Err("Could not locate the pointer.".into());
-    }
+unsafe fn monitor_info(point: Option<POINT>) -> Result<Monitor, String> {
+    let point = if let Some(point) = point {
+        point
+    } else {
+        let mut point: POINT = std::mem::zeroed();
+        if GetCursorPos(&mut point) == 0 {
+            return Err("Could not locate the pointer.".into());
+        }
+        point
+    };
     let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
     let mut info: MONITORINFO = std::mem::zeroed();
     info.cbSize = size_of::<MONITORINFO>() as u32;
@@ -77,6 +85,53 @@ unsafe fn capture_monitor() -> Result<Capture, String> {
             "This screen is too large to capture. Reduce its resolution and try again.".into(),
         );
     }
+    Ok(Monitor {
+        x: rect.left,
+        y: rect.top,
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
+pub fn snapshot(monitor: Monitor) -> Result<RgbaImage, String> {
+    unsafe {
+        let previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let result = snapshot_inner(monitor, None);
+        if !previous_dpi.is_null() {
+            SetThreadDpiAwarenessContext(previous_dpi);
+        }
+        result
+    }
+}
+
+pub fn selection(monitor: Monitor, crop: Crop) -> Result<RgbaImage, String> {
+    crop.validate(monitor.width, monitor.height)?;
+    unsafe {
+        let previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let result = snapshot_inner(monitor, Some(crop));
+        if !previous_dpi.is_null() {
+            SetThreadDpiAwarenessContext(previous_dpi);
+        }
+        result
+    }
+}
+
+unsafe fn snapshot_inner(monitor: Monitor, crop: Option<Crop>) -> Result<RgbaImage, String> {
+    let current = monitor_info(Some(POINT {
+        x: monitor.x + monitor.width as i32 / 2,
+        y: monitor.y + monitor.height as i32 / 2,
+    }))?;
+    if current != monitor {
+        return Err("This screen changed. Start a new selection.".into());
+    }
+    let crop = crop.unwrap_or(Crop {
+        x: 0,
+        y: 0,
+        width: monitor.width,
+        height: monitor.height,
+    });
+    let width = crop.width as i32;
+    let height = crop.height as i32;
     let mut gdi = GdiCapture {
         screen: GetDC(null_mut()),
         memory: null_mut(),
@@ -103,8 +158,8 @@ unsafe fn capture_monitor() -> Result<Capture, String> {
         width,
         height,
         gdi.screen,
-        rect.left,
-        rect.top,
+        monitor.x + crop.x as i32,
+        monitor.y + crop.y as i32,
         SRCCOPY | CAPTUREBLT,
     ) == 0
     {
@@ -142,9 +197,5 @@ unsafe fn capture_monitor() -> Result<Capture, String> {
     }
     let image = RgbaImage::from_raw(width as u32, height as u32, pixels)
         .ok_or("Invalid screen capture.")?;
-    Ok(Capture {
-        x: rect.left,
-        y: rect.top,
-        image,
-    })
+    Ok(image)
 }

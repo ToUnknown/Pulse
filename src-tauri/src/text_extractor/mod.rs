@@ -7,3 +7,8 @@ pub mod protocol;
 mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;
+
+#[cfg(target_os = "windows")]
+mod hotkeys;
+#[cfg(any(target_os = "windows", test))]
+mod shortcut_keys;

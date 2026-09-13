@@ -1,14 +1,16 @@
 use super::{
-    capture, ocr,
+    capture, hotkeys, ocr,
     protocol::{self, Crop, Preferences},
 };
 use crate::openai_credentials;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use image::{ImageFormat, RgbaImage};
+use image::{
+    codecs::png::{CompressionType, FilterType, PngEncoder},
+    ImageEncoder, RgbaImage,
+};
 use serde_json::{json, Value};
 use std::{
     fs,
-    io::Cursor,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -29,15 +31,33 @@ pub struct TextExtractor {
     preferences: Mutex<Preferences>,
     path: PathBuf,
     session: Mutex<Option<Session>>,
+    warm: Mutex<Option<WarmWindow>>,
+    preparing: tokio::sync::Mutex<()>,
     starting: AtomicBool,
+    hotkeys_ready: AtomicBool,
     recording_shortcut: AtomicBool,
     next_id: AtomicU64,
     error: Mutex<Option<String>>,
 }
 
+struct WarmWindow {
+    label: String,
+    ready: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum CaptureMode {
+    Quick,
+    Editor,
+}
+
 struct Session {
     label: String,
-    image: Arc<RgbaImage>,
+    mode: CaptureMode,
+    monitor: capture::Monitor,
+    image: Option<Arc<RgbaImage>>,
+    crop: Option<Crop>,
+    capturing: bool,
     cancel: CancellationToken,
     request_id: u32,
     request_cancel: CancellationToken,
@@ -82,6 +102,13 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes).unwrap_or_default(),
         Err(_) => Preferences::default(),
     };
+    if shortcut(&preferences.shortcut).is_ok_and(|key| {
+        key == shortcut("Control+Shift+E").unwrap()
+            || key == shortcut(protocol::QUICK_SHORTCUT).unwrap()
+    }) {
+        preferences.shortcut = protocol::DEFAULT_SHORTCUT.into();
+        let _ = save(&path, &preferences);
+    }
     if shortcut(&preferences.shortcut).is_err() {
         preferences = Preferences::default();
     }
@@ -89,7 +116,10 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         preferences: Mutex::new(preferences.clone()),
         path,
         session: Mutex::new(None),
+        warm: Mutex::new(None),
+        preparing: tokio::sync::Mutex::new(()),
         starting: AtomicBool::new(false),
+        hotkeys_ready: AtomicBool::new(false),
         recording_shortcut: AtomicBool::new(false),
         next_id: AtomicU64::new(1),
         error: Mutex::new(None),
@@ -112,7 +142,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
                             && shortcut(&prefs.shortcut).is_ok_and(|registered| registered == key)
                     };
                     if matches {
-                        if let Err(error) = start(&app).await {
+                        if let Err(error) = start(&app, CaptureMode::Editor).await {
                             *app.state::<TextExtractor>().error.lock().unwrap() = Some(error);
                             let _ = crate::open_settings(&app);
                         }
@@ -121,18 +151,41 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
             })
             .build(),
     )?;
-    if preferences.enabled {
-        if let Err(reason) = app
-            .global_shortcut()
-            .register(shortcut(&preferences.shortcut)?)
-        {
+    match hotkeys::install(app) {
+        Ok(()) => app
+            .state::<TextExtractor>()
+            .hotkeys_ready
+            .store(true, Ordering::Release),
+        Err(error) => {
             let state = app.state::<TextExtractor>();
             state.preferences.lock().unwrap().enabled = false;
-            *state.error.lock().unwrap() = Some(format!(
-                "Shortcut unavailable. Choose another combination in Settings. ({reason})"
-            ));
+            *state.error.lock().unwrap() = Some(error);
         }
     }
+    if app
+        .state::<TextExtractor>()
+        .preferences
+        .lock()
+        .unwrap()
+        .enabled
+    {
+        if let Err(reason) = register_editor(app, shortcut(&preferences.shortcut)?) {
+            let state = app.state::<TextExtractor>();
+            state.preferences.lock().unwrap().enabled = false;
+            *state.error.lock().unwrap() = Some(reason);
+        }
+    }
+    let enabled = app
+        .state::<TextExtractor>()
+        .preferences
+        .lock()
+        .unwrap()
+        .enabled;
+    hotkeys::configure(
+        enabled,
+        is_editor_override(shortcut(&preferences.shortcut)?),
+    );
+    queue_prewarm(app);
     Ok(())
 }
 
@@ -168,6 +221,7 @@ pub fn record_text_extractor_shortcut(
     recording: bool,
 ) -> Result<(), String> {
     settings_only(&window)?;
+    hotkeys::recording(recording);
     app.state::<TextExtractor>()
         .recording_shortcut
         .store(recording, Ordering::Release);
@@ -175,9 +229,35 @@ pub fn record_text_extractor_shortcut(
 }
 
 pub fn settings_blurred(app: &tauri::AppHandle) {
+    hotkeys::recording(false);
     app.state::<TextExtractor>()
         .recording_shortcut
         .store(false, Ordering::Release);
+}
+
+fn is_editor_override(key: Shortcut) -> bool {
+    key == shortcut(protocol::DEFAULT_SHORTCUT).unwrap()
+}
+fn register_editor(app: &tauri::AppHandle, key: Shortcut) -> Result<(), String> {
+    if is_editor_override(key) {
+        return Ok(());
+    }
+    app.global_shortcut()
+        .register(key)
+        .map_err(|_| "This shortcut is already in use. Choose another combination.".into())
+}
+fn unregister_editor(app: &tauri::AppHandle, key: Shortcut) -> Result<(), String> {
+    if is_editor_override(key) {
+        return Ok(());
+    }
+    app.global_shortcut()
+        .unregister(key)
+        .map_err(|_| "Could not release the previous shortcut. Try again.".into())
+}
+
+pub(super) fn report_error(app: &tauri::AppHandle, error: String) {
+    *app.state::<TextExtractor>().error.lock().unwrap() = Some(error);
+    let _ = crate::open_settings(app);
 }
 
 #[tauri::command]
@@ -189,21 +269,30 @@ pub async fn set_text_extractor(
 ) -> Result<(), String> {
     settings_only(&window)?;
     let next_shortcut = shortcut(&shortcut_value)?;
+    if next_shortcut == shortcut(protocol::QUICK_SHORTCUT)? {
+        return Err(
+            "Win + Shift + T is reserved for quick copy. Choose another editor shortcut.".into(),
+        );
+    }
     let state = app.state::<TextExtractor>();
+    if enabled && !state.hotkeys_ready.load(Ordering::Acquire) {
+        return Err(
+            "Windows could not install Text Extractor shortcuts. Restart Pulse and try again."
+                .into(),
+        );
+    }
     let mut current = state.preferences.lock().unwrap();
     let old_shortcut = shortcut(&current.shortcut)?;
     let changed = old_shortcut != next_shortcut;
     // Reserve the new shortcut before releasing the working one.
     let added = enabled && (!current.enabled || changed);
     if added {
-        app.global_shortcut()
-            .register(next_shortcut)
-            .map_err(|_| "This shortcut is already in use. Choose another combination.")?;
+        register_editor(&app, next_shortcut)?;
     }
     let removed = current.enabled && (!enabled || changed);
-    if removed && app.global_shortcut().unregister(old_shortcut).is_err() {
+    if removed && unregister_editor(&app, old_shortcut).is_err() {
         if added {
-            let _ = app.global_shortcut().unregister(next_shortcut);
+            let _ = unregister_editor(&app, next_shortcut);
         }
         return Err("Could not release the previous shortcut. Try again.".into());
     }
@@ -213,18 +302,25 @@ pub async fn set_text_extractor(
     };
     if let Err(error) = save(&state.path, &next) {
         if added {
-            let _ = app.global_shortcut().unregister(next_shortcut);
+            let _ = unregister_editor(&app, next_shortcut);
         }
         if removed {
-            let _ = app.global_shortcut().register(old_shortcut);
+            let _ = register_editor(&app, old_shortcut);
         }
         return Err(error);
     }
     *current = next;
+    hotkeys::configure(enabled, is_editor_override(next_shortcut));
     *state.error.lock().unwrap() = None;
     drop(current);
     if !enabled {
         close_active(&app);
+        let warm = state.warm.lock().unwrap().take();
+        if let Some(window) = warm.and_then(|warm| app.get_webview_window(&warm.label)) {
+            let _ = window.destroy();
+        }
+    } else {
+        queue_prewarm(&app);
     }
     Ok(())
 }
@@ -258,7 +354,95 @@ pub fn appearance_changed(app: &tauri::AppHandle, theme: crate::WindowsTheme) {
     }
 }
 
-async fn start(app: &tauri::AppHandle) -> Result<(), String> {
+fn queue_prewarm(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = prepare_window(&app).await {
+            *app.state::<TextExtractor>().error.lock().unwrap() = Some(error);
+        }
+    });
+}
+
+async fn prepare_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<TextExtractor>();
+    let _preparing = state.preparing.lock().await;
+    if !state.preferences.lock().unwrap().enabled || state.warm.lock().unwrap().is_some() {
+        return Ok(());
+    }
+    let label = format!(
+        "{WINDOW_PREFIX}{}",
+        state.next_id.fetch_add(1, Ordering::Relaxed)
+    );
+    *state.warm.lock().unwrap() = Some(WarmWindow {
+        label: label.clone(),
+        ready: false,
+    });
+    let created = (|| {
+        let window =
+            WebviewWindowBuilder::new(app, &label, WebviewUrl::App("text-extractor.html".into()))
+                .title("Pulse Text Extractor")
+                .theme(Some(native_theme(crate::visual_windows_theme(app)?)))
+                .visible(false)
+                .focused(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .decorations(false)
+                .shadow(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
+                .content_protected(true)
+                .build()
+                .map_err(|_| "Could not prepare Text Extractor.")?;
+        let hwnd = window
+            .hwnd()
+            .map_err(|_| "Could not prepare the selector window.")?
+            .0;
+        unsafe {
+            use windows_sys::Win32::{
+                Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED},
+                UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE},
+            };
+            let disabled: i32 = 1;
+            // No OS window entrance animation: the live desktop remains visible.
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                (&disabled as *const i32).cast(),
+                std::mem::size_of::<i32>() as u32,
+            );
+            // Capture the desktop beneath our transparent selection border.
+            if SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) == 0 {
+                return Err("Windows could not exclude the selector from screen capture.".into());
+            }
+        }
+        Ok::<(), String>(())
+    })();
+    if created.is_err() || !state.preferences.lock().unwrap().enabled {
+        state.warm.lock().unwrap().take();
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.destroy();
+        }
+    }
+    created
+}
+
+#[tauri::command]
+pub fn text_extractor_ready(app: tauri::AppHandle, window: WebviewWindow) -> Result<bool, String> {
+    let state = app.state::<TextExtractor>();
+    // Keep this lock through the session check, matching start's publication order.
+    let mut warm = state.warm.lock().unwrap();
+    if let Some(warm) = warm.as_mut().filter(|warm| warm.label == window.label()) {
+        warm.ready = true;
+        return Ok(false);
+    }
+    ensure_session(&app, &window)?;
+    Ok(true)
+}
+
+pub(super) async fn start(app: &tauri::AppHandle, mode: CaptureMode) -> Result<(), String> {
     let state = app.state::<TextExtractor>();
     if state.starting.swap(true, Ordering::AcqRel) {
         return Ok(());
@@ -279,130 +463,214 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
     if !state.preferences.lock().unwrap().enabled {
         return Ok(());
     }
-    let capture = tauri::async_runtime::spawn_blocking(capture::monitor_at_pointer)
-        .await
-        .map_err(|_| "Screen capture stopped unexpectedly.")??;
-    let label = format!(
-        "{WINDOW_PREFIX}{}",
-        state.next_id.fetch_add(1, Ordering::Relaxed)
-    );
-    let size = PhysicalSize::new(capture.image.width(), capture.image.height());
-    let position = PhysicalPosition::new(capture.x, capture.y);
-    {
-        // Publish the session under the same lock used to disable the feature.
+    // Only monitor geometry is queried on the shortcut path; no pixels or key reads.
+    let monitor = capture::monitor_at_pointer()?;
+    prepare_window(app).await?;
+    let prepared_label = state
+        .warm
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|warm| warm.label.clone())
+        .ok_or("Text Extractor is still preparing. Try again.")?;
+    let window = app
+        .get_webview_window(&prepared_label)
+        .ok_or("Could not open Text Extractor.")?;
+    // Window dispatch must not hold locks needed by the webview's ready callback.
+    window
+        .set_position(PhysicalPosition::new(monitor.x, monitor.y))
+        .map_err(|_| "Could not position Text Extractor.")?;
+    window
+        .set_size(PhysicalSize::new(monitor.width, monitor.height))
+        .map_err(|_| "Could not size Text Extractor.")?;
+    let (label, ready) = {
         let preferences = state.preferences.lock().unwrap();
         if !preferences.enabled {
             return Ok(());
         }
+        let mut warm = state.warm.lock().unwrap();
+        if !warm
+            .as_ref()
+            .is_some_and(|warm| warm.label == prepared_label)
+        {
+            return Err("Text Extractor was disabled. Try again.".into());
+        }
+        let prepared = warm.take().unwrap();
         *state.session.lock().unwrap() = Some(Session {
-            label: label.clone(),
-            image: Arc::new(capture.image),
+            label: prepared.label.clone(),
+            mode,
+            monitor,
+            image: None,
+            crop: None,
+            capturing: false,
             cancel: CancellationToken::new(),
             request_id: 0,
             request_cancel: CancellationToken::new(),
             shown: false,
         });
-    }
-    let result = (|| {
-        let window =
-            WebviewWindowBuilder::new(app, &label, WebviewUrl::App("text-extractor.html".into()))
-                .title("Pulse Text Extractor")
-                .theme(Some(native_theme(crate::visual_windows_theme(app)?)))
-                .visible(false)
-                .decorations(false)
-                .shadow(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .resizable(false)
-                .maximizable(false)
-                .minimizable(false)
-                .content_protected(true)
-                .build()
-                .map_err(|_| "Could not open Text Extractor.")?;
-        window
-            .set_position(position)
-            .map_err(|_| "Could not position Text Extractor.")?;
-        window
-            .set_size(size)
-            .map_err(|_| "Could not size Text Extractor.")?;
-        Ok::<(), String>(())
-    })();
-    let active = state
-        .session
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|s| s.label == label);
-    if result.is_err() || !active {
-        close_active(app);
-        // Disabling can race window creation after the session was published.
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.destroy();
+        (prepared.label, prepared.ready)
+    };
+    if ready {
+        let window = app
+            .get_webview_window(&label)
+            .ok_or("Could not open Text Extractor.")?;
+        if window
+            .eval("window.dispatchEvent(new Event('pulse-capture-start'))")
+            .is_err()
+        {
+            close_active(app);
+            return Err("Could not start the selector. Try again.".into());
         }
-    } else {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(20)).await;
-            let state = app.state::<TextExtractor>();
-            let stalled = {
-                let mut active = state.session.lock().unwrap();
-                if active
-                    .as_ref()
-                    .is_some_and(|s| s.label == label && !s.shown)
-                {
-                    active.take()
-                } else {
-                    None
-                }
-            };
-            if let Some(session) = stalled {
-                session.cancel.cancel();
-                session.request_cancel.cancel();
-                if let Some(window) = app.get_webview_window(&session.label) {
-                    let _ = window.destroy();
-                }
-                *state.error.lock().unwrap() =
-                    Some("Text Extractor could not open. Try the shortcut again.".into());
-                let _ = crate::open_settings(&app);
-            }
-        });
     }
-    result
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let stalled = app
+            .state::<TextExtractor>()
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|session| session.label == label && !session.shown);
+        if stalled {
+            close_active(&app);
+            *app.state::<TextExtractor>().error.lock().unwrap() =
+                Some("Text Extractor could not open. Try the shortcut again.".into());
+            let _ = crate::open_settings(&app);
+        }
+    });
+    Ok(())
 }
 
 fn png_url(image: &RgbaImage) -> Result<String, String> {
-    let mut bytes = Cursor::new(Vec::new());
-    image
-        .write_to(&mut bytes, ImageFormat::Png)
+    let mut bytes = Vec::new();
+    PngEncoder::new_with_quality(&mut bytes, CompressionType::Fast, FilterType::Adaptive)
+        .write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
         .map_err(|_| "Could not prepare the screenshot.")?;
-    Ok(format!(
-        "data:image/png;base64,{}",
-        BASE64.encode(bytes.into_inner())
-    ))
+    Ok(format!("data:image/png;base64,{}", BASE64.encode(bytes)))
 }
 
 #[tauri::command]
-pub async fn text_extractor_capture(
+pub fn text_extractor_capture(
     app: tauri::AppHandle,
     window: WebviewWindow,
 ) -> Result<Value, String> {
-    let image = {
+    let state = app.state::<TextExtractor>();
+    let active = state.session.lock().unwrap();
+    let session = active
+        .as_ref()
+        .filter(|session| session.label == window.label())
+        .ok_or("This capture has ended.")?;
+    Ok(
+        json!({"width": session.monitor.width, "height": session.monitor.height, "mode": if session.mode == CaptureMode::Quick { "quick" } else { "editor" }}),
+    )
+}
+
+#[tauri::command]
+pub async fn text_extractor_capture_selection(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    crop: Crop,
+) -> Result<Value, String> {
+    let (monitor, cancel) = {
         let state = app.state::<TextExtractor>();
-        let session = state.session.lock().unwrap();
-        let session = session
-            .as_ref()
+        let mut active = state.session.lock().unwrap();
+        let session = active
+            .as_mut()
             .filter(|s| s.label == window.label())
             .ok_or("This capture has ended.")?;
-        session.image.clone()
+        if session.mode != CaptureMode::Editor {
+            return Err("Use the editor shortcut for this action.".into());
+        }
+        crop.validate(session.monitor.width, session.monitor.height)?;
+        if session.capturing || session.image.is_some() {
+            return Err("This selection is already captured.".into());
+        }
+        session.capturing = true;
+        (session.monitor, session.cancel.clone())
     };
-    tauri::async_runtime::spawn_blocking(move || {
-        Ok(
-            json!({"width": image.width(), "height": image.height(), "imageUrl": png_url(&image)?,
-            "advancedAvailable": openai_credentials::is_configured().unwrap_or(false)}),
-        )
-    })
-    .await
-    .map_err(|_| "Could not load this capture.")?
+    let result = tokio::select! {
+        _ = cancel.cancelled() => return Err("Capture cancelled.".into()),
+        result = tauri::async_runtime::spawn_blocking(move || {
+            let image = capture::snapshot(monitor)?;
+            let selection = image::imageops::crop_imm(&image, crop.x, crop.y, crop.width, crop.height).to_image();
+            // The backdrop is blurred, so transfer a small thumbnail instead of a full monitor PNG.
+            let backdrop = image::imageops::thumbnail(&image, 1200, 800);
+            let payload = json!({"imageUrl": png_url(&selection)?, "backdropUrl": png_url(&backdrop)?});
+            Ok::<_, String>((Arc::new(image), payload))
+        }) => result.map_err(|_| "Screen capture stopped unexpectedly.".to_string()).and_then(|result| result),
+    };
+    let state = app.state::<TextExtractor>();
+    let mut active = state.session.lock().unwrap();
+    let session = active
+        .as_mut()
+        .filter(|s| s.label == window.label() && !s.cancel.is_cancelled())
+        .ok_or("Capture cancelled.")?;
+    session.capturing = false;
+    let (image, payload) = result?;
+    session.image = Some(image);
+    session.crop = Some(crop);
+    Ok(payload)
+}
+
+#[tauri::command]
+pub async fn text_extractor_quick_copy(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    crop: Crop,
+) -> Result<(), String> {
+    let (monitor, cancel) = {
+        let state = app.state::<TextExtractor>();
+        let mut active = state.session.lock().unwrap();
+        let session = active
+            .as_mut()
+            .filter(|s| s.label == window.label())
+            .ok_or("This capture has ended.")?;
+        if session.mode != CaptureMode::Quick || session.capturing {
+            return Err("This quick copy has already started.".into());
+        }
+        crop.validate(session.monitor.width, session.monitor.height)?;
+        session.capturing = true;
+        (session.monitor, session.cancel.clone())
+    };
+    // Selection is finished. Return focus immediately; no image or result UI is sent to the webview.
+    let _ = window.hide();
+    let recognized = tokio::select! {
+        _ = cancel.cancelled() => return Err("Capture cancelled.".into()),
+        result = tauri::async_runtime::spawn_blocking(move || ocr::recognize(capture::selection(monitor, crop)?)) => result.map_err(|_| "Windows text recognition stopped unexpectedly.".to_string()).and_then(|result| result),
+    };
+    let result = (|| {
+        let state = app.state::<TextExtractor>();
+        let active = state.session.lock().unwrap();
+        let session = active
+            .as_ref()
+            .filter(|s| s.label == window.label() && !s.cancel.is_cancelled())
+            .ok_or("Capture cancelled.")?;
+        let text = recognized?;
+        if text.trim().is_empty() {
+            return Err("No text was found. Select another area.".into());
+        }
+        if session.mode != CaptureMode::Quick {
+            return Err("This capture has ended.".into());
+        }
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(text))
+            .map_err(|_| "The clipboard is busy. Try quick copy again.".into())
+    })();
+    // A cancelled old request must never close a newer capture.
+    if ensure_session(&app, &window).is_ok() {
+        close_active(&app);
+        queue_prewarm(&app);
+        if let Err(error) = &result {
+            report_error(&app, format!("Quick copy: {error}"));
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -500,8 +768,11 @@ pub async fn extract_screen_text(
             .as_mut()
             .filter(|s| s.label == window.label())
             .ok_or("This capture has ended.")?;
-        crop.validate(session.image.width(), session.image.height())?;
-        (session.image.clone(), begin_request(session, request_id)?)
+        if session.crop != Some(crop) {
+            return Err("Start a new selection to read a different area.".into());
+        }
+        let image = session.image.clone().ok_or("Select an area first.")?;
+        (image, begin_request(session, request_id)?)
     };
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
@@ -637,6 +908,7 @@ pub fn copy_extracted_text(
 pub fn close_text_extractor(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
     ensure_session(&app, &window)?;
     close_active(&app);
+    queue_prewarm(&app);
     Ok(())
 }
 
@@ -673,7 +945,16 @@ mod tests {
     fn mode_switch_cancels_old_work_and_rejects_out_of_order_requests() {
         let mut session = Session {
             label: "text-extractor-test".into(),
-            image: Arc::new(RgbaImage::new(4, 4)),
+            mode: CaptureMode::Editor,
+            monitor: capture::Monitor {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+            },
+            image: Some(Arc::new(RgbaImage::new(4, 4))),
+            crop: None,
+            capturing: false,
             cancel: CancellationToken::new(),
             request_id: 0,
             request_cancel: CancellationToken::new(),
