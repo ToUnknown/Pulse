@@ -35,17 +35,14 @@ function render() {
   enabled.checked = state.enabled;
   for (const [field, button] of Object.entries(shortcutButtons)) button.textContent = displayShortcut(state[field]);
   keyStatus.textContent = state.apiKeyConfigured
-    ? "Stored in Windows Credential Manager. Enter a new key to replace it."
-    : "Add a key to use Advanced extraction and Translate.";
+    ? "Key saved."
+    : "Optional. Unlocks Advanced and Translate.";
   delete keyStatus.dataset.tone;
   keyInput.removeAttribute("aria-invalid");
   keyInput.dataset.configured = String(state.apiKeyConfigured);
   keyInput.placeholder = state.apiKeyConfigured ? "" : "sk-…";
   keyRemove.hidden = !state.apiKeyConfigured;
   renderKeyControls();
-  const availability = $("#extractor-availability");
-  availability.hidden = !state.enabled;
-  availability.textContent = state.apiKeyConfigured ? "Basic is the default. Advanced and Translate are ready to use." : "Basic works on your PC. Add an API key below to unlock Advanced and Translate.";
   if (state.error) error(state.error);
   else settingsError.hidden = true;
 }
