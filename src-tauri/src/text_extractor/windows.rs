@@ -497,7 +497,6 @@ fn show_no_text_notice(app: &tauri::AppHandle, monitor: capture::Monitor) -> Res
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
-    .content_protected(true)
     .on_page_load(move |window, payload| {
         if payload.event() != tauri::webview::PageLoadEvent::Finished {
             return;
@@ -518,15 +517,13 @@ fn show_no_text_notice(app: &tauri::AppHandle, monitor: capture::Monitor) -> Res
                 monitor.x + (monitor.width as i32 - width as i32) / 2,
                 monitor.y + (16.0 * scale).round() as i32,
             ))?;
-            window.set_size(PhysicalSize::new(width, height))?;
-            window.set_ignore_cursor_events(true)
+            window.set_size(PhysicalSize::new(width, height))
         })();
         if let Err(error) = positioned {
             eprintln!("Quick Copy notice: {error}");
             let _ = window.destroy();
             return;
         }
-        let _ = window.eval("document.body.dataset.visible = 'true'");
         let _ = window.show();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
