@@ -31,12 +31,26 @@
       case 'settings_state': return { platform: query.get('platform') || 'windows', startAtLogin: false, trayIcon: 'default', autoSchedule: { lightStart: 7, darkStart: 19 } };
       case 'text_extractor_state': return { ...settings };
       case 'save_openai_api_key': if (scenario === 'key-error') throw 'Could not save the OpenAI key securely.'; settings.apiKeyConfigured = true; return;
-      case 'set_text_extractor': if (args.enabled && !settings.apiKeyConfigured) throw 'OpenAI API key required'; if (scenario === 'shortcut-error') throw 'This shortcut is already in use. Choose another combination.'; settings = { ...settings, enabled: args.enabled, shortcut: args.shortcutValue }; return;
-      case 'text_extractor_capture': return screenshot();
+      case 'set_text_extractor': if (scenario === 'shortcut-error') throw 'This shortcut is already in use. Choose another combination.'; settings = { ...settings, enabled: args.enabled, shortcut: args.shortcutValue }; return;
+      case 'text_extractor_capture': return { ...screenshot(), advancedAvailable: settings.apiKeyConfigured };
+      case 'text_extractor_capabilities': return settings.apiKeyConfigured;
+      case 'cancel_text_extraction': return;
       case 'text_extractor_show': return;
       case 'record_text_extractor_shortcut': return;
-      case 'extract_screen_text': await new Promise(resolve => setTimeout(resolve, scenario === 'pending' ? 30000 : scenario === 'demo' ? 8000 : 1600)); window.__preview.extractionReadyAt = performance.now(); if (scenario === 'error') throw 'Could not reach OpenAI. Check your connection and try again.'; return scenario === 'empty' ? '' : text;
+      case 'extract_screen_text': {
+        if (args.mode === 'basic') {
+          await new Promise(resolve => setTimeout(resolve, scenario === 'basic-pending' ? 10000 : 100));
+          if (scenario === 'basic-error') throw 'Install an OCR language in Windows Settings, then try again. You can also use Advanced.';
+          return scenario === 'basic-empty' ? '' : text.replaceAll('\n\n', '\n');
+        }
+        if (!settings.apiKeyConfigured) throw 'Add an OpenAI API key in Pulse Settings to use Advanced or Translate.';
+        await new Promise(resolve => setTimeout(resolve, scenario === 'pending' ? 30000 : scenario === 'demo' ? 6500 : 1600));
+        window.__preview.extractionReadyAt = performance.now();
+        if (scenario === 'error') throw 'Could not reach OpenAI. Check your connection and try again.';
+        return scenario === 'empty' ? '' : text;
+      }
       case 'translate_extracted_text': {
+        if (!settings.apiKeyConfigured) throw 'Add an OpenAI API key in Pulse Settings to use Advanced or Translate.';
         await new Promise(resolve => setTimeout(resolve, scenario === 'translation-pending' ? 30000 : 1600));
         if (scenario === 'translation-error') throw 'Could not reach OpenAI. Your text is unchanged.';
         if (scenario === 'translation-empty') return '';
