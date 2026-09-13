@@ -36,6 +36,16 @@
       case 'text_extractor_show': return;
       case 'record_text_extractor_shortcut': return;
       case 'extract_screen_text': await new Promise(resolve => setTimeout(resolve, scenario === 'pending' ? 30000 : 1600)); if (scenario === 'error') throw 'Could not reach OpenAI. Check your connection and try again.'; return scenario === 'empty' ? '' : text;
+      case 'translate_extracted_text': {
+        await new Promise(resolve => setTimeout(resolve, scenario === 'translation-pending' ? 30000 : 1600));
+        if (scenario === 'translation-error') throw 'Could not reach OpenAI. Your text is unchanged.';
+        if (scenario === 'translation-empty') return '';
+        const samples = {
+          de: 'Ein wenig Raum zum Nachdenken.\n\nGute Ideen beginnen oft mit etwas Kleinem: einer Zeile in einem Buch, einem flüchtigen Gedanken, ein paar Worten, die es wert sind, bewahrt zu werden.\n\nSchaffe Raum für das, was zählt.',
+          uk: 'Трохи простору для роздумів.\n\nХороші ідеї часто починаються з чогось маленького: рядка в книжці, випадкової думки, кількох слів, які варто зберегти.\n\nЗвільни місце для того, що має значення.',
+        };
+        return samples[args.language] || args.text;
+      }
       case 'copy_extracted_text': if (scenario === 'clipboard-error') throw 'The clipboard is busy. Try copying again.'; window.__preview.copied = args.text; return;
       case 'close_text_extractor': window.__preview.closed = true; return;
       case 'set_start_at_login': case 'set_tray_icon_mode': case 'set_auto_schedule': return;

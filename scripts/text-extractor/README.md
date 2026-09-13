@@ -1,6 +1,8 @@
 # Text Extractor prototype
 
-Windows only. In Pulse Settings, enable **Text Extractor**, save an OpenAI API key if prompted, and optionally record another shortcut. The default is **Ctrl + Shift + E**. Put the pointer on the monitor to capture, press the shortcut, then drag and release. Edit the returned text and choose **Copy text** (copies and closes), **Done**, or **Escape**. **Select again** uses the same frozen screen; close and invoke the shortcut again to take a fresh capture.
+Windows only. In Pulse Settings, enable **Text Extractor**, save an OpenAI API key if prompted, and optionally record another shortcut. The default is **Ctrl + Shift + E**. Put the pointer on the monitor to capture, press the shortcut, then drag and release. Edit the returned text and choose **Copy** to copy and close. **Translate** opens a language picker and replaces the editor content with a translation of its current text. The screenshot stays visible. Press **Escape** or click outside the result to dismiss; invoke the shortcut again to take a fresh capture.
+
+The result contains only the screenshot, a full-area editor, and centered Copy and Translate pills. Screenshot and editor use squircle corners on recent WebView2 versions, with rounded corners as a fallback. The selection animates into place, scanning stops when text arrives, and translation animates the editor while retaining its content. Accessible status announcements are kept offscreen. Visible messages appear only for errors. The translation icon is copied unchanged from `src/translation-icons/translate-icon.svg` on the Live Translate branch.
 
 The feature starts disabled and only enables after secure key storage succeeds and Windows registers the shortcut. Shortcut conflicts leave the previous combination intact. No paid request is made when saving a key or enabling the feature. An invalid or unauthorized key is reported when an extraction is attempted.
 
@@ -10,7 +12,9 @@ The feature starts disabled and only enables after secure key storage succeeds a
 
 ## Capture and request lifecycle
 
-The Win32 backend captures the monitor under the pointer before creating the overlay. The overlay occupies exactly that monitor in physical pixels, including monitors left of or above the primary display. A frozen screenshot is blurred after selection; other monitors are untouched. The crop is validated and produced again in Rust from the original pixels. Only that crop is sent to `https://api.openai.com/v1/responses`, using `gpt-5.6-luna`, `reasoning.effort: medium`, and `store: false`. The prompt requests only the intended main text, in its original language. Screenshot instructions are treated as source text. Images stay in memory and are discarded when the capture closes; no screenshot files are written.
+The Win32 backend captures the monitor under the pointer before creating the overlay. The overlay occupies exactly that monitor in physical pixels, including monitors left of or above the primary display. A frozen screenshot is blurred after selection; other monitors are untouched. The crop is validated and produced again in Rust from the original pixels. Only that crop is sent to `https://api.openai.com/v1/responses`, using `gpt-5.6-luna`, `reasoning.effort: low`, and `store: false`. The prompt requests only the intended main text, in its original language. Screenshot instructions are treated as source text. Images stay in memory and are discarded when the capture closes; no screenshot files are written.
+
+Translation sends only the current edited text and uses the same model, low reasoning, shared credentials, and request cancellation. The picker supports English, Ukrainian, German, Spanish, French, Italian, Polish, Portuguese, Japanese, Korean, Simplified Chinese, and Arabic. The backend validates the selected language against this list and caps input at 100,000 UTF-8 bytes. While a translation is pending, the text remains visible and temporarily read-only. Failed or empty translations leave it intact and allow retrying, editing, or copying.
 
 The request has a two-minute timeout, a bounded response size, and cancellation when its window is closed or the feature is disabled. Stale sessions cannot write into a subsequent capture. Clipboard errors preserve the edited text and keep the window open. Native screenshots of protected content may be blank. HDR colors and exclusive fullscreen applications need verification on a Windows desktop.
 
@@ -22,6 +26,7 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 
 - `/` — select an area and receive sample text.
 - `/?scenario=error`, `empty`, `pending`, or `clipboard-error` — exercise those result states.
+- `/?scenario=translation-error`, `translation-empty`, or `translation-pending` — exercise translation failures and cancellation. Successful fixtures provide German and Ukrainian sample translations; other languages echo the input.
 - `/settings.html` — Windows settings with no key; `?key` simulates a shared saved key.
 - `/settings.html?scenario=key-error` or `shortcut-error` — simulate saving failures.
 - `/settings.html?platform=macos` — confirm that the Windows feature is hidden.

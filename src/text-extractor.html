@@ -11,26 +11,36 @@
     <img id="screen" alt="" draggable="false" />
     <div class="backdrop" aria-hidden="true"></div>
     <div id="selection-surface" aria-label="Drag to select text on your screen">
-      <div class="selection-heading"><span class="pulse-mark" aria-hidden="true">✦</span><strong>Text Extractor</strong><span class="divider"></span><span>Drag to select text</span></div>
-      <div id="selection" hidden><span id="dimensions"></span></div>
-      <div class="selection-hint"><kbd>esc</kbd> to cancel <span>·</span> Select only the text you need</div>
+      <div id="selection" hidden></div>
     </div>
-    <main id="result" role="dialog" aria-modal="true" aria-labelledby="result-title" hidden>
-      <header class="result-heading">
-        <div><span class="eyebrow">PULSE</span><h1 id="result-title">Text Extractor</h1></div>
-        <button id="close" class="icon-button" type="button" aria-label="Close Text Extractor"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
-      </header>
-      <div id="capture-frame"><img id="crop-image" alt="Selected screen area" draggable="false" /><div class="scan-wash" aria-hidden="true"></div><div class="scan-line" aria-hidden="true"></div><span class="crop-badge">YOUR SELECTION</span></div>
-      <section class="text-panel">
-        <div class="text-heading"><label for="extracted-text">Extracted text</label><span id="status" role="status" aria-live="polite">Reading your selection…</span></div>
-        <div class="editor-wrap">
-          <textarea id="extracted-text" aria-label="Extracted text" spellcheck="false" placeholder="Your text will appear here." disabled></textarea>
-          <div id="reading" aria-hidden="true"><i></i><i></i><i></i></div>
-        </div>
-        <p id="extraction-error" role="alert" hidden></p>
-        <div class="result-actions"><button id="reselect" class="quiet-button" type="button" disabled>Select again</button><button id="retry" class="quiet-button" type="button" hidden>Try again</button><span class="action-spacer"></span><button id="done" class="secondary-button" type="button">Done</button><button id="copy" class="primary-button" type="button" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="2"/><path d="M12 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2"/></svg>Copy text</button></div>
+    <main id="result" role="dialog" aria-modal="true" aria-label="Text Extractor" tabindex="-1" hidden>
+      <div id="capture-frame"><img id="crop-image" alt="Selected screen area" draggable="false" /><div class="scan-wash" aria-hidden="true"></div><div class="scan-line" aria-hidden="true"></div></div>
+      <section class="text-panel" aria-label="Editable text">
+        <textarea id="extracted-text" aria-label="Extracted text" spellcheck="false" dir="auto" disabled></textarea>
+        <div id="reading" aria-hidden="true"><i></i><i></i><i></i></div>
       </section>
-      <p class="result-hint"><kbd>esc</kbd> to close <span>·</span> <span id="edit-hint">A little clarity, in a moment.</span></p>
+      <div class="error-row" hidden><p id="extraction-error" role="alert"></p><button id="retry" class="quiet-button" type="button" hidden>Try again</button></div>
+      <div class="result-actions">
+        <button id="copy" class="primary-button" type="button" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="2"/><path d="M12 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2"/></svg><span>Copy</span></button>
+        <div class="translate-control">
+          <button id="translate" class="secondary-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="languages" disabled><img src="translation-icons/translate-icon.svg" alt="" /><span>Translate</span></button>
+          <div id="languages" role="menu" aria-label="Translate into" hidden>
+            <button type="button" role="menuitem" data-language="en">English</button>
+            <button type="button" role="menuitem" data-language="uk">Українська</button>
+            <button type="button" role="menuitem" data-language="de">Deutsch</button>
+            <button type="button" role="menuitem" data-language="es">Español</button>
+            <button type="button" role="menuitem" data-language="fr">Français</button>
+            <button type="button" role="menuitem" data-language="it">Italiano</button>
+            <button type="button" role="menuitem" data-language="pl">Polski</button>
+            <button type="button" role="menuitem" data-language="pt">Português</button>
+            <button type="button" role="menuitem" data-language="ja">日本語</button>
+            <button type="button" role="menuitem" data-language="ko">한국어</button>
+            <button type="button" role="menuitem" data-language="zh">简体中文</button>
+            <button type="button" role="menuitem" data-language="ar">العربية</button>
+          </div>
+        </div>
+      </div>
+      <span id="status" class="sr-only" role="status" aria-live="polite"></span>
     </main>
   </body>
 </html>
