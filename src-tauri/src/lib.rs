@@ -1,3 +1,8 @@
+#[cfg(target_os = "windows")]
+mod openai_credentials;
+#[cfg(any(target_os = "windows", test))]
+mod text_extractor;
+
 use tauri::{
     menu::{IconMenuItem, Menu, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -777,7 +782,7 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window
     } else {
         #[cfg(target_os = "windows")]
-        let window_height = 440.0;
+        let window_height = 720.0;
         #[cfg(target_os = "macos")]
         let window_height = 288.0;
 
@@ -1563,7 +1568,15 @@ pub fn run() {
         settings_state,
         set_start_at_login,
         set_tray_icon_mode,
-        set_auto_schedule
+        set_auto_schedule,
+        text_extractor::text_extractor_state,
+        text_extractor::save_openai_api_key,
+        text_extractor::set_text_extractor,
+        text_extractor::text_extractor_capture,
+        text_extractor::text_extractor_show,
+        text_extractor::extract_screen_text,
+        text_extractor::copy_extracted_text,
+        text_extractor::close_text_extractor
     ]);
 
     #[cfg(target_os = "macos")]
@@ -1587,6 +1600,10 @@ pub fn run() {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.on_window_event(|window, event| {
+        #[cfg(target_os = "windows")]
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            text_extractor::window_destroyed(window.app_handle(), window.label());
+        }
         if window.label() == "settings" {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -1599,6 +1616,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            text_extractor::install(app.handle())?;
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
