@@ -6,6 +6,7 @@
     <title>Pulse Settings</title>
     <link rel="stylesheet" href="settings.css" />
     <script src="settings.js" defer></script>
+    <script type="module" src="text-extractor-settings.js"></script>
   </head>
   <body>
     <main>
@@ -112,6 +113,34 @@
           </select>
         </div>
       </section>
+      <section id="text-extractor-section" class="settings-group" aria-labelledby="extractor-heading" hidden>
+        <h2 id="extractor-heading">Text Extractor</h2>
+        <div class="extractor-settings-card">
+          <label class="setting-row extractor-toggle-row">
+            <span class="setting-copy">
+              <span class="setting-feature-icon extractor-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="3" y="3" width="26" height="26" rx="9" fill="currentColor"/><path d="M10 12V9h12v3M16 9v14m-3 0h6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="setting-text"><strong>Extract text from your screen</strong><small>Select an area. Edit and copy its text.</small></span>
+            </span>
+            <input id="text-extractor-enabled" type="checkbox" disabled />
+          </label>
+          <div class="extractor-detail-row"><span>Keyboard shortcut</span><button id="extractor-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Text Extractor shortcut">Ctrl + Shift + E</button></div>
+          <div class="extractor-detail-row"><span id="extractor-key-status">OpenAI API key required</span><button id="extractor-key" class="settings-button" type="button" disabled>Add key</button></div>
+          <p class="extractor-note">Only your selection is sent to OpenAI. Uses your API billing.</p>
+          <p id="extractor-settings-error" class="extractor-error" role="alert" hidden></p>
+        </div>
+      </section>
+      <dialog id="openai-key-dialog" aria-labelledby="openai-key-title">
+        <form id="openai-key-form">
+          <span class="key-dialog-icon" aria-hidden="true">✦</span>
+          <h3 id="openai-key-title">Connect your OpenAI key</h3>
+          <p>Text Extractor needs an API key to read your selection.</p>
+          <label for="openai-api-key">OpenAI API key</label>
+          <input id="openai-api-key" name="api-key" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="2048" />
+          <small>Stored securely in Windows Credential Manager. Shared with Live Translate.</small>
+          <p id="openai-key-error" class="extractor-error" role="alert" hidden></p>
+          <div class="key-dialog-actions"><button id="openai-key-cancel" class="settings-button" type="button">Cancel</button><button id="openai-key-save" class="settings-button settings-button-primary" type="submit">Save &amp; enable</button></div>
+        </form>
+      </dialog>
       <p id="error" role="alert" hidden></p>
     </main>
   </body>

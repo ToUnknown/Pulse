@@ -476,3 +476,32 @@ input:focus-visible,
     color: CanvasText;
   }
 }
+
+/* Windows Text Extractor */
+body { overflow-y: auto; }
+[hidden] { display: none !important; }
+.extractor-settings-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.extractor-toggle-row { border: 0; border-radius: 0; }
+.extractor-icon { color: #637cf1; }
+.extractor-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 11px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.settings-button { padding: 7px 11px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.settings-button:hover { background: var(--control-hover); }
+.settings-button:disabled { opacity: .5; cursor: default; }
+.settings-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.shortcut-button { font-size: 11px; font-weight: 600; }
+.shortcut-button[aria-pressed="true"] { border-color: var(--focus); color: var(--focus); }
+.extractor-note { margin: 0; padding: 0 16px 14px; color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
+.extractor-error { color: var(--error); font-size: 12px; line-height: 1.4; }
+#extractor-settings-error { margin: 0; padding: 0 16px 14px; }
+#openai-key-dialog { width: min(380px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); color: inherit; box-shadow: var(--menu-shadow); }
+#openai-key-dialog::backdrop { background: #0a102b66; backdrop-filter: blur(5px); }
+.key-dialog-icon { display: block; color: #829cff; font-size: 30px; margin-bottom: 12px; }
+#openai-key-dialog h3 { font-size: 19px; letter-spacing: -.4px; margin: 0 0 10px; font-weight: 600; }
+#openai-key-dialog p { font-size: 13px; line-height: 1.5; color: var(--secondary-text); margin: 0 0 20px; }
+#openai-key-dialog label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+#openai-api-key { width: 100%; padding: 10px 12px; border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-background); color: inherit; font: inherit; }
+#openai-key-dialog small { display: block; color: var(--secondary-text); font-size: 11px; line-height: 1.5; margin-top: 10px; }
+#openai-key-dialog .extractor-error { margin-top: 12px; color: var(--error); }
+.key-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.settings-button-primary { background: #316be6; border-color: #316be6; color: white; }
+.settings-button-primary:hover { background: #285fce; }
