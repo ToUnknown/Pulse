@@ -74,6 +74,7 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
 });
 dialog.addEventListener("cancel", (event) => { if (keySave.disabled) event.preventDefault(); });
 shortcutButton.addEventListener("click", () => {
+  shortcutButton.focus();
   recording = true;
   shortcutButton.textContent = "Press a combination…";
   shortcutButton.setAttribute("aria-pressed", "true");

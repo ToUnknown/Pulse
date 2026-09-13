@@ -211,13 +211,11 @@ pub async fn set_text_extractor(
             .map_err(|_| "This shortcut is already in use. Choose another combination.")?;
     }
     let removed = current.enabled && (!enabled || changed);
-    if removed {
-        if app.global_shortcut().unregister(old_shortcut).is_err() {
-            if added {
-                let _ = app.global_shortcut().unregister(next_shortcut);
-            }
-            return Err("Could not release the previous shortcut. Try again.".into());
+    if removed && app.global_shortcut().unregister(old_shortcut).is_err() {
+        if added {
+            let _ = app.global_shortcut().unregister(next_shortcut);
         }
+        return Err("Could not release the previous shortcut. Try again.".into());
     }
     let next = Preferences {
         enabled,
