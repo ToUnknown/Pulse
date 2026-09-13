@@ -246,6 +246,28 @@ impl Drop for StartingGuard<'_> {
     }
 }
 
+fn native_theme(theme: crate::WindowsTheme) -> tauri::Theme {
+    match theme {
+        crate::WindowsTheme::Light => tauri::Theme::Light,
+        crate::WindowsTheme::Dark => tauri::Theme::Dark,
+    }
+}
+
+pub fn appearance_changed(app: &tauri::AppHandle, theme: crate::WindowsTheme) {
+    let state = app.state::<TextExtractor>();
+    let label = state
+        .session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|session| session.label.clone());
+    if let Some(window) = label.and_then(|label| app.get_webview_window(&label)) {
+        if let Err(error) = window.set_theme(Some(native_theme(theme))) {
+            eprintln!("Text Extractor appearance update failed: {error}");
+        }
+    }
+}
+
 async fn start(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<TextExtractor>();
     if state.starting.swap(true, Ordering::AcqRel) {
@@ -297,6 +319,7 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
         let window =
             WebviewWindowBuilder::new(app, &label, WebviewUrl::App("text-extractor.html".into()))
                 .title("Pulse Text Extractor")
+                .theme(Some(native_theme(crate::visual_windows_theme(app)?)))
                 .visible(false)
                 .decorations(false)
                 .shadow(false)
@@ -393,6 +416,10 @@ pub async fn text_extractor_capture(
 #[tauri::command]
 pub fn text_extractor_show(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
     ensure_session(&app, &window)?;
+    // Re-read Pulse's visual theme in case it changed while the capture loaded.
+    window
+        .set_theme(Some(native_theme(crate::visual_windows_theme(&app)?)))
+        .map_err(|_| "Could not apply Pulse appearance.".to_string())?;
     window
         .show()
         .and_then(|_| window.set_focus())

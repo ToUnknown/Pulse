@@ -1178,6 +1178,7 @@ impl WindowsAppearanceController {
     }
 
     fn update_visuals(&self, previous_mode: ThemeMode, next_mode: ThemeMode, theme: WindowsTheme) {
+        text_extractor::appearance_changed(&self.app, theme);
         if let Err(error) = set_appearance_selection(&self.menu_items, previous_mode, next_mode) {
             eprintln!("appearance menu icon update failed: {error}");
         }
