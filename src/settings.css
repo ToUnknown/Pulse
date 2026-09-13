@@ -545,11 +545,12 @@ body { overflow-y: auto; }
 #extractor-settings-error { margin: 0; padding: 0 16px 14px; }
 /* Settings pages share the same controls and saved state. */
 main { max-width: 720px; margin: 0 auto; }
-.settings-tabs { isolation: isolate; position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; margin-bottom: 28px; background: var(--control-hover); border: 1px solid var(--border); border-radius: 999px; }
-.settings-tabs button { position: relative; padding: 10px 8px; border: 0; border-radius: 999px; background: transparent; color: var(--secondary-text); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; transition: color 280ms ease; }
-.settings-tabs button[aria-selected="true"] { color: var(--settings-pill-text); }
+.settings-tabs { isolation: isolate; position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; margin-bottom: 28px; background: var(--control-hover); border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 550; --tab-motion: 280ms cubic-bezier(.2,.8,.2,1); }
+.settings-tabs button { position: relative; padding: 10px 8px; border: 0; border-radius: 999px; background: transparent; color: var(--secondary-text); font: inherit; cursor: pointer; }
 .settings-tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.settings-tab-slider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); background: var(--settings-pill); border-radius: 999px; box-shadow: 0 2px 6px #00000012; transform: translateX(calc(var(--page-index) * 100%)); transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
+.settings-tab-slider { position: absolute; z-index: 1; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); overflow: hidden; pointer-events: none; background: var(--settings-pill); border-radius: 999px; box-shadow: 0 2px 6px #00000012; transform: translateX(calc(var(--page-index) * 100%)); transition: transform var(--tab-motion); }
+/* Counter-move identical labels so only their color changes at the pill's edge. */
+.settings-tab-highlight { display: grid; grid-template-columns: repeat(3, 1fr); align-items: center; width: 300%; height: 100%; color: var(--settings-pill-text); text-align: center; transform: translateX(calc(var(--page-index) * -100% / 3)); transition: transform var(--tab-motion); }
 .settings-page { outline: none; animation: settings-page-in 220ms ease-out; }
 .settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: var(--card-radius); }
 .api-key-card { display: grid; gap: 14px; border: 1px solid var(--border); border-radius: var(--card-radius); padding: 16px; background: var(--surface); }
@@ -572,8 +573,8 @@ main { max-width: 720px; margin: 0 auto; }
 
 @media (forced-colors: active) {
   .settings-tab-slider { background: Highlight; }
+  .settings-tab-highlight { color: HighlightText; }
   .settings-tabs button { color: CanvasText; }
-  .settings-tabs button[aria-selected="true"] { color: HighlightText; }
   input[type="checkbox"] { border-color: CanvasText; background: Canvas; forced-color-adjust: none; }
   input[type="checkbox"]:checked { border-color: Highlight; background: Highlight; color: HighlightText; }
 }
