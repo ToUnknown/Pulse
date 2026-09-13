@@ -2,7 +2,7 @@
   const query = new URLSearchParams(location.search);
   const scenario = query.get('scenario') || 'success';
   const text = 'A little space to think.\n\nGood ideas often begin with something small: a line in a book, a passing thought, a few words worth keeping.\n\nMake room for what matters.';
-  let settings = { enabled: false, shortcut: 'Control+Shift+KeyE', apiKeyConfigured: query.has('key'), error: null };
+  let settings = { enabled: false, shortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null };
   const calls = [];
   window.__preview = { calls, copied: null, closed: false };
   const screenshot = () => {
@@ -22,9 +22,19 @@
     ctx.font = '19px Georgia';
     for (const [i, line] of ['Good ideas often begin with something small: a line in a book,', 'a passing thought, a few words worth keeping.', '', 'Make room for what matters.'].entries()) ctx.fillText(line, 475, 372 + i * 35);
     ctx.fillStyle = '#35445cbb'; ctx.fillRect(0, 851, width, 49);
-    ctx.fillStyle = '#e2e8f2'; ctx.font = '14px system-ui'; ctx.fillText('⊞     ⌕     ▣     ◉     ✉', 610, 882); ctx.fillText('21:42', 1360, 876);
-    return { width, height, imageUrl: canvas.toDataURL('image/png') };
+    ctx.fillStyle = '#e2e8f2'; ctx.font = '14px system-ui'; ctx.fillText('⊞     ⌕     ▣     ◉     ✉', 610, 882); ctx.fillText(new Date().toLocaleTimeString('en-GB'), 1340, 876);
+    ctx.fillStyle = '#818da044'; ctx.fillRect(475, 650, 220, 4);
+    ctx.fillStyle = '#818da0'; ctx.fillRect(475, 650, (Date.now() / 60) % 220, 4);
+    return canvas;
   };
+  let desktop;
+  document.addEventListener('DOMContentLoaded', () => {
+    desktop = screenshot();
+    desktop.id = 'preview-desktop';
+    Object.assign(desktop.style, { position: 'fixed', inset: '0', width: '100%', height: '100%', zIndex: '-1', pointerEvents: 'none' });
+    if (location.pathname !== '/settings.html') document.body.prepend(desktop);
+    setInterval(() => desktop.getContext('2d').drawImage(screenshot(), 0, 0), 100);
+  });
   window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
     calls.push({ command, args: command === 'save_openai_api_key' ? '[redacted fixture]' : args });
     switch (command) {
@@ -32,7 +42,23 @@
       case 'text_extractor_state': return { ...settings };
       case 'save_openai_api_key': if (scenario === 'key-error') throw 'Could not save the OpenAI key securely.'; settings.apiKeyConfigured = true; return;
       case 'set_text_extractor': if (scenario === 'shortcut-error') throw 'This shortcut is already in use. Choose another combination.'; settings = { ...settings, enabled: args.enabled, shortcut: args.shortcutValue }; return;
-      case 'text_extractor_capture': return { ...screenshot(), advancedAvailable: settings.apiKeyConfigured };
+      case 'text_extractor_ready': return !query.has('warm');
+      case 'text_extractor_capture': return { width: 1440, height: 900, mode: query.has('quick') ? 'quick' : 'editor' };
+      case 'text_extractor_capture_selection': {
+        const source = desktop || screenshot();
+        const canvas = document.createElement('canvas'); canvas.width = args.crop.width; canvas.height = args.crop.height;
+        canvas.getContext('2d').drawImage(source, args.crop.x, args.crop.y, args.crop.width, args.crop.height, 0, 0, args.crop.width, args.crop.height);
+        const payload = { imageUrl: canvas.toDataURL('image/png'), backdropUrl: source.toDataURL('image/png') };
+        await new Promise(resolve => setTimeout(resolve, scenario === 'capture-pending' ? 3000 : 60));
+        if (scenario === 'capture-error') throw 'Windows could not capture this selection.';
+        return payload;
+      }
+      case 'text_extractor_quick_copy': {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        window.__preview.closed = true;
+        if (scenario === 'basic-error' || scenario === 'clipboard-error') { window.__preview.error = 'Quick copy failed'; throw 'Quick copy failed'; }
+        window.__preview.copied = text.replaceAll('\n\n', '\n'); return;
+      }
       case 'text_extractor_capabilities': return settings.apiKeyConfigured;
       case 'cancel_text_extraction': return;
       case 'text_extractor_show': return;

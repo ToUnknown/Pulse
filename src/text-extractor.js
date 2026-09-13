@@ -162,7 +162,7 @@ function updateSelection(event) {
 }
 
 surface.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || !capture || closing || pointerId !== undefined) return;
+  if (event.button !== 0 || !capture || closing || pointerId !== undefined || document.body.dataset.phase !== "selecting") return;
   start = { x: event.clientX, y: event.clientY };
   pointerId = event.pointerId;
   surface.setPointerCapture(pointerId);
@@ -179,15 +179,24 @@ surface.addEventListener("pointerup", async (event) => {
   start = null;
   if (rect.width < 4 || rect.height < 4) { selection.hidden = true; return; }
   crop = physicalCrop(rect, { width: innerWidth, height: innerHeight }, capture);
+  if (capture.mode === "quick") {
+    phase("copying");
+    surface.hidden = true;
+    closing = true;
+    // Native local OCR writes the clipboard and closes this window. No result UI.
+    await invoke("text_extractor_quick_copy", { crop }).catch(() => {});
+    return;
+  }
+  phase("capturing");
   try {
-    const canvas = document.createElement("canvas");
-    canvas.width = crop.width;
-    canvas.height = crop.height;
-    canvas.getContext("2d").drawImage(screen, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
-    cropImage.src = canvas.toDataURL("image/png");
-    await cropImage.decode();
+    const images = await invoke("text_extractor_capture_selection", { crop });
+    if (closing) return;
+    cropImage.src = images.imageUrl;
+    screen.src = images.backdropUrl;
+    await Promise.all([cropImage.decode(), screen.decode()]);
     if (closing) return;
     surface.hidden = true;
+    screen.hidden = false;
     result.hidden = false;
     frame.hidden = false;
     await runExtraction(true);
@@ -195,7 +204,7 @@ surface.addEventListener("pointerup", async (event) => {
     if (closing) return;
     surface.hidden = true;
     result.hidden = false;
-    frame.hidden = true;
+    stage.hidden = true;
     await setError(error);
   }
 });
@@ -245,17 +254,27 @@ async function runExtraction(initial = false, force = false) {
   const request = cached
     ? invoke("cancel_text_extraction", { requestId: current }).then(() => ({ text: drafts[mode] }), (error) => ({ error }))
     : invoke("extract_screen_text", { crop, mode, requestId: current }).then((text) => ({ text }), (error) => ({ error }));
-  if (mode === "basic" || cached) {
+  if (initial) {
+    phase("flying");
+    details.hidden = true;
+    details.inert = true;
+    result.inert = true;
+    editor.disabled = true;
+    document.body.dataset.zoomed = "false";
+    if (!reducedMotion.matches) {
+      const target = frame.getBoundingClientRect();
+      await motion(frame, [
+        { transform: `translate(${rect.x - target.x}px, ${rect.y - target.y}px) scale(${rect.width / target.width}, ${rect.height / target.height})`, borderRadius: "0px", boxShadow: "0 0 0 transparent" },
+        { transform: "none", borderRadius: getComputedStyle(frame).borderRadius, boxShadow: getComputedStyle(frame).boxShadow },
+      ], { duration: 540, easing: "cubic-bezier(.2,.8,.2,1)" });
+    }
+    if (current !== generation || closing) return;
+    result.inert = false;
+    phase("basic-reading");
+  } else if (mode === "basic" || cached) {
     phase("basic-reading");
     editor.disabled = !cached;
-    if (initial) {
-      // Local OCR has no minimum animation delay. The editor is present immediately.
-      details.hidden = false;
-      details.inert = false;
-      document.body.dataset.zoomed = "false";
-    } else {
-      await showDetails(current, "basic-reading", origin);
-    }
+    await showDetails(current, "basic-reading", origin);
   } else {
     phase("centering");
     result.focus({ preventScroll: true });
@@ -358,30 +377,35 @@ document.addEventListener("keydown", (event) => {
   }
 });
 window.addEventListener("focus", async () => {
-  if (!shown || closing) return;
+  if (!shown || closing || capture?.mode === "quick") return;
   try { setCapabilities(await invoke("text_extractor_capabilities")); } catch { /* The capture may be closing. */ }
 });
 // A display change invalidates pixel-to-screen mapping; never send a misaligned crop.
-window.addEventListener("resize", () => { if (shown && document.body.dataset.phase === "selecting") dismiss(); });
+window.addEventListener("resize", () => { if (shown && ["selecting", "capturing"].includes(document.body.dataset.phase)) dismiss(); });
 
-try {
-  capture = await invoke("text_extractor_capture");
-  if (!closing) {
-    setCapabilities(Boolean(capture.advancedAvailable));
-    screen.src = capture.imageUrl;
-    await screen.decode();
+async function beginCapture() {
+  if (capture || closing) return;
+  try {
+    capture = await invoke("text_extractor_capture");
+    if (closing) return;
+    phase("selecting");
+    await invoke("text_extractor_show");
+    // Hidden webviews may suspend animation frames; only wait after showing.
+    await new Promise(requestAnimationFrame);
+    shown = true;
+    if (capture.mode !== "quick") {
+      invoke("text_extractor_capabilities").then((available) => { if (!closing) setCapabilities(available); }).catch(() => {});
+    }
+  } catch (error) {
     if (!closing) {
-      phase("selecting");
-      await invoke("text_extractor_show");
-      shown = true;
+      surface.hidden = true;
+      result.hidden = false;
+      stage.hidden = true;
+      await setError(error);
+      await invoke("text_extractor_show").catch(() => dismiss());
     }
   }
-} catch (error) {
-  if (!closing) {
-    surface.hidden = true;
-    result.hidden = false;
-    frame.hidden = true;
-    await setError(error);
-    await invoke("text_extractor_show").catch(() => dismiss());
-  }
 }
+window.addEventListener("pulse-capture-start", beginCapture);
+// Hidden warm windows remain idle until the shortcut publishes a capture session.
+if (await invoke("text_extractor_ready")) await beginCapture();
