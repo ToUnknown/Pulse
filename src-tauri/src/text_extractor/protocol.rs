@@ -87,7 +87,7 @@ pub fn response_text(response: &Value) -> Result<String, String> {
             }
         }
     }
-    Ok(parts.join("\n").trim().to_string())
+    Ok(parts.join("\n"))
 }
 
 #[cfg(test)]
@@ -151,6 +151,8 @@ mod tests {
             {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Grüße\nПривіт"}]}
         ]});
         assert_eq!(response_text(&response).unwrap(), "Grüße\nПривіт");
+        response["output"][1]["content"][0]["text"] = json!("    indented text\n");
+        assert_eq!(response_text(&response).unwrap(), "    indented text\n");
         response["status"] = json!("incomplete");
         assert!(response_text(&response).is_err());
         assert!(response_text(&json!({"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal"}]}]})).is_err());

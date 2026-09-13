@@ -273,22 +273,26 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
     let capture = tauri::async_runtime::spawn_blocking(capture::monitor_at_pointer)
         .await
         .map_err(|_| "Screen capture stopped unexpectedly.")??;
-    if !state.preferences.lock().unwrap().enabled {
-        return Ok(());
-    }
     let label = format!(
         "{WINDOW_PREFIX}{}",
         state.next_id.fetch_add(1, Ordering::Relaxed)
     );
     let size = PhysicalSize::new(capture.image.width(), capture.image.height());
     let position = PhysicalPosition::new(capture.x, capture.y);
-    *state.session.lock().unwrap() = Some(Session {
-        label: label.clone(),
-        image: Arc::new(capture.image),
-        cancel: CancellationToken::new(),
-        extracting: false,
-        shown: false,
-    });
+    {
+        // Publish the session under the same lock used to disable the feature.
+        let preferences = state.preferences.lock().unwrap();
+        if !preferences.enabled {
+            return Ok(());
+        }
+        *state.session.lock().unwrap() = Some(Session {
+            label: label.clone(),
+            image: Arc::new(capture.image),
+            cancel: CancellationToken::new(),
+            extracting: false,
+            shown: false,
+        });
+    }
     let result = (|| {
         let window =
             WebviewWindowBuilder::new(app, &label, WebviewUrl::App("text-extractor.html".into()))
@@ -312,8 +316,18 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
             .map_err(|_| "Could not size Text Extractor.")?;
         Ok::<(), String>(())
     })();
-    if result.is_err() {
+    let active = state
+        .session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|s| s.label == label);
+    if result.is_err() || !active {
         close_active(app);
+        // Disabling can race window creation after the session was published.
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.destroy();
+        }
     } else {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
