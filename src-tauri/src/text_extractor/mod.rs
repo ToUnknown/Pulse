@@ -2,6 +2,8 @@
 mod capture;
 #[cfg(target_os = "windows")]
 mod ocr;
+#[cfg(target_os = "windows")]
+mod pixels;
 pub mod protocol;
 #[cfg(target_os = "windows")]
 mod windows;

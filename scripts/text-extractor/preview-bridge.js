@@ -48,10 +48,16 @@
         const source = desktop || screenshot();
         const canvas = document.createElement('canvas'); canvas.width = args.crop.width; canvas.height = args.crop.height;
         canvas.getContext('2d').drawImage(source, args.crop.x, args.crop.y, args.crop.width, args.crop.height, 0, 0, args.crop.width, args.crop.height);
-        const payload = { imageUrl: canvas.toDataURL('image/png'), backdropUrl: source.toDataURL('image/png') };
+        const payload = { imageUrl: canvas.toDataURL('image/png') };
         await new Promise(resolve => setTimeout(resolve, scenario === 'capture-pending' ? 3000 : 60));
         if (scenario === 'capture-error') throw 'Windows could not capture this selection.';
         return payload;
+      }
+      case 'text_extractor_backdrop': {
+        const url = (desktop || screenshot()).toDataURL('image/png');
+        await new Promise(resolve => setTimeout(resolve, scenario === 'backdrop-pending' ? 3000 : 100));
+        if (scenario === 'backdrop-error') throw 'Could not prepare the backdrop.';
+        return url;
       }
       case 'text_extractor_quick_copy': {
         await new Promise(resolve => setTimeout(resolve, 100));

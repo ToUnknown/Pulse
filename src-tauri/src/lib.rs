@@ -1583,6 +1583,7 @@ pub fn run() {
         text_extractor::text_extractor_ready,
         text_extractor::text_extractor_capture,
         text_extractor::text_extractor_capture_selection,
+        text_extractor::text_extractor_backdrop,
         text_extractor::text_extractor_quick_copy,
         text_extractor::text_extractor_capabilities,
         text_extractor::text_extractor_show,

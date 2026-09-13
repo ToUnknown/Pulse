@@ -1,4 +1,4 @@
-use super::protocol::Crop;
+use super::{pixels::DesktopFrame, protocol::Crop};
 use image::RgbaImage;
 use std::{mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
@@ -93,7 +93,7 @@ unsafe fn monitor_info(point: Option<POINT>) -> Result<Monitor, String> {
     })
 }
 
-pub fn snapshot(monitor: Monitor) -> Result<RgbaImage, String> {
+pub fn snapshot(monitor: Monitor) -> Result<DesktopFrame, String> {
     unsafe {
         let previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let result = snapshot_inner(monitor, None);
@@ -112,11 +112,16 @@ pub fn selection(monitor: Monitor, crop: Crop) -> Result<RgbaImage, String> {
         if !previous_dpi.is_null() {
             SetThreadDpiAwarenessContext(previous_dpi);
         }
-        result
+        result?.crop(Crop {
+            x: 0,
+            y: 0,
+            width: crop.width,
+            height: crop.height,
+        })
     }
 }
 
-unsafe fn snapshot_inner(monitor: Monitor, crop: Option<Crop>) -> Result<RgbaImage, String> {
+unsafe fn snapshot_inner(monitor: Monitor, crop: Option<Crop>) -> Result<DesktopFrame, String> {
     let current = monitor_info(Some(POINT {
         x: monitor.x + monitor.width as i32 / 2,
         y: monitor.y + monitor.height as i32 / 2,
@@ -191,11 +196,5 @@ unsafe fn snapshot_inner(monitor: Monitor, crop: Option<Crop>) -> Result<RgbaIma
     {
         return Err("Could not read the captured pixels.".into());
     }
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-        pixel[3] = 255;
-    }
-    let image = RgbaImage::from_raw(width as u32, height as u32, pixels)
-        .ok_or("Invalid screen capture.")?;
-    Ok(image)
+    DesktopFrame::new(width as u32, height as u32, pixels)
 }

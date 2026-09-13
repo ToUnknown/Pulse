@@ -1,5 +1,6 @@
 use super::{
     capture, hotkeys, ocr,
+    pixels::DesktopFrame,
     protocol::{self, Crop, Preferences},
 };
 use crate::openai_credentials;
@@ -55,7 +56,7 @@ struct Session {
     label: String,
     mode: CaptureMode,
     monitor: capture::Monitor,
-    image: Option<Arc<RgbaImage>>,
+    image: Option<Arc<DesktopFrame>>,
     crop: Option<Crop>,
     capturing: bool,
     cancel: CancellationToken,
@@ -592,10 +593,8 @@ pub async fn text_extractor_capture_selection(
         _ = cancel.cancelled() => return Err("Capture cancelled.".into()),
         result = tauri::async_runtime::spawn_blocking(move || {
             let image = capture::snapshot(monitor)?;
-            let selection = image::imageops::crop_imm(&image, crop.x, crop.y, crop.width, crop.height).to_image();
-            // The backdrop is blurred, so transfer a small thumbnail instead of a full monitor PNG.
-            let backdrop = image::imageops::thumbnail(&image, 1200, 800);
-            let payload = json!({"imageUrl": png_url(&selection)?, "backdropUrl": png_url(&backdrop)?});
+            let selection = image.crop(crop)?;
+            let payload = json!({"imageUrl": png_url(&selection)?});
             Ok::<_, String>((Arc::new(image), payload))
         }) => result.map_err(|_| "Screen capture stopped unexpectedly.".to_string()).and_then(|result| result),
     };
@@ -610,6 +609,32 @@ pub async fn text_extractor_capture_selection(
     session.image = Some(image);
     session.crop = Some(crop);
     Ok(payload)
+}
+
+#[tauri::command]
+pub async fn text_extractor_backdrop(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<String, String> {
+    let (image, cancel) = {
+        let state = app.state::<TextExtractor>();
+        let active = state.session.lock().unwrap();
+        let session = active
+            .as_ref()
+            .filter(|s| s.label == window.label())
+            .ok_or("This capture has ended.")?;
+        (
+            session.image.clone().ok_or("Select an area first.")?,
+            session.cancel.clone(),
+        )
+    };
+    // Decoration must not delay the selected pixels reaching their first animation frame.
+    tokio::select! {
+        _ = cancel.cancelled() => Err("Capture cancelled.".into()),
+        result = tauri::async_runtime::spawn_blocking(move || {
+            png_url(&image.backdrop())
+        }) => result.map_err(|_| "Could not prepare the backdrop.".to_string())?,
+    }
 }
 
 #[tauri::command]
@@ -772,8 +797,7 @@ pub async fn extract_screen_text(
         result = async {
             if mode == "basic" {
                 tauri::async_runtime::spawn_blocking(move || {
-                    let crop = image::imageops::crop_imm(image.as_ref(), crop.x, crop.y, crop.width, crop.height).to_image();
-                    ocr::recognize(crop)
+                    ocr::recognize(image.crop(crop)?)
                 }).await.map_err(|_| "Windows text recognition stopped unexpectedly.".to_string())?
             } else {
                 extract(image, crop).await
@@ -824,15 +848,10 @@ fn finish_request(
     result
 }
 
-async fn extract(image: Arc<RgbaImage>, crop: Crop) -> Result<String, String> {
-    let image_url = tauri::async_runtime::spawn_blocking(move || {
-        let crop =
-            image::imageops::crop_imm(image.as_ref(), crop.x, crop.y, crop.width, crop.height)
-                .to_image();
-        png_url(&crop)
-    })
-    .await
-    .map_err(|_| "Could not prepare this selection.")??;
+async fn extract(image: Arc<DesktopFrame>, crop: Crop) -> Result<String, String> {
+    let image_url = tauri::async_runtime::spawn_blocking(move || png_url(&image.crop(crop)?))
+        .await
+        .map_err(|_| "Could not prepare this selection.")??;
     request_text(protocol::request_body(&image_url)).await
 }
 
@@ -986,7 +1005,7 @@ mod tests {
                 width: 4,
                 height: 4,
             },
-            image: Some(Arc::new(RgbaImage::new(4, 4))),
+            image: Some(Arc::new(DesktopFrame::new(4, 4, vec![0; 64]).unwrap())),
             crop: None,
             capturing: false,
             cancel: CancellationToken::new(),

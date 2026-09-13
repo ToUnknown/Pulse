@@ -192,14 +192,15 @@ surface.addEventListener("pointerup", async (event) => {
     const images = await invoke("text_extractor_capture_selection", { crop });
     if (closing) return;
     cropImage.src = images.imageUrl;
-    screen.src = images.backdropUrl;
-    await Promise.all([cropImage.decode(), screen.decode()]);
+    await cropImage.decode();
     if (closing) return;
     surface.hidden = true;
-    screen.hidden = false;
     result.hidden = false;
     frame.hidden = false;
-    await runExtraction(true);
+    const extraction = runExtraction(true);
+    // The crop is already moving while the frozen backdrop is prepared and decoded.
+    void loadBackdrop();
+    await extraction;
   } catch (error) {
     if (closing) return;
     surface.hidden = true;
@@ -208,6 +209,18 @@ surface.addEventListener("pointerup", async (event) => {
     await setError(error);
   }
 });
+
+async function loadBackdrop() {
+  try {
+    const url = await invoke("text_extractor_backdrop");
+    if (closing) return;
+    screen.src = url;
+    await screen.decode();
+    if (!closing) screen.hidden = false;
+  } catch {
+    // Keep the usable capture and editor if the optional backdrop cannot load.
+  }
+}
 
 async function revealText(text, current) {
   busy = false;

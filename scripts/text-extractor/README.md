@@ -24,7 +24,9 @@ Settings now has **General**, **Advanced**, and **Appearance** pages with a slid
 
 Pulse prepares a hidden transparent webview when the feature is enabled and after a capture closes. The shortcut path only reads monitor geometry, positions that preloaded window, and shows the live selector; it does not capture/encode a screenshot, transfer pixels, or read credentials. Native DWM window transitions are disabled. The selection surface intercepts the mouse over the live desktop, including monitors left of or above the primary display.
 
-Pixels are captured only on release. Quick Copy captures only the crop, hides the selector, and runs native OCR without returning images or text to the webview; failed or empty recognition leaves the clipboard intact and reports the error in Settings. The editor captures the selected monitor once, validates and binds the crop in Rust, and returns its PNG plus a small background thumbnail. Only after selection is the frozen background blurred. Other monitors are untouched. Fast PNG encoding and a downsampled backdrop avoid transferring a full-resolution monitor image. The selector is excluded from capture with `WDA_EXCLUDEFROMCAPTURE` (Windows 10 version 2004+); this needs native desktop verification.
+Pixels are captured only on release. Quick Copy captures only the crop, hides the selector, and runs native OCR without returning images or text to the webview; failed or empty recognition leaves the clipboard intact and reports the error in Settings. The editor captures the selected monitor once and retains Windows' native BGRA buffer. Only the bound crop is converted and PNG-encoded before its flight starts. A separate cancellable command prepares a small backdrop while the crop is already moving; neither backdrop encoding nor decoding gates the animation. Only after selection is the frozen background blurred. Other monitors are untouched. The selector is excluded from capture with `WDA_EXCLUDEFROMCAPTURE` (Windows 10 version 2004+).
+
+Closing the last selector does not quit the Windows tray app; explicit Quit and updater restart still work. The replacement selector is prepared in the background. The keyboard hook only updates shortcut state and sends a non-blocking action; Windows-menu input masking runs on the action thread. Remapped/injected shortcut keys are supported, and only the tagged unused mask key is ignored. When a capture closes, the next hook event resynchronizes modifier/T state with Windows, recovering releases consumed while the selector was focused and preserving repeat suppression if the original chord is still held.
 
 Every active and preloaded window has a unique label. Ready/start handshakes avoid cold-webview startup work, and matching-label cleanup prevents a delayed watchdog or cancelled Quick Copy from closing a newer session. Display changes invalidate the selected monitor geometry before capture. Basic uses Windows.Media.Ocr with installed recognition languages, preferring the user profile languages and falling back to an installed recognizer. It preserves recognized line breaks and scales images only when Windows OCR requires a smaller image. A missing OCR language produces an actionable error; Basic never falls back to a network call. See [Microsoft OcrEngine documentation](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine).
 
@@ -44,6 +46,7 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 - `/?quick` — select and copy with no result UI or API-key access.
 - `/?warm` — stay preloaded until a `pulse-capture-start` DOM event starts the fixture session.
 - `/?scenario=capture-pending` or `capture-error` — exercise delayed capture cancellation and errors.
+- `/?scenario=backdrop-pending` or `backdrop-error` — verify that backdrop preparation cannot hold up the crop flight or usable editor.
 - `/?key&scenario=demo` — preview the Basic crop flight, then switch to Advanced for a simulated 6.5-second request to preview the full animation. Emulate light/dark color schemes in a desktop browser to preview Pulse's two palettes.
 - `/?key&scenario=error`, `empty`, or `pending` — exercise Advanced result states. `/?scenario=basic-error`, `basic-empty`, or `basic-pending` exercise local recognition states; `clipboard-error` simulates a copy failure.
 - `/?key&scenario=translation-error`, `translation-empty`, or `translation-pending` — exercise translation failures and cancellation. Successful fixtures provide German and Ukrainian sample translations; other languages echo the input.
@@ -53,7 +56,15 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 
 `node --test tests/extraction-geometry.test.mjs` checks drag directions, monitor bounds, and fractional DPI. Rust unit tests verify crop bounds, both shortcut chords, repeats, modifier releases, disabled/recording behavior, stale session cleanup, and request/response data structures with local fixtures. These never contact OpenAI or access a saved key. The desktop verification workflow compiles and tests on Windows and macOS without API credentials.
 
-## Windows acceptance pass still required
+## Windows verification and remaining acceptance checks
+
+### Native capture and shortcut checks on 2026-09-13
+
+Changes were applied and checked in `C:\Users\maxga\Codex\Pulse`. The native last-window regression initially exited Pulse; after the lifecycle fix, Pulse remained alive and created one replacement selector. Alternating held Quick Copy/editor shortcuts initially skipped every second activation after the focused overlay consumed key releases. After state resynchronization, four consecutive `SendInput` shortcut/Escape cycles opened and dismissed Pulse without opening Snipping Tool. These are native automated input checks, not physical keyboard testing.
+
+Native Basic OCR recognized the known sentence `Pulse native text extraction test`, and Quick Copy wrote that exact sentence to the clipboard and closed with no result window. No live OpenAI calls were made. Windows formatting, Clippy with warnings denied, and all 31 Rust tests passed; macOS passed its corresponding 27 tests.
+
+WebView2 timing on the 2560×1440 Windows desktop initially measured 1205 ms from pointer release to the `flying` phase. Separating backdrop work reduced a 700×300 capture to 244 ms; retaining native BGRA pixels reduced it further to 91 ms. A 1300×300 text-fixture selection measured 127 ms and reached the editable result. The initial desktop capture and later fixture captures contain different pixels, so these are diagnostic measurements, not a controlled benchmark or a guarantee for all resolutions. Timings end when the frontend starts its flight animation; they do not measure camera-visible display latency.
 
 ### Native selector startup measured on 2026-09-13
 
