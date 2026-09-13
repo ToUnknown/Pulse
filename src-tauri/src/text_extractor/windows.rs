@@ -1,7 +1,7 @@
 use super::{
     capture, hotkeys, ocr,
     pixels::DesktopFrame,
-    protocol::{self, Crop, Preferences},
+    protocol::{self, Crop, Preferences, QuickCopyOutcome},
     shortcut_keys::{Action, Bindings},
 };
 use crate::openai_credentials;
@@ -27,6 +27,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, Short
 use tokio_util::sync::CancellationToken;
 
 const WINDOW_PREFIX: &str = "text-extractor-";
+const NOTICE_PREFIX: &str = "quick-copy-notice-";
 const RESPONSE_URL: &str = "https://api.openai.com/v1/responses";
 
 pub struct TextExtractor {
@@ -445,6 +446,96 @@ pub fn appearance_changed(app: &tauri::AppHandle, theme: crate::WindowsTheme) {
             eprintln!("Text Extractor appearance update failed: {error}");
         }
     }
+    for window in app.webview_windows().into_values() {
+        if window.label().starts_with(NOTICE_PREFIX) {
+            let _ = window.set_theme(Some(native_theme(theme)));
+        }
+    }
+}
+
+fn dismiss_notices(app: &tauri::AppHandle) {
+    for window in app.webview_windows().into_values() {
+        if window.label().starts_with(NOTICE_PREFIX) {
+            let _ = window.destroy();
+        }
+    }
+}
+
+fn show_no_text_notice(app: &tauri::AppHandle, monitor: capture::Monitor) -> Result<(), String> {
+    dismiss_notices(app);
+    let scale = app
+        .available_monitors()
+        .map_err(|_| "Could not locate the selected screen.")?
+        .into_iter()
+        .find(|display| display.position().x == monitor.x && display.position().y == monitor.y)
+        .map(|display| display.scale_factor())
+        .unwrap_or(1.0);
+    let width = (240.0 * scale).round() as u32;
+    let height = (88.0 * scale).round() as u32;
+    let label = format!(
+        "{NOTICE_PREFIX}{}",
+        app.state::<TextExtractor>()
+            .next_id
+            .fetch_add(1, Ordering::Relaxed)
+    );
+    WebviewWindowBuilder::new(
+        app,
+        &label,
+        WebviewUrl::App("quick-copy-notice.html".into()),
+    )
+    .title("Pulse Quick Copy Notice")
+    .theme(Some(native_theme(crate::visual_windows_theme(app)?)))
+    .visible(false)
+    .focused(false)
+    .focusable(false)
+    .transparent(true)
+    .background_color(tauri::window::Color(0, 0, 0, 0))
+    .decorations(false)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .content_protected(true)
+    .on_page_load(move |window, payload| {
+        if payload.event() != tauri::webview::PageLoadEvent::Finished {
+            return;
+        }
+        // A new selection may have started while this webview was loading.
+        if window
+            .state::<TextExtractor>()
+            .session
+            .lock()
+            .unwrap()
+            .is_some()
+        {
+            let _ = window.destroy();
+            return;
+        }
+        let positioned = (|| {
+            window.set_position(PhysicalPosition::new(
+                monitor.x + (monitor.width as i32 - width as i32) / 2,
+                monitor.y + (16.0 * scale).round() as i32,
+            ))?;
+            window.set_size(PhysicalSize::new(width, height))?;
+            window.set_ignore_cursor_events(true)
+        })();
+        if let Err(error) = positioned {
+            eprintln!("Quick Copy notice: {error}");
+            let _ = window.destroy();
+            return;
+        }
+        let _ = window.eval("document.body.dataset.visible = 'true'");
+        let _ = window.show();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let _ = window.destroy();
+        });
+    })
+    .build()
+    .map_err(|_| "Could not show the Quick Copy notice.")?;
+    Ok(())
 }
 
 fn queue_prewarm(app: &tauri::AppHandle) {
@@ -556,6 +647,7 @@ pub(super) async fn start(app: &tauri::AppHandle, mode: CaptureMode) -> Result<(
     if !state.preferences.lock().unwrap().enabled {
         return Ok(());
     }
+    dismiss_notices(app);
     // Only monitor geometry is queried on the shortcut path; no pixels or key reads.
     let monitor = capture::monitor_at_pointer()?;
     prepare_window(app).await?;
@@ -762,25 +854,29 @@ pub async fn text_extractor_quick_copy(
             .as_ref()
             .filter(|s| s.label == window.label() && !s.cancel.is_cancelled())
             .ok_or("Capture cancelled.")?;
-        let text = recognized?;
-        if text.trim().is_empty() {
-            return Err("No text was found. Select another area.".into());
-        }
         if session.mode != CaptureMode::Quick {
             return Err("This capture has ended.".into());
         }
-        arboard::Clipboard::new()
-            .and_then(|mut clipboard| clipboard.set_text(text))
-            .map_err(|_| "The clipboard is busy. Try quick copy again.".into())
+        protocol::copy_recognized_text(recognized?, |text| {
+            arboard::Clipboard::new()
+                .and_then(|mut clipboard| clipboard.set_text(text))
+                .map_err(|_| "The clipboard is busy. Try quick copy again.".into())
+        })
     })();
     // A cancelled old request must never close a newer capture.
     if close_matching(&app, window.label(), false) {
         queue_prewarm(&app);
-        if let Err(error) = &result {
-            report_error(&app, format!("Quick copy: {error}"));
+        match &result {
+            Ok(QuickCopyOutcome::NoText) => {
+                if let Err(error) = show_no_text_notice(&app, monitor) {
+                    eprintln!("Quick Copy notice: {error}");
+                }
+            }
+            Err(error) => report_error(&app, format!("Quick copy: {error}")),
+            Ok(QuickCopyOutcome::Copied) => {}
         }
     }
-    result
+    result.map(|_| ())
 }
 
 #[tauri::command]
