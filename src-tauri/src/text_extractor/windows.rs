@@ -907,6 +907,7 @@ pub fn close_text_extractor(app: tauri::AppHandle, window: WebviewWindow) -> Res
 }
 
 fn dispose_session(app: &tauri::AppHandle, session: Session) {
+    hotkeys::capture_closed();
     session.cancel.cancel();
     session.request_cancel.cancel();
     if let Some(window) = app.get_webview_window(&session.label) {
@@ -954,6 +955,7 @@ pub fn window_destroyed(app: &tauri::AppHandle, label: &str) {
     let removed = take_matching(&mut state.session.lock().unwrap(), label, false);
     let was_active = removed.is_some();
     if let Some(session) = removed {
+        hotkeys::capture_closed();
         session.cancel.cancel();
         session.request_cancel.cancel();
     }

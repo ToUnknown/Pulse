@@ -17,26 +17,30 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::KeyboardAndMouse::{
-            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_NONAME,
+            GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+            KEYEVENTF_KEYUP, VK_NONAME,
         },
         WindowsAndMessaging::{
             CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
-            UnhookWindowsHookEx, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL, WM_KEYDOWN,
-            WM_SYSKEYDOWN,
+            UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
         },
     },
 };
 
 static FLAGS: AtomicU8 = AtomicU8::new(0);
+const MENU_MASK_TAG: usize = 0x5055_4C53;
 static EVENTS: OnceLock<SyncSender<Action>> = OnceLock::new();
 thread_local! { static KEYS: RefCell<ShortcutKeys> = RefCell::new(ShortcutKeys::default()); }
 
 pub fn configure(enabled: bool, editor_default: bool) {
     FLAGS
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |flags| {
-            Some((flags & 4) | u8::from(enabled) | (u8::from(editor_default) << 1))
+            Some((flags & 12) | u8::from(enabled) | (u8::from(editor_default) << 1))
         })
         .ok();
+}
+pub fn capture_closed() {
+    FLAGS.fetch_or(8, Ordering::AcqRel);
 }
 pub fn recording(value: bool) {
     if value {
@@ -82,6 +86,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), String> {
     let app = app.clone();
     std::thread::Builder::new().name("pulse-extractor-actions".into()).spawn(move || {
         while let Ok(action) = receive.recv() {
+            mask_windows_menu();
             match action {
                 Action::RecordQuick | Action::RecordEditor => {
                     if let Some(window) = app.get_webview_window("settings") {
@@ -105,7 +110,12 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), String> {
 unsafe extern "system" fn keyboard(code: i32, message: WPARAM, event: LPARAM) -> LRESULT {
     if code >= 0 {
         let event = &*(event as *const KBDLLHOOKSTRUCT);
-        if event.flags & LLKHF_INJECTED == 0 {
+        // Remapping and accessibility software inject ordinary shortcut keys.
+        // Ignore only our own Windows-menu mask, otherwise those shortcuts
+        // escape to Snipping Tool instead of reaching Pulse.
+        // Match both fields: a modifier/T release must never be discarded
+        // solely because its injection tag matches the menu mask.
+        if event.vkCode != u32::from(VK_NONAME) || event.dwExtraInfo != MENU_MASK_TAG {
             let key = match event.vkCode {
                 0x5B => Key::WinLeft,
                 0x5C => Key::WinRight,
@@ -118,31 +128,33 @@ unsafe extern "system" fn keyboard(code: i32, message: WPARAM, event: LPARAM) ->
                 0x54 => Key::T,
                 _ => Key::Other,
             };
-            let flags = FLAGS.load(Ordering::Acquire);
+            let flags = FLAGS.fetch_and(!8, Ordering::AcqRel);
             let down = message as u32 == WM_KEYDOWN || message as u32 == WM_SYSKEYDOWN;
             let decision = KEYS.with(|keys| {
-                keys.borrow_mut()
-                    .update(key, down, flags & 1 != 0, flags & 2 != 0, flags & 4 != 0)
+                let mut keys = keys.borrow_mut();
+                if flags & 8 != 0 {
+                    // The focused webview can consume releases before this hook
+                    // sees them. Recover once it closes, before the next event.
+                    keys.resynchronize(
+                        [
+                            (0x5B, Key::WinLeft),
+                            (0x5C, Key::WinRight),
+                            (0xA0, Key::ShiftLeft),
+                            (0xA1, Key::ShiftRight),
+                            (0xA2, Key::ControlLeft),
+                            (0xA3, Key::ControlRight),
+                            (0xA4, Key::AltLeft),
+                            (0xA5, Key::AltRight),
+                            (0x54, Key::T),
+                        ]
+                        .into_iter()
+                        .filter_map(|(vk, key)| (GetAsyncKeyState(vk) < 0).then_some(key)),
+                    );
+                }
+                keys.update(key, down, flags & 1 != 0, flags & 2 != 0, flags & 4 != 0)
             });
             if let Decision::Suppress(action) = decision {
                 if let Some(action) = action {
-                    // Mask the Windows-key menu with an unused key. Modifier releases
-                    // still reach Windows, so no key is left logically held down.
-                    let inputs = [false, true].map(|up| INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VK_NONAME,
-                                dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
-                                ..std::mem::zeroed()
-                            },
-                        },
-                    });
-                    SendInput(
-                        inputs.len() as u32,
-                        inputs.as_ptr(),
-                        std::mem::size_of::<INPUT>() as i32,
-                    );
                     if let Some(events) = EVENTS.get() {
                         let _ = events.try_send(action);
                     }
@@ -153,4 +165,27 @@ unsafe extern "system" fn keyboard(code: i32, message: WPARAM, event: LPARAM) ->
         }
     }
     CallNextHookEx(null_mut(), code, message, event)
+}
+
+// SendInput must run outside WH_KEYBOARD_LL. It can wait for input dispatch,
+// delaying the hook's return and causing Windows to discard the hook on timeout.
+fn mask_windows_menu() {
+    unsafe {
+        let inputs = [false, true].map(|up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_NONAME,
+                    dwExtraInfo: MENU_MASK_TAG,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                    ..std::mem::zeroed()
+                },
+            },
+        });
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
 }

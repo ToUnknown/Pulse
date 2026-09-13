@@ -34,6 +34,16 @@ pub struct ShortcutKeys {
     captured: bool,
 }
 impl ShortcutKeys {
+    pub fn resynchronize(&mut self, pressed: impl IntoIterator<Item = Key>) {
+        let captured = self.captured;
+        *self = Self::default();
+        for key in pressed {
+            self.update(key, true, false, false, false);
+        }
+        // Preserve suppression if the original chord is still physically held.
+        self.captured = captured && self.t_down;
+    }
+
     pub fn update(
         &mut self,
         key: Key,
@@ -155,5 +165,26 @@ mod tests {
             keys.update(Key::T, true, false, true, true),
             Decision::Suppress(Some(Action::RecordEditor))
         );
+    }
+
+    #[test]
+    fn closing_capture_recovers_releases_consumed_by_the_overlay() {
+        let mut keys = ShortcutKeys::default();
+        key(&mut keys, Key::WinLeft, true);
+        key(&mut keys, Key::ShiftLeft, true);
+        key(&mut keys, Key::ControlLeft, true);
+        key(&mut keys, Key::T, true);
+        // The focused selector handled key-up. The hook must recover before
+        // another chord, including changing from the editor to Quick Copy.
+        keys.resynchronize([]);
+        key(&mut keys, Key::WinLeft, true);
+        key(&mut keys, Key::ShiftLeft, true);
+        assert_eq!(
+            key(&mut keys, Key::T, true),
+            Decision::Suppress(Some(Action::QuickCopy))
+        );
+        keys.resynchronize([Key::WinLeft, Key::ShiftLeft, Key::T]);
+        assert_eq!(key(&mut keys, Key::T, true), Decision::Suppress(None));
+        assert_eq!(key(&mut keys, Key::T, false), Decision::Suppress(None));
     }
 }
