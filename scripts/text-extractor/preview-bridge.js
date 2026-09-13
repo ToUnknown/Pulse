@@ -40,7 +40,7 @@
       case 'extract_screen_text': {
         if (args.mode === 'basic') {
           await new Promise(resolve => setTimeout(resolve, scenario === 'basic-pending' ? 10000 : 100));
-          if (scenario === 'basic-error') throw 'Install an OCR language in Windows Settings, then try again. You can also use Advanced.';
+          if (scenario === 'basic-error') throw 'Install an OCR language in Windows Settings, then try again.';
           return scenario === 'basic-empty' ? '' : text.replaceAll('\n\n', '\n');
         }
         if (!settings.apiKeyConfigured) throw 'Add an OpenAI API key in Pulse Settings to use Advanced or Translate.';

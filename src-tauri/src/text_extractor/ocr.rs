@@ -24,7 +24,7 @@ pub fn recognize(mut image: RgbaImage) -> Result<String, String> {
             let languages = OcrEngine::AvailableRecognizerLanguages()?;
             OcrEngine::TryCreateFromLanguage(&languages.GetAt(0)?)
         })
-        .map_err(|_| "Install an OCR language in Windows Settings > Time & language > Language & region, then try again. You can also use Advanced.")?;
+        .map_err(|_| "Install an OCR language in Windows Settings > Time & language > Language & region, then try again.")?;
     let limit = OcrEngine::MaxImageDimension().map_err(ocr_error)?;
     if limit == 0 {
         return Err("Windows text recognition is unavailable.".into());
@@ -74,5 +74,5 @@ pub fn recognize(mut image: RgbaImage) -> Result<String, String> {
 }
 
 fn ocr_error(_: windows::core::Error) -> String {
-    "Windows could not read this selection. Try again or switch to Advanced.".into()
+    "Windows could not read this selection. Try again.".into()
 }
