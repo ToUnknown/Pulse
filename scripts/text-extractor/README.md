@@ -60,6 +60,10 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 
 ## Windows verification and remaining acceptance checks
 
+### Custom shortcuts and key validation on 2026-09-13
+
+Both shortcuts are independently editable. The Windows dev app loaded a temporary Ctrl + Alt + Q Quick Copy assignment and reported native `quick` capture mode when that combination was sent; Win + Shift + T still reported `editor`. The original preferences were restored afterward. Duplicate assignments, legacy migration, custom assignments surviving reload, registration conflicts, and settings-write rollback passed unit tests. All 40 Windows Rust tests passed, including a local HTTP server that verifies the Luna validation request and confirms failed checks preserve the previous key. Desktop browser fixtures verified shortcut recording and cancellation, light/dark key controls, Save/Remove, Checking feedback, invalid keys, offline errors, and storage failures. No real key was changed and no live OpenAI request was made.
+
 ### Native capture and shortcut checks on 2026-09-13
 
 Changes were applied and checked in `C:\Users\maxga\Codex\Pulse`. The native last-window regression initially exited Pulse; after the lifecycle fix, Pulse remained alive and created one replacement selector. Alternating held Quick Copy/editor shortcuts initially skipped every second activation after the focused overlay consumed key releases. After state resynchronization, four consecutive `SendInput` shortcut/Escape cycles opened and dismissed Pulse without opening Snipping Tool. These are native automated input checks, not physical keyboard testing.
