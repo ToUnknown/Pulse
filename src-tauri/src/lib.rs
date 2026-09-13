@@ -1582,6 +1582,7 @@ pub fn run() {
         text_extractor::text_extractor_capture,
         text_extractor::text_extractor_show,
         text_extractor::extract_screen_text,
+        text_extractor::translate_extracted_text,
         text_extractor::copy_extracted_text,
         text_extractor::close_text_extractor
     ]);

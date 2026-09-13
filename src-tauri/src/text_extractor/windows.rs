@@ -440,7 +440,7 @@ pub async fn extract_screen_text(
             .ok_or("This capture has ended.")?;
         crop.validate(session.image.width(), session.image.height())?;
         if session.extracting {
-            return Err("Extraction is already running.".into());
+            return Err("A text request is already running.".into());
         }
         session.extracting = true;
         (session.image.clone(), session.cancel.clone())
@@ -449,6 +449,42 @@ pub async fn extract_screen_text(
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
         result = extract(image, crop) => result,
     };
+    finish_request(&app, &window, result)
+}
+
+#[tauri::command]
+pub async fn translate_extracted_text(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    text: String,
+    language: String,
+) -> Result<String, String> {
+    let body = protocol::translation_body(&text, &language)?;
+    let cancel = {
+        let state = app.state::<TextExtractor>();
+        let mut active = state.session.lock().unwrap();
+        let session = active
+            .as_mut()
+            .filter(|s| s.label == window.label())
+            .ok_or("This capture has ended.")?;
+        if session.extracting {
+            return Err("A text request is already running.".into());
+        }
+        session.extracting = true;
+        session.cancel.clone()
+    };
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err("Capture cancelled.".into()),
+        result = request_text(body) => result,
+    };
+    finish_request(&app, &window, result)
+}
+
+fn finish_request(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    result: Result<String, String>,
+) -> Result<String, String> {
     let state = app.state::<TextExtractor>();
     let mut session = state.session.lock().unwrap();
     if let Some(session) = session.as_mut().filter(|s| s.label == window.label()) {
@@ -468,6 +504,10 @@ async fn extract(image: Arc<RgbaImage>, crop: Crop) -> Result<String, String> {
     })
     .await
     .map_err(|_| "Could not prepare this selection.")??;
+    request_text(protocol::request_body(&image_url)).await
+}
+
+async fn request_text(body: Value) -> Result<String, String> {
     let key = openai_credentials::load()?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -478,12 +518,12 @@ async fn extract(image: Arc<RgbaImage>, crop: Crop) -> Result<String, String> {
     let mut response = client
         .post(RESPONSE_URL)
         .bearer_auth(key)
-        .json(&protocol::request_body(&image_url))
+        .json(&body)
         .send()
         .await
         .map_err(|error| {
             if error.is_timeout() {
-                "Extraction timed out. Try again or select a smaller area."
+                "The request timed out. Try again or use less text."
             } else {
                 "Could not reach OpenAI. Check your connection and try again."
             }
@@ -493,7 +533,7 @@ async fn extract(image: Arc<RgbaImage>, crop: Crop) -> Result<String, String> {
             401 => "The OpenAI API key was rejected. Update the shared key in Settings.",
             403 | 404 => "This API key does not have access to GPT-5.6 Luna.",
             429 => "OpenAI usage or rate limit reached. Check your API billing or try again later.",
-            _ => "OpenAI could not complete the extraction. Try again shortly.",
+            _ => "OpenAI could not complete the request. Try again shortly.",
         }
         .into());
     }
