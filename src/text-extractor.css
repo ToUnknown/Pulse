@@ -81,10 +81,10 @@ textarea:read-only { opacity: .55; }
 #reading i:nth-child(2) { width: 80%; }
 #reading i:nth-child(3) { width: 48%; }
 .result-actions { position: relative; display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 20px; }
-.primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; height: 44px; border-radius: 999px; padding: 0 22px; border: 1px solid transparent; font-size: 13px; font-weight: 550; white-space: nowrap; background: var(--button); color: var(--button-ink); box-shadow: 0 6px 20px var(--shadow); }
+.primary-button { display: inline-grid; grid-template-columns: 18px auto; align-items: center; justify-content: center; gap: 8px; height: 44px; border-radius: 999px; padding: 0 18px 0 12px; border: 1px solid transparent; font-size: 13px; font-weight: 550; white-space: nowrap; background: var(--button); color: var(--button-ink); box-shadow: 0 6px 20px var(--shadow); }
 .primary-button:hover:not(:disabled), .primary-button[aria-expanded="true"] { background: var(--button-hover); box-shadow: 0 8px 24px var(--shadow); }
-.primary-button svg { width: 17px; height: 17px; }
-.translate-icon { width: 17px; height: 17px; background: currentColor; mask: url("translation-icons/translate-icon.svg") center / contain no-repeat; }
+.primary-button svg { width: 18px; height: 18px; }
+.translate-icon { width: 18px; height: 18px; background: currentColor; mask: url("translation-icons/translate-icon.svg") center / contain no-repeat; }
 .translate-control { position: relative; }
 #languages { position: absolute; z-index: 2; width: 184px; max-height: min(360px, 60vh); overflow-y: auto; scrollbar-width: thin; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); padding: 6px; background: var(--menu); border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 18px 55px var(--frame-shadow); animation: menu-in 180ms ease-out; }
 #languages button { display: block; width: 100%; border: 0; border-radius: 12px; padding: 10px 12px; background: transparent; color: var(--ink); text-align: start; font-size: 13px; }
@@ -119,7 +119,7 @@ body[data-closing="true"] #result { scale: .98; transition: scale 180ms ease; }
   #capture-frame { margin-bottom: 14px; }
   textarea { height: clamp(72px, 30vh, 180px); padding: 18px 24px; }
   .result-actions { margin-top: 12px; }
-  .primary-button { height: 38px; }
+  .primary-button { height: 38px; padding-left: 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
