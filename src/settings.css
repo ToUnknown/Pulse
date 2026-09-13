@@ -3,6 +3,7 @@
   color: #1d1d1f;
   background: #f5f5f7;
   --surface: #ffffff;
+  --settings-pill: #000000;
   --border: #d9d9de;
   --secondary-text: #6e6e73;
   --control-background: #ffffff;
@@ -25,6 +26,7 @@
     color: #f5f5f7;
     background: #1c1c1e;
     --surface: #2c2c2e;
+    --settings-pill: #ffffff;
     --border: #48484a;
     --secondary-text: #aeaeb2;
     --control-background: #3a3a3c;
@@ -476,3 +478,57 @@ input:focus-visible,
     color: CanvasText;
   }
 }
+
+/* Windows Text Extractor */
+body { overflow-y: auto; }
+[hidden] { display: none !important; }
+.extractor-settings-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.extractor-toggle-row { border: 0; border-radius: 0; }
+.extractor-icon { color: #637cf1; }
+.extractor-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 11px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.settings-button { padding: 7px 11px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.settings-button:hover { background: var(--control-hover); }
+.settings-button:disabled { opacity: .5; cursor: default; }
+.settings-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.shortcut-button { font-size: 11px; font-weight: 600; }
+.shortcut-button[aria-pressed="true"] { border-color: var(--focus); color: var(--focus); }
+.extractor-note { margin: 0; padding: 0 16px 14px; color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
+.extractor-error { color: var(--error); font-size: 12px; line-height: 1.4; }
+#extractor-settings-error { margin: 0; padding: 0 16px 14px; }
+/* Settings pages share the same controls and saved state. */
+main { max-width: 720px; margin: 0 auto; }
+.settings-tabs { isolation: isolate; position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; margin-bottom: 28px; background: var(--control-hover); border: 1px solid var(--border); border-radius: 999px; }
+.settings-tabs button { position: relative; padding: 10px 8px; border: 0; border-radius: 999px; background: transparent; color: var(--secondary-text); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; transition: color 180ms; }
+.settings-tabs button span { color: #fff; mix-blend-mode: difference; }
+.settings-tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.settings-tab-slider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); background: var(--settings-pill); border-radius: 999px; box-shadow: 0 2px 6px #00000012; transform: translateX(calc(var(--page-index) * 100%)); transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
+.settings-page { outline: none; animation: settings-page-in 220ms ease-out; }
+.settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: 14px; }
+.api-key-card { display: grid; gap: 14px; border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: var(--surface); }
+.api-key-heading { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.api-key-icon { width: 36px; height: 36px; flex: none; padding: 2px; }
+.api-key-copy { display: grid; gap: 4px; min-width: 0; }
+.api-key-card label { font-size: 13px; font-weight: 600; }
+.api-key-card small { color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
+.api-key-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.api-key-field { position: relative; min-width: 0; flex: 1; }
+#openai-api-key { width: 100%; padding: 10px 12px; border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; }
+.api-key-mask { position: absolute; top: 50%; left: 14px; font-weight: 600; line-height: 1; pointer-events: none; transform: translateY(calc(-50% + 2px)); }
+.api-key-buttons { display: flex; flex: none; gap: 6px; }
+.api-key-card .extractor-error { margin: 0; }
+.page-note { color: var(--secondary-text); font-size: 13px; line-height: 1.6; }
+@keyframes settings-page-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .settings-tabs *, .settings-page { animation: none !important; transition: none !important; }
+}
+
+@media (forced-colors: active) {
+  .settings-tab-slider { background: Highlight; }
+  .settings-tabs button span { color: CanvasText; mix-blend-mode: normal; }
+  .settings-tabs button[aria-selected="true"] span { color: HighlightText; }
+}
+
+.shortcut-label { font: inherit; font-size: 11px; font-weight: 600; padding: 7px 11px; border: 1px solid var(--control-border); border-radius: 8px; }
+
+#extractor-key-status[data-tone="error"] { color: var(--error); }
+#openai-api-key[aria-invalid="true"] { border-color: var(--error); box-shadow: inset 0 0 0 1px var(--error); }

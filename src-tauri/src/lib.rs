@@ -1,3 +1,8 @@
+#[cfg(target_os = "windows")]
+mod openai_credentials;
+#[cfg(any(target_os = "windows", test))]
+mod text_extractor;
+
 use tauri::{
     menu::{IconMenuItem, Menu, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -777,7 +782,13 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window
     } else {
         #[cfg(target_os = "windows")]
-        let window_height = 440.0;
+        let window_height = app
+            .primary_monitor()?
+            .map(|monitor| {
+                (f64::from(monitor.size().height) / monitor.scale_factor() - 120.0)
+                    .clamp(360.0, 720.0)
+            })
+            .unwrap_or(720.0);
         #[cfg(target_os = "macos")]
         let window_height = 288.0;
 
@@ -1167,6 +1178,7 @@ impl WindowsAppearanceController {
     }
 
     fn update_visuals(&self, previous_mode: ThemeMode, next_mode: ThemeMode, theme: WindowsTheme) {
+        text_extractor::appearance_changed(&self.app, theme);
         if let Err(error) = set_appearance_selection(&self.menu_items, previous_mode, next_mode) {
             eprintln!("appearance menu icon update failed: {error}");
         }
@@ -1563,7 +1575,24 @@ pub fn run() {
         settings_state,
         set_start_at_login,
         set_tray_icon_mode,
-        set_auto_schedule
+        set_auto_schedule,
+        text_extractor::text_extractor_state,
+        text_extractor::save_openai_api_key,
+        text_extractor::clear_openai_api_key,
+        text_extractor::set_text_extractor,
+        text_extractor::record_text_extractor_shortcut,
+        text_extractor::text_extractor_ready,
+        text_extractor::text_extractor_capture,
+        text_extractor::text_extractor_capture_selection,
+        text_extractor::text_extractor_backdrop,
+        text_extractor::text_extractor_quick_copy,
+        text_extractor::text_extractor_capabilities,
+        text_extractor::text_extractor_show,
+        text_extractor::extract_screen_text,
+        text_extractor::cancel_text_extraction,
+        text_extractor::translate_extracted_text,
+        text_extractor::copy_extracted_text,
+        text_extractor::close_text_extractor
     ]);
 
     #[cfg(target_os = "macos")]
@@ -1587,7 +1616,18 @@ pub fn run() {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.on_window_event(|window, event| {
+        #[cfg(target_os = "windows")]
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            text_extractor::window_destroyed(window.app_handle(), window.label());
+        }
         if window.label() == "settings" {
+            #[cfg(target_os = "windows")]
+            if matches!(
+                event,
+                tauri::WindowEvent::Focused(false) | tauri::WindowEvent::CloseRequested { .. }
+            ) {
+                text_extractor::settings_blurred(window.app_handle());
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if let Err(error) = window.hide() {
@@ -1599,6 +1639,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            text_extractor::install(app.handle())?;
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -1869,8 +1911,20 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Pulse");
+        .build(tauri::generate_context!())
+        .expect("error while building Pulse")
+        .run(|_app, _event| {
+            // The selector may be the only Tauri window. Keep the tray app and
+            // shortcut hook alive while its replacement is prepared. Explicit
+            // Quit and updater restarts have an exit code and still go through.
+            #[cfg(target_os = "windows")]
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = _event
+            {
+                api.prevent_exit();
+            }
+        });
 }
 
 #[cfg(test)]
