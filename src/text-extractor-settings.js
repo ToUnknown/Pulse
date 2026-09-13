@@ -6,6 +6,8 @@ const shortcutButtons = { shortcut: $("#extractor-shortcut"), quickShortcut: $("
 const keySection = $("#openai-key-section");
 const keyInput = $("#openai-api-key");
 const keySave = $("#openai-key-save");
+const keyRemove = $("#openai-key-remove");
+const keyMask = $("#openai-key-mask");
 const keyError = $("#openai-key-error");
 const settingsError = $("#extractor-settings-error");
 let state;
@@ -24,14 +26,19 @@ function lock(value) {
   enabled.disabled = value;
   for (const button of Object.values(shortcutButtons)) button.disabled = value;
   keyInput.disabled = value;
-  keySave.disabled = value || !keyInput.value.trim();
+  keyRemove.disabled = value;
+  renderKeyControls();
 }
 function render() {
   enabled.checked = state.enabled;
   for (const [field, button] of Object.entries(shortcutButtons)) button.textContent = displayShortcut(state[field]);
-  $("#extractor-key-status").textContent = state.apiKeyConfigured ? "Shared key saved securely. Advanced and Translate are available." : "No key saved. Basic text recognition is available.";
-  keyInput.placeholder = state.apiKeyConfigured ? "Enter a replacement key" : "sk-…";
-  keySave.textContent = state.apiKeyConfigured ? "Update key" : "Save key";
+  $("#extractor-key-status").textContent = state.apiKeyConfigured
+    ? "Stored in Windows Credential Manager. Enter a new key to replace it."
+    : "Add a key to use Advanced extraction and Translate.";
+  keyInput.dataset.configured = String(state.apiKeyConfigured);
+  keyInput.placeholder = state.apiKeyConfigured ? "" : "sk-…";
+  keyRemove.hidden = !state.apiKeyConfigured;
+  renderKeyControls();
   const availability = $("#extractor-availability");
   availability.hidden = !state.enabled;
   availability.textContent = state.apiKeyConfigured ? "Basic is the default. Advanced and Translate are ready to use." : "Basic works on your PC. Add an API key below to unlock Advanced and Translate.";
@@ -47,7 +54,11 @@ async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcu
   finally { lock(false); }
 }
 enabled.addEventListener("change", () => save(enabled.checked));
-keyInput.addEventListener("input", () => { keySave.disabled = busy || !keyInput.value.trim(); });
+function renderKeyControls() {
+  keySave.disabled = busy || !keyInput.value.trim();
+  keyMask.hidden = keyInput.dataset.configured !== "true" || keyInput.value.trim() !== "";
+}
+keyInput.addEventListener("input", renderKeyControls);
 $("#openai-key-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (busy || !keyInput.value.trim()) return;
@@ -58,6 +69,17 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
     keyInput.value = "";
     await load();
   } catch (reason) { keyInput.value = ""; keyError.textContent = String(reason); keyError.hidden = false; }
+  finally { lock(false); }
+});
+keyRemove.addEventListener("click", async () => {
+  if (busy) return;
+  lock(true);
+  keyError.hidden = true;
+  try {
+    await invoke("clear_openai_api_key");
+    keyInput.value = "";
+    await load();
+  } catch (reason) { keyError.textContent = String(reason); keyError.hidden = false; }
   finally { lock(false); }
 });
 function stopRecording() {

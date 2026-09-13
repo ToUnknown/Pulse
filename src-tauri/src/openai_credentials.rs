@@ -35,3 +35,10 @@ pub fn save(key: &str) -> Result<(), String> {
         .set_password(key)
         .map_err(|_| "Could not save the OpenAI key securely.".into())
 }
+
+pub fn clear() -> Result<(), String> {
+    match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("Could not remove the shared OpenAI key from credential storage.".into()),
+    }
+}

@@ -55,16 +55,26 @@
           </div>
         </section>
         <section id="openai-key-section" class="settings-group" aria-labelledby="openai-key-title" hidden>
-          <h2 id="openai-key-title">OpenAI API key</h2>
+          <h2 id="openai-key-title">Shared API key</h2>
           <form id="openai-key-form" class="api-key-card">
-            <label for="openai-api-key">Shared API key</label>
-            <p>Unlock Advanced extraction and Translate. Basic text recognition works locally without a key.</p>
-            <div class="api-key-field">
-              <input id="openai-api-key" name="api-key" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="2048" aria-describedby="extractor-key-status" />
-              <button id="openai-key-save" class="settings-button" type="submit" disabled>Save key</button>
+            <div class="api-key-heading">
+              <img class="api-key-icon" src="translation-icons/key-icon-yellow.svg" alt="" aria-hidden="true" />
+              <div class="api-key-copy">
+                <label for="openai-api-key">OpenAI API key</label>
+                <small id="extractor-key-status">Checking secure storage…</small>
+              </div>
             </div>
-            <small id="extractor-key-status">No key saved.</small>
-            <small>Stored in Windows Credential Manager and shared with Live Translate. OpenAI features use your API billing.</small>
+            <div class="api-key-controls">
+              <div class="api-key-field">
+                <input id="openai-api-key" name="api-key" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="2048" aria-describedby="extractor-key-status" />
+                <span id="openai-key-mask" class="api-key-mask" aria-hidden="true" hidden>************</span>
+              </div>
+              <div class="api-key-buttons">
+                <button id="openai-key-save" class="settings-button" type="submit" disabled>Save</button>
+                <button id="openai-key-remove" class="settings-button" type="button" hidden>Remove</button>
+              </div>
+            </div>
+            <small class="api-key-help">Shared with Live Translate. Unlocks Advanced extraction and Translate; Basic works without a key.</small>
             <p id="openai-key-error" class="extractor-error" role="alert" hidden></p>
           </form>
         </section>

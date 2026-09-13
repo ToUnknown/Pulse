@@ -504,14 +504,18 @@ main { max-width: 720px; margin: 0 auto; }
 .settings-tab-slider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); background: var(--settings-pill); border-radius: 999px; box-shadow: 0 2px 6px #00000012; transform: translateX(calc(var(--page-index) * 100%)); transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
 .settings-page { outline: none; animation: settings-page-in 220ms ease-out; }
 .settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: 14px; }
-.api-key-card { border: 1px solid var(--border); border-radius: 14px; padding: 18px 16px; background: var(--surface); }
+.api-key-card { display: grid; gap: 14px; border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: var(--surface); }
+.api-key-heading { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.api-key-icon { width: 36px; height: 36px; flex: none; padding: 2px; }
+.api-key-copy { display: grid; gap: 4px; min-width: 0; }
 .api-key-card label { font-size: 13px; font-weight: 600; }
-.api-key-card p { color: var(--secondary-text); font-size: 12px; line-height: 1.5; margin: 8px 0 14px; }
-.api-key-field { display: flex; gap: 8px; }
-#openai-api-key { flex: 1; min-width: 0; width: 100%; padding: 10px 12px; border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; }
-.api-key-field button { flex: none; }
-.api-key-card small { display: block; color: var(--secondary-text); font-size: 11px; line-height: 1.5; margin-top: 12px; }
-.api-key-card .extractor-error { color: var(--error); margin-bottom: 0; }
+.api-key-card small { color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
+.api-key-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.api-key-field { position: relative; min-width: 0; flex: 1; }
+#openai-api-key { width: 100%; padding: 10px 12px; border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; }
+.api-key-mask { position: absolute; top: 50%; left: 14px; font-weight: 600; line-height: 1; pointer-events: none; transform: translateY(calc(-50% + 2px)); }
+.api-key-buttons { display: flex; flex: none; gap: 6px; }
+.api-key-card .extractor-error { margin: 0; }
 .page-note { color: var(--secondary-text); font-size: 13px; line-height: 1.6; }
 @keyframes settings-page-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {

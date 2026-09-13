@@ -41,6 +41,7 @@
       case 'settings_state': return { platform: query.get('platform') || 'windows', startAtLogin: false, trayIcon: 'default', autoSchedule: { lightStart: 7, darkStart: 19 } };
       case 'text_extractor_state': return { ...settings };
       case 'save_openai_api_key': if (scenario === 'key-error') throw 'Could not save the OpenAI key securely.'; settings.apiKeyConfigured = true; return;
+      case 'clear_openai_api_key': if (scenario === 'key-error') throw 'Could not remove the shared OpenAI key from credential storage.'; settings.apiKeyConfigured = false; return;
       case 'set_text_extractor': {
         const normalize = value => value.toLowerCase().split('+').map(part => part.replace(/^key/, '')).sort().join('+');
         if (normalize(args.shortcutValue) === normalize(args.quickShortcutValue)) throw 'Choose different shortcuts for Quick copy and Open editor.';

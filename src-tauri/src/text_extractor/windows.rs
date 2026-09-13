@@ -220,6 +220,12 @@ pub fn save_openai_api_key(window: WebviewWindow, api_key: String) -> Result<(),
 }
 
 #[tauri::command]
+pub fn clear_openai_api_key(window: WebviewWindow) -> Result<(), String> {
+    settings_only(&window)?;
+    openai_credentials::clear()
+}
+
+#[tauri::command]
 pub fn record_text_extractor_shortcut(
     app: tauri::AppHandle,
     window: WebviewWindow,

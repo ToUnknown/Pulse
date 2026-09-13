@@ -1578,6 +1578,7 @@ pub fn run() {
         set_auto_schedule,
         text_extractor::text_extractor_state,
         text_extractor::save_openai_api_key,
+        text_extractor::clear_openai_api_key,
         text_extractor::set_text_extractor,
         text_extractor::record_text_extractor_shortcut,
         text_extractor::text_extractor_ready,
