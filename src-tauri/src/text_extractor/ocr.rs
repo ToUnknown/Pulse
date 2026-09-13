@@ -39,11 +39,11 @@ pub fn recognize(mut image: RgbaImage) -> Result<String, String> {
         );
     }
     let (width, height) = image.dimensions();
-    let mut pixels = image.into_raw();
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
+    for pixel in image.pixels_mut() {
+        pixel.0.swap(0, 2);
         pixel[3] = 255;
     }
+    let pixels = image.into_raw();
     let writer = DataWriter::new().map_err(ocr_error)?;
     writer.WriteBytes(&pixels).map_err(ocr_error)?;
     let bitmap = SoftwareBitmap::CreateCopyFromBuffer(
