@@ -16,7 +16,7 @@ function displayShortcut(value) {
   return value.replace(/Key(?=[A-Z](?:\+|$))/g, "").replace(/Digit(?=\d)/g, "")
     .replace(/Control/g, "Ctrl").replace(/Super|Meta/g, "Win").split("+").join(" + ");
 }
-function error(reason) { settingsError.textContent = String(reason); settingsError.hidden = false; }
+function error(reason) { settingsError.textContent = String(reason); settingsError.hidden = false; $("#tab-advanced").click(); }
 function lock(value) {
   busy = value;
   enabled.disabled = value;
@@ -34,6 +34,7 @@ function render() {
   availability.hidden = !state.enabled;
   availability.textContent = state.apiKeyConfigured ? "Basic is the default. Advanced and Translate are ready to use." : "Basic works on your PC. Add an API key below to unlock Advanced and Translate.";
   if (state.error) error(state.error);
+  else settingsError.hidden = true;
 }
 async function load() { state = await invoke("text_extractor_state"); render(); }
 async function save(nextEnabled, nextShortcut = state.shortcut) {

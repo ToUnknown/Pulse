@@ -184,7 +184,7 @@ surface.addEventListener("pointerup", async (event) => {
     surface.hidden = true;
     closing = true;
     // Native local OCR writes the clipboard and closes this window. No result UI.
-    await invoke("text_extractor_quick_copy", { crop }).catch(() => {});
+    await invoke("text_extractor_quick_copy", { crop }).catch(() => invoke("close_text_extractor").catch(() => {}));
     return;
   }
   phase("capturing");

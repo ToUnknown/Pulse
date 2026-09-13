@@ -18,6 +18,6 @@ Pulse is a tray/menu-bar utility for macOS and Windows.
 - Default and Red tray icons
 - In-app update checks and restart
 - Auto, Light, and Dark appearance modes with configurable start times.
-- Text Extractor prototype: press Ctrl + Shift + E, select an area, then edit and copy its text. Basic uses local Windows OCR by default, with no API key. Enable it and customize the shortcut in Settings → Advanced. Adding the optional shared OpenAI API key unlocks Advanced extraction with GPT-5.6 Luna (low reasoning) and Translate. Escape or an outside click dismisses the overlay.
+- Text Extractor prototype: use Win + Shift + T to select and instantly copy local OCR text, or Win + Shift + Ctrl + T to open the animated editor. Selection happens over the live desktop. Basic uses local Windows OCR by default, with no API key. Enable it and customize the shortcut in Settings → Advanced. Adding the optional shared OpenAI API key unlocks Advanced extraction with GPT-5.6 Luna (low reasoning) and Translate. Escape or an outside click dismisses the overlay.
 
 See [Text Extractor setup and prototype notes](scripts/text-extractor/README.md) for the API-free UI preview and Windows verification checklist.

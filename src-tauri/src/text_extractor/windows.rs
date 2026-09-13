@@ -510,6 +510,7 @@ pub(super) async fn start(app: &tauri::AppHandle, mode: CaptureMode) -> Result<(
         });
         (prepared.label, prepared.ready)
     };
+    *state.error.lock().unwrap() = None;
     if ready {
         let window = app
             .get_webview_window(&label)
@@ -525,15 +526,8 @@ pub(super) async fn start(app: &tauri::AppHandle, mode: CaptureMode) -> Result<(
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(20)).await;
-        let stalled = app
-            .state::<TextExtractor>()
-            .session
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|session| session.label == label && !session.shown);
-        if stalled {
-            close_active(&app);
+        if close_matching(&app, &label, true) {
+            queue_prewarm(&app);
             *app.state::<TextExtractor>().error.lock().unwrap() =
                 Some("Text Extractor could not open. Try the shortcut again.".into());
             let _ = crate::open_settings(&app);
@@ -663,8 +657,7 @@ pub async fn text_extractor_quick_copy(
             .map_err(|_| "The clipboard is busy. Try quick copy again.".into())
     })();
     // A cancelled old request must never close a newer capture.
-    if ensure_session(&app, &window).is_ok() {
-        close_active(&app);
+    if close_matching(&app, window.label(), false) {
         queue_prewarm(&app);
         if let Err(error) = &result {
             report_error(&app, format!("Quick copy: {error}"));
@@ -906,20 +899,50 @@ pub fn copy_extracted_text(
 
 #[tauri::command]
 pub fn close_text_extractor(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
-    ensure_session(&app, &window)?;
-    close_active(&app);
+    if !close_matching(&app, window.label(), false) {
+        return Err("This capture has ended.".into());
+    }
     queue_prewarm(&app);
     Ok(())
+}
+
+fn dispose_session(app: &tauri::AppHandle, session: Session) {
+    session.cancel.cancel();
+    session.request_cancel.cancel();
+    if let Some(window) = app.get_webview_window(&session.label) {
+        let _ = window.destroy();
+    }
+}
+
+fn take_matching(active: &mut Option<Session>, label: &str, only_unshown: bool) -> Option<Session> {
+    if active
+        .as_ref()
+        .is_some_and(|s| s.label == label && (!only_unshown || !s.shown))
+    {
+        active.take()
+    } else {
+        None
+    }
+}
+
+fn close_matching(app: &tauri::AppHandle, label: &str, only_unshown: bool) -> bool {
+    let session = take_matching(
+        &mut app.state::<TextExtractor>().session.lock().unwrap(),
+        label,
+        only_unshown,
+    );
+    if let Some(session) = session {
+        dispose_session(app, session);
+        true
+    } else {
+        false
+    }
 }
 
 fn close_active(app: &tauri::AppHandle) {
     let session = app.state::<TextExtractor>().session.lock().unwrap().take();
     if let Some(session) = session {
-        session.cancel.cancel();
-        session.request_cancel.cancel();
-        if let Some(window) = app.get_webview_window(&session.label) {
-            let _ = window.destroy();
-        }
+        dispose_session(app, session);
     }
 }
 
@@ -928,12 +951,22 @@ pub fn window_destroyed(app: &tauri::AppHandle, label: &str) {
         return;
     }
     let state = app.state::<TextExtractor>();
-    let mut active = state.session.lock().unwrap();
-    if active.as_ref().is_some_and(|s| s.label == label) {
-        if let Some(session) = active.take() {
-            session.cancel.cancel();
-            session.request_cancel.cancel();
+    let removed = take_matching(&mut state.session.lock().unwrap(), label, false);
+    let was_active = removed.is_some();
+    if let Some(session) = removed {
+        session.cancel.cancel();
+        session.request_cancel.cancel();
+    }
+    let removed_warm = {
+        let mut warm = state.warm.lock().unwrap();
+        if warm.as_ref().is_some_and(|warm| warm.label == label) {
+            warm.take().is_some()
+        } else {
+            false
         }
+    };
+    if was_active || removed_warm {
+        queue_prewarm(app);
     }
 }
 
@@ -941,9 +974,8 @@ pub fn window_destroyed(app: &tauri::AppHandle, label: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn mode_switch_cancels_old_work_and_rejects_out_of_order_requests() {
-        let mut session = Session {
+    fn session() -> Session {
+        Session {
             label: "text-extractor-test".into(),
             mode: CaptureMode::Editor,
             monitor: capture::Monitor {
@@ -959,7 +991,23 @@ mod tests {
             request_id: 0,
             request_cancel: CancellationToken::new(),
             shown: true,
-        };
+        }
+    }
+
+    #[test]
+    fn obsolete_closes_and_watchdogs_cannot_remove_a_new_or_visible_capture() {
+        let mut active = Some(session());
+        assert!(take_matching(&mut active, "old-window", false).is_none());
+        assert!(take_matching(&mut active, "text-extractor-test", true).is_none());
+        assert!(active.is_some());
+        active.as_mut().unwrap().shown = false;
+        assert!(take_matching(&mut active, "text-extractor-test", true).is_some());
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn mode_switch_cancels_old_work_and_rejects_out_of_order_requests() {
+        let mut session = session();
         let basic = begin_request(&mut session, 1).unwrap();
         let advanced = begin_request(&mut session, 3).unwrap();
         assert!(basic.is_cancelled());
