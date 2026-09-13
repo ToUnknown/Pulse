@@ -782,7 +782,13 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window
     } else {
         #[cfg(target_os = "windows")]
-        let window_height = 720.0;
+        let window_height = app
+            .primary_monitor()?
+            .map(|monitor| {
+                (f64::from(monitor.size().height) / monitor.scale_factor() - 120.0)
+                    .clamp(360.0, 720.0)
+            })
+            .unwrap_or(720.0);
         #[cfg(target_os = "macos")]
         let window_height = 288.0;
 
@@ -1572,6 +1578,7 @@ pub fn run() {
         text_extractor::text_extractor_state,
         text_extractor::save_openai_api_key,
         text_extractor::set_text_extractor,
+        text_extractor::record_text_extractor_shortcut,
         text_extractor::text_extractor_capture,
         text_extractor::text_extractor_show,
         text_extractor::extract_screen_text,
@@ -1605,6 +1612,13 @@ pub fn run() {
             text_extractor::window_destroyed(window.app_handle(), window.label());
         }
         if window.label() == "settings" {
+            #[cfg(target_os = "windows")]
+            if matches!(
+                event,
+                tauri::WindowEvent::Focused(false) | tauri::WindowEvent::CloseRequested { .. }
+            ) {
+                text_extractor::settings_blurred(window.app_handle());
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if let Err(error) = window.hide() {

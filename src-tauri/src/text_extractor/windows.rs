@@ -30,6 +30,7 @@ pub struct TextExtractor {
     path: PathBuf,
     session: Mutex<Option<Session>>,
     starting: AtomicBool,
+    recording_shortcut: AtomicBool,
     next_id: AtomicU64,
     error: Mutex<Option<String>>,
 }
@@ -39,6 +40,7 @@ struct Session {
     image: Arc<RgbaImage>,
     cancel: CancellationToken,
     extracting: bool,
+    shown: bool,
 }
 
 fn settings_only(window: &WebviewWindow) -> Result<(), String> {
@@ -73,6 +75,7 @@ fn save(path: &PathBuf, preferences: &Preferences) -> Result<(), String> {
 }
 
 pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let path = app.path().app_config_dir()?.join("text-extractor.json");
     let mut preferences = match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes).unwrap_or_default(),
@@ -100,6 +103,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         path,
         session: Mutex::new(None),
         starting: AtomicBool::new(false),
+        recording_shortcut: AtomicBool::new(false),
         next_id: AtomicU64::new(1),
         error: Mutex::new(error),
     });
@@ -116,7 +120,8 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
                     let matches = {
                         let state = app.state::<TextExtractor>();
                         let prefs = state.preferences.lock().unwrap();
-                        prefs.enabled
+                        !state.recording_shortcut.load(Ordering::Acquire)
+                            && prefs.enabled
                             && shortcut(&prefs.shortcut).is_ok_and(|registered| registered == key)
                     };
                     if matches {
@@ -150,9 +155,10 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
     let state = app.state::<TextExtractor>();
     let configured = openai_credentials::is_configured()?;
     let preferences = state.preferences.lock().unwrap().clone();
+    let error = state.error.lock().unwrap().clone();
     Ok(
         json!({"enabled": preferences.enabled && configured, "shortcut": preferences.shortcut,
-        "apiKeyConfigured": configured, "error": *state.error.lock().unwrap()}),
+        "apiKeyConfigured": configured, "error": error}),
     )
 }
 
@@ -160,6 +166,25 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
 pub fn save_openai_api_key(window: WebviewWindow, api_key: String) -> Result<(), String> {
     settings_only(&window)?;
     openai_credentials::save(&api_key)
+}
+
+#[tauri::command]
+pub fn record_text_extractor_shortcut(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    recording: bool,
+) -> Result<(), String> {
+    settings_only(&window)?;
+    app.state::<TextExtractor>()
+        .recording_shortcut
+        .store(recording, Ordering::Release);
+    Ok(())
+}
+
+pub fn settings_blurred(app: &tauri::AppHandle) {
+    app.state::<TextExtractor>()
+        .recording_shortcut
+        .store(false, Ordering::Release);
 }
 
 #[tauri::command]
@@ -264,6 +289,7 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
         image: Arc::new(capture.image),
         cancel: CancellationToken::new(),
         extracting: false,
+        shown: false,
     });
     let result = (|| {
         let window =
@@ -290,6 +316,32 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
     })();
     if result.is_err() {
         close_active(app);
+    } else {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let state = app.state::<TextExtractor>();
+            let stalled = {
+                let mut active = state.session.lock().unwrap();
+                if active
+                    .as_ref()
+                    .is_some_and(|s| s.label == label && !s.shown)
+                {
+                    active.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(session) = stalled {
+                session.cancel.cancel();
+                if let Some(window) = app.get_webview_window(&session.label) {
+                    let _ = window.destroy();
+                }
+                *state.error.lock().unwrap() =
+                    Some("Text Extractor could not open. Try the shortcut again.".into());
+                let _ = crate::open_settings(&app);
+            }
+        });
     }
     result
 }
@@ -332,18 +384,29 @@ pub fn text_extractor_show(app: tauri::AppHandle, window: WebviewWindow) -> Resu
     window
         .show()
         .and_then(|_| window.set_focus())
-        .map_err(|_| "Could not show Text Extractor.".into())
+        .map_err(|_| "Could not show Text Extractor.".to_string())?;
+    if let Some(session) = app
+        .state::<TextExtractor>()
+        .session
+        .lock()
+        .unwrap()
+        .as_mut()
+        .filter(|session| session.label == window.label())
+    {
+        session.shown = true;
+    }
+    Ok(())
 }
 
 fn ensure_session(app: &tauri::AppHandle, window: &WebviewWindow) -> Result<(), String> {
     let state = app.state::<TextExtractor>();
-    if state
+    let active = state
         .session
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|s| s.label == window.label())
-    {
+        .is_some_and(|s| s.label == window.label());
+    if active {
         Ok(())
     } else {
         Err("This capture has ended.".into())

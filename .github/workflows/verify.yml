@@ -1,0 +1,53 @@
+name: Verify desktop prototype
+
+on:
+  push:
+    branches: [codex/windows-text-extractor]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Check ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: src-tauri -> target
+      - name: Check JavaScript and crop geometry
+        run: |
+          node --check src/text-extractor.js
+          node --check src/text-extractor-settings.js
+          node --check scripts/text-extractor/preview.mjs
+          node --check scripts/text-extractor/preview-bridge.js
+          node --test tests/extraction-geometry.test.mjs
+      - name: Check Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt -- --check
+      - name: Check Rust warnings
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run offline Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+      - name: Check whitespace
+        run: git diff --check
