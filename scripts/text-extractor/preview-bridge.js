@@ -40,7 +40,12 @@
     switch (command) {
       case 'settings_state': return { platform: query.get('platform') || 'windows', startAtLogin: false, trayIcon: 'default', autoSchedule: { lightStart: 7, darkStart: 19 } };
       case 'text_extractor_state': return { ...settings };
-      case 'save_openai_api_key': if (scenario === 'key-error') throw 'Could not save the OpenAI key securely.'; settings.apiKeyConfigured = true; return;
+      case 'save_openai_api_key':
+        await new Promise(resolve => setTimeout(resolve, scenario === 'key-pending' ? 2500 : 120));
+        if (scenario === 'key-invalid') throw 'Not a valid OpenAI API key.';
+        if (scenario === 'key-offline') throw 'Could not reach OpenAI. Check your connection and try again.';
+        if (scenario === 'key-error') throw 'Could not save the OpenAI key securely.';
+        settings.apiKeyConfigured = true; return;
       case 'clear_openai_api_key': if (scenario === 'key-error') throw 'Could not remove the shared OpenAI key from credential storage.'; settings.apiKeyConfigured = false; return;
       case 'set_text_extractor': {
         const normalize = value => value.toLowerCase().split('+').map(part => part.replace(/^key/, '')).sort().join('+');

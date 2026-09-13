@@ -8,11 +8,13 @@ const keyInput = $("#openai-api-key");
 const keySave = $("#openai-key-save");
 const keyRemove = $("#openai-key-remove");
 const keyMask = $("#openai-key-mask");
+const keyStatus = $("#extractor-key-status");
 const keyError = $("#openai-key-error");
 const settingsError = $("#extractor-settings-error");
 let state;
 let recording = null;
 let busy = false;
+let checkingKey = false;
 
 function displayShortcut(value) {
   return value.split("+").map((part) => {
@@ -32,9 +34,11 @@ function lock(value) {
 function render() {
   enabled.checked = state.enabled;
   for (const [field, button] of Object.entries(shortcutButtons)) button.textContent = displayShortcut(state[field]);
-  $("#extractor-key-status").textContent = state.apiKeyConfigured
+  keyStatus.textContent = state.apiKeyConfigured
     ? "Stored in Windows Credential Manager. Enter a new key to replace it."
     : "Add a key to use Advanced extraction and Translate.";
+  delete keyStatus.dataset.tone;
+  keyInput.removeAttribute("aria-invalid");
   keyInput.dataset.configured = String(state.apiKeyConfigured);
   keyInput.placeholder = state.apiKeyConfigured ? "" : "sk-…";
   keyRemove.hidden = !state.apiKeyConfigured;
@@ -56,20 +60,33 @@ async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcu
 enabled.addEventListener("change", () => save(enabled.checked));
 function renderKeyControls() {
   keySave.disabled = busy || !keyInput.value.trim();
+  keySave.textContent = checkingKey ? "Checking…" : "Save";
   keyMask.hidden = keyInput.dataset.configured !== "true" || keyInput.value.trim() !== "";
 }
-keyInput.addEventListener("input", renderKeyControls);
+keyInput.addEventListener("input", () => {
+  keyError.hidden = true;
+  delete keyStatus.dataset.tone;
+  keyInput.removeAttribute("aria-invalid");
+  if (state) render();
+  renderKeyControls();
+});
 $("#openai-key-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (busy || !keyInput.value.trim()) return;
+  checkingKey = true;
   lock(true);
   keyError.hidden = true;
+  keyStatus.textContent = "Checking key…";
+  delete keyStatus.dataset.tone;
   try {
     await invoke("save_openai_api_key", { apiKey: keyInput.value });
     keyInput.value = "";
     await load();
-  } catch (reason) { keyInput.value = ""; keyError.textContent = String(reason); keyError.hidden = false; }
-  finally { lock(false); }
+  } catch (reason) {
+    keyStatus.textContent = String(reason);
+    keyStatus.dataset.tone = "error";
+    keyInput.setAttribute("aria-invalid", "true");
+  } finally { checkingKey = false; lock(false); }
 });
 keyRemove.addEventListener("click", async () => {
   if (busy) return;

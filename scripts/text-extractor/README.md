@@ -38,7 +38,7 @@ The request has a two-minute timeout, a bounded response size, and cancellation 
 
 API contract sources: [Luna model](https://developers.openai.com/api/docs/models/gpt-5.6-luna), [image input](https://developers.openai.com/api/docs/guides/images-vision).
 
-The shared API key uses Live Translate’s Save/Remove flow. Saved keys are represented by a fixed mask; the stored secret is never sent back to the webview. Typing replaces the mask with the new password input. Removing the shared key disables Advanced and Translate availability while keeping Basic OCR usable.
+The shared API key uses Live Translate’s Save/Remove flow, including validation before storage. Save displays “Checking key…” while a small Luna Responses request (16 output tokens maximum, no reasoning, `store: false`, no screen content) checks authentication and model access. Only a completed response allows replacing the stored key; invalid keys, service errors, and timeouts preserve it. Saved keys are represented by a fixed mask; the stored secret is never sent back to the webview. Typing replaces the mask with the new password input. Removing the shared key disables Advanced and Translate availability while keeping Basic OCR usable.
 
 ## UI preview without API calls
 
@@ -53,7 +53,7 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 - `/?key&scenario=error`, `empty`, or `pending` — exercise Advanced result states. `/?scenario=basic-error`, `basic-empty`, or `basic-pending` exercise local recognition states; `clipboard-error` simulates a copy failure.
 - `/?key&scenario=translation-error`, `translation-empty`, or `translation-pending` — exercise translation failures and cancellation. Successful fixtures provide German and Ukrainian sample translations; other languages echo the input.
 - `/settings.html` — Windows settings with no key; `?key` simulates a shared saved key.
-- `/settings.html?scenario=key-error` or `shortcut-error` — simulate saving failures.
+- `/settings.html?scenario=key-error` or `shortcut-error` — simulate saving failures. `key-pending`, `key-invalid`, and `key-offline` cover delayed validation, rejected credentials, and connection failure.
 - `/settings.html?platform=macos` — confirm that the Windows feature is hidden.
 
 `node --test tests/extraction-geometry.test.mjs` checks drag directions, monitor bounds, and fractional DPI. Rust unit tests verify crop bounds, both shortcut chords, repeats, modifier releases, disabled/recording behavior, stale session cleanup, and request/response data structures with local fixtures. These never contact OpenAI or access a saved key. The desktop verification workflow compiles and tests on Windows and macOS without API credentials.

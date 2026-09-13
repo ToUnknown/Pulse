@@ -214,9 +214,9 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
 }
 
 #[tauri::command]
-pub fn save_openai_api_key(window: WebviewWindow, api_key: String) -> Result<(), String> {
+pub async fn save_openai_api_key(window: WebviewWindow, api_key: String) -> Result<(), String> {
     settings_only(&window)?;
-    openai_credentials::save(&api_key)
+    openai_credentials::validate_and_save(&api_key).await
 }
 
 #[tauri::command]

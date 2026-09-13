@@ -61,7 +61,7 @@
               <img class="api-key-icon" src="translation-icons/key-icon-yellow.svg" alt="" aria-hidden="true" />
               <div class="api-key-copy">
                 <label for="openai-api-key">OpenAI API key</label>
-                <small id="extractor-key-status">Checking secure storage…</small>
+                <small id="extractor-key-status" role="status" aria-live="polite">Checking secure storage…</small>
               </div>
             </div>
             <div class="api-key-controls">
@@ -74,7 +74,7 @@
                 <button id="openai-key-remove" class="settings-button" type="button" hidden>Remove</button>
               </div>
             </div>
-            <small class="api-key-help">Shared with Live Translate. Unlocks Advanced extraction and Translate; Basic works without a key.</small>
+            <small class="api-key-help">Shared with Live Translate. Save checks the key with a small OpenAI request before storing it. Basic works without a key.</small>
             <p id="openai-key-error" class="extractor-error" role="alert" hidden></p>
           </form>
         </section>
