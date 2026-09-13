@@ -2,6 +2,7 @@ use super::{
     capture, hotkeys, ocr,
     pixels::DesktopFrame,
     protocol::{self, Crop, Preferences, QuickCopyOutcome},
+    selector_window,
     shortcut_keys::{Action, Bindings},
 };
 use crate::openai_credentials;
@@ -558,7 +559,7 @@ async fn prepare_window(app: &tauri::AppHandle) -> Result<(), String> {
         label: label.clone(),
         ready: false,
     });
-    let created = (|| {
+    let created = async {
         let window =
             WebviewWindowBuilder::new(app, &label, WebviewUrl::App("text-extractor.html".into()))
                 .title("Pulse Text Extractor")
@@ -577,6 +578,7 @@ async fn prepare_window(app: &tauri::AppHandle) -> Result<(), String> {
                 .content_protected(true)
                 .build()
                 .map_err(|_| "Could not prepare Text Extractor.")?;
+        selector_window::configure(&window).await?;
         let hwnd = window
             .hwnd()
             .map_err(|_| "Could not prepare the selector window.")?
@@ -600,7 +602,8 @@ async fn prepare_window(app: &tauri::AppHandle) -> Result<(), String> {
             }
         }
         Ok::<(), String>(())
-    })();
+    }
+    .await;
     if created.is_err() || !state.preferences.lock().unwrap().enabled {
         state.warm.lock().unwrap().take();
         if let Some(window) = app.get_webview_window(&label) {
