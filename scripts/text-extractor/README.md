@@ -4,6 +4,8 @@ Windows only. In Pulse Settings, enable **Text Extractor**, save an OpenAI API k
 
 The result contains only the screenshot, a full-area editor, and centered Copy and Translate pills. Screenshot and editor use squircle corners on recent WebView2 versions, with rounded corners as a fallback. The selection animates into place, scanning stops when text arrives, and translation animates the editor while retaining its content. Accessible status announcements are kept offscreen. Visible messages appear only for errors. The translation symbol comes from `src/translation-icons/translate-icon.svg` on the Live Translate branch, with the background circle removed. Both pills use the same colors, and both icons inherit the button foreground color.
 
+The overlay uses a monochrome palette that follows Pulse's Appearance selection, including the resolved Auto schedule. The native window is created with Pulse's current visual theme and updates through the same controller as the tray, including transition rollbacks. WebView2 exposes that theme through `prefers-color-scheme`. The blurred backdrop is grayscale; the selected screenshot retains its original colors. Scanning uses a broad, full-height shimmer moving from left to right over the entire screenshot, with no scan line. Once extraction completes, the current 2.4-second pass finishes at the right edge before the text or error appears. Dismissal remains immediate. Reduced motion uses a static highlight and reveals the result without the extra wait.
+
 The feature starts disabled and only enables after secure key storage succeeds and Windows registers the shortcut. Shortcut conflicts leave the previous combination intact. No paid request is made when saving a key or enabling the feature. An invalid or unauthorized key is reported when an extraction is attempted.
 
 ## Credential compatibility
@@ -25,6 +27,7 @@ API contract sources: [Luna model](https://developers.openai.com/api/docs/models
 Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. This injects an isolated fixture bridge into the actual frontend. It has no real API, key storage, clipboard, or capture access, and is outside the packaged `src` directory.
 
 - `/` — select an area and receive sample text.
+- `/?scenario=demo` — hold the simulated extraction for eight seconds to preview the shimmer. Emulate light/dark color schemes in a desktop browser to preview Pulse's two palettes.
 - `/?scenario=error`, `empty`, `pending`, or `clipboard-error` — exercise those result states.
 - `/?scenario=translation-error`, `translation-empty`, or `translation-pending` — exercise translation failures and cancellation. Successful fixtures provide German and Ukrainian sample translations; other languages echo the input.
 - `/settings.html` — Windows settings with no key; `?key` simulates a shared saved key.
@@ -35,4 +38,4 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 
 ## Windows acceptance pass still required
 
-On a Windows desktop, verify native hotkey registration and conflicts, Windows Credential Manager sharing, repeat capture/dismissal, focus restoration, clipboard ownership, protected content, mixed 100/125/150/200% DPI, portrait displays, negative monitor origins, and disconnecting a monitor during capture. Browser fixtures and compilation do not prove these native behaviors. Live API behavior was deliberately not tested for this prototype.
+On a Windows desktop, verify native hotkey registration and conflicts, Windows Credential Manager sharing, repeat capture/dismissal, focus restoration, clipboard ownership, Pulse Appearance changes and Auto scheduling while the overlay is open, protected content, mixed 100/125/150/200% DPI, portrait displays, negative monitor origins, and disconnecting a monitor during capture. Browser fixtures and compilation do not prove these native behaviors. Live API behavior was deliberately not tested for this prototype.

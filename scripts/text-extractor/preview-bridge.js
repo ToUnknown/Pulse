@@ -35,7 +35,7 @@
       case 'text_extractor_capture': return screenshot();
       case 'text_extractor_show': return;
       case 'record_text_extractor_shortcut': return;
-      case 'extract_screen_text': await new Promise(resolve => setTimeout(resolve, scenario === 'pending' ? 30000 : 1600)); if (scenario === 'error') throw 'Could not reach OpenAI. Check your connection and try again.'; return scenario === 'empty' ? '' : text;
+      case 'extract_screen_text': await new Promise(resolve => setTimeout(resolve, scenario === 'pending' ? 30000 : scenario === 'demo' ? 8000 : 1600)); window.__preview.extractionReadyAt = performance.now(); if (scenario === 'error') throw 'Could not reach OpenAI. Check your connection and try again.'; return scenario === 'empty' ? '' : text;
       case 'translate_extracted_text': {
         await new Promise(resolve => setTimeout(resolve, scenario === 'translation-pending' ? 30000 : 1600));
         if (scenario === 'translation-error') throw 'Could not reach OpenAI. Your text is unchanged.';

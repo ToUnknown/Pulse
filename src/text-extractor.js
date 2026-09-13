@@ -129,6 +129,18 @@ function revealText(text) {
   editor.focus({ preventScroll: true });
 }
 
+async function finishShimmerCycle() {
+  if (reducedMotion.matches) return;
+  const animation = frame.getAnimations({ subtree: true })
+    .find((animation) => animation.animationName === "screenshot-shimmer");
+  if (!animation?.effect) return;
+  const { currentIteration } = animation.effect.getComputedTiming();
+  // End at the right edge of this pass, even if the API returns halfway through.
+  // Keeping the same animation avoids a jump or an extra pass on a quick response.
+  animation.effect.updateTiming({ iterations: (currentIteration ?? 0) + 1 });
+  await animation.finished.catch(() => {});
+}
+
 async function runExtraction(animate = false) {
   if (busy || closing) return;
   const current = ++generation;
@@ -156,8 +168,14 @@ async function runExtraction(animate = false) {
   try {
     const text = await invoke("extract_screen_text", { crop });
     if (current !== generation || closing) return;
+    await finishShimmerCycle();
+    if (current !== generation || closing) return;
     revealText(text);
-  } catch (error) { if (current === generation && !closing) setError(error, () => runExtraction()); }
+  } catch (error) {
+    if (current !== generation || closing) return;
+    await finishShimmerCycle();
+    if (current === generation && !closing) setError(error, () => runExtraction());
+  }
 }
 
 async function translateText(language) {
