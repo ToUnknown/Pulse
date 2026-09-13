@@ -24,6 +24,23 @@ impl Default for Preferences {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum QuickCopyOutcome {
+    Copied,
+    NoText,
+}
+
+pub fn copy_recognized_text(
+    text: String,
+    copy: impl FnOnce(String) -> Result<(), String>,
+) -> Result<QuickCopyOutcome, String> {
+    if text.trim().is_empty() {
+        return Ok(QuickCopyOutcome::NoText);
+    }
+    copy(text)?;
+    Ok(QuickCopyOutcome::Copied)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub struct Crop {
     pub x: u32,
@@ -125,6 +142,34 @@ pub fn response_text(response: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quick_copy_empty_text_is_a_notice_and_leaves_clipboard_untouched() {
+        for text in ["", " \r\n\t", "\u{2003}\u{00a0}"] {
+            assert_eq!(
+                copy_recognized_text(text.into(), |_| panic!("Must not change the clipboard")),
+                Ok(QuickCopyOutcome::NoText)
+            );
+        }
+    }
+
+    #[test]
+    fn quick_copy_preserves_text_and_reports_clipboard_failures() {
+        let text = "  Keep spacing.\nПривіт!\n";
+        let mut copied = String::new();
+        assert_eq!(
+            copy_recognized_text(text.into(), |value| {
+                copied = value;
+                Ok(())
+            }),
+            Ok(QuickCopyOutcome::Copied)
+        );
+        assert_eq!(copied, text);
+        assert_eq!(
+            copy_recognized_text(text.into(), |_| Err("Clipboard busy".into())),
+            Err("Clipboard busy".into())
+        );
+    }
+
     #[test]
     fn crop_rejects_edges_overflow_and_tiny_selections() {
         for crop in [
