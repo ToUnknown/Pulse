@@ -118,6 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn validation_only_replaces_the_key_after_a_completed_model_response() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         for (status, body, succeeds) in [
             (
                 200,
