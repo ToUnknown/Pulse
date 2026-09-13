@@ -12,9 +12,9 @@
     <main>
       <nav class="settings-tabs" role="tablist" aria-label="Settings pages" style="--page-index: 0">
         <span class="settings-tab-slider" aria-hidden="true"></span>
-        <button id="tab-general" type="button" role="tab" aria-selected="true" aria-controls="page-general">General</button>
-        <button id="tab-advanced" type="button" role="tab" aria-selected="false" aria-controls="page-advanced" tabindex="-1">Advanced</button>
-        <button id="tab-appearance" type="button" role="tab" aria-selected="false" aria-controls="page-appearance" tabindex="-1">Appearance</button>
+        <button id="tab-general" type="button" role="tab" aria-selected="true" aria-controls="page-general"><span>General</span></button>
+        <button id="tab-advanced" type="button" role="tab" aria-selected="false" aria-controls="page-advanced" tabindex="-1"><span>Advanced</span></button>
+        <button id="tab-appearance" type="button" role="tab" aria-selected="false" aria-controls="page-appearance" tabindex="-1"><span>Appearance</span></button>
       </nav>
       <div id="page-general" class="settings-page" role="tabpanel" aria-labelledby="tab-general" tabindex="0">
         <section class="settings-group" aria-labelledby="general-heading">
@@ -48,7 +48,8 @@
               </span>
               <input id="text-extractor-enabled" type="checkbox" disabled />
             </label>
-            <div class="extractor-detail-row"><span>Keyboard shortcut</span><button id="extractor-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Text Extractor shortcut">Ctrl + Shift + E</button></div>
+            <div class="extractor-detail-row"><span>Quick copy</span><kbd class="shortcut-label">Win + Shift + T</kbd></div>
+            <div class="extractor-detail-row"><span>Open editor</span><button id="extractor-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Text Extractor shortcut">Win + Shift + Ctrl + T</button></div>
             <p id="extractor-availability" class="extractor-note" hidden></p>
             <p id="extractor-settings-error" class="extractor-error" role="alert" hidden></p>
           </div>

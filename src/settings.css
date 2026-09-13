@@ -3,6 +3,7 @@
   color: #1d1d1f;
   background: #f5f5f7;
   --surface: #ffffff;
+  --settings-pill: #000000;
   --border: #d9d9de;
   --secondary-text: #6e6e73;
   --control-background: #ffffff;
@@ -25,6 +26,7 @@
     color: #f5f5f7;
     background: #1c1c1e;
     --surface: #2c2c2e;
+    --settings-pill: #ffffff;
     --border: #48484a;
     --secondary-text: #aeaeb2;
     --control-background: #3a3a3c;
@@ -495,11 +497,11 @@ body { overflow-y: auto; }
 #extractor-settings-error { margin: 0; padding: 0 16px 14px; }
 /* Settings pages share the same controls and saved state. */
 main { max-width: 720px; margin: 0 auto; }
-.settings-tabs { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; margin-bottom: 28px; background: var(--control-hover); border: 1px solid var(--border); border-radius: 999px; }
+.settings-tabs { isolation: isolate; position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; margin-bottom: 28px; background: var(--control-hover); border: 1px solid var(--border); border-radius: 999px; }
 .settings-tabs button { position: relative; padding: 10px 8px; border: 0; border-radius: 999px; background: transparent; color: var(--secondary-text); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; transition: color 180ms; }
-.settings-tabs button[aria-selected="true"] { color: inherit; }
+.settings-tabs button span { color: #fff; mix-blend-mode: difference; }
 .settings-tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.settings-tab-slider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); background: var(--surface); border-radius: 999px; box-shadow: 0 2px 6px #00000012; transform: translateX(calc(var(--page-index) * 100%)); transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
+.settings-tab-slider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); background: var(--settings-pill); border-radius: 999px; box-shadow: 0 2px 6px #00000012; transform: translateX(calc(var(--page-index) * 100%)); transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
 .settings-page { outline: none; animation: settings-page-in 220ms ease-out; }
 .settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: 14px; }
 .api-key-card { border: 1px solid var(--border); border-radius: 14px; padding: 18px 16px; background: var(--surface); }
@@ -515,3 +517,11 @@ main { max-width: 720px; margin: 0 auto; }
 @media (prefers-reduced-motion: reduce) {
   .settings-tabs *, .settings-page { animation: none !important; transition: none !important; }
 }
+
+@media (forced-colors: active) {
+  .settings-tab-slider { background: Highlight; }
+  .settings-tabs button span { color: CanvasText; mix-blend-mode: normal; }
+  .settings-tabs button[aria-selected="true"] span { color: HighlightText; }
+}
+
+.shortcut-label { font: inherit; font-size: 11px; font-weight: 600; padding: 7px 11px; border: 1px solid var(--control-border); border-radius: 8px; }
