@@ -19,6 +19,11 @@ pub enum Action {
     RecordQuick,
     RecordEditor,
 }
+#[derive(Clone, Copy, Default)]
+pub struct Bindings {
+    pub plain: Option<Action>,
+    pub control: Option<Action>,
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Decision {
     Pass,
@@ -38,7 +43,7 @@ impl ShortcutKeys {
         let captured = self.captured;
         *self = Self::default();
         for key in pressed {
-            self.update(key, true, false, false, false);
+            self.update(key, true, false, Bindings::default(), false);
         }
         // Preserve suppression if the original chord is still physically held.
         self.captured = captured && self.t_down;
@@ -49,7 +54,7 @@ impl ShortcutKeys {
         key: Key,
         down: bool,
         enabled: bool,
-        editor_default: bool,
+        bindings: Bindings,
         recording: bool,
     ) -> Decision {
         let modifier = match key {
@@ -92,9 +97,14 @@ impl ShortcutKeys {
             let action = match (self.control != 0, recording) {
                 (false, true) => Action::RecordEditor,
                 (true, true) => Action::RecordQuick,
-                (true, false) => Action::QuickCopy,
-                (false, false) if editor_default => Action::Editor,
-                _ => return Decision::Pass,
+                (true, false) => match bindings.control {
+                    Some(action) => action,
+                    None => return Decision::Pass,
+                },
+                (false, false) => match bindings.plain {
+                    Some(action) => action,
+                    None => return Decision::Pass,
+                },
             };
             self.captured = true;
             return Decision::Suppress(Some(action));
@@ -105,8 +115,12 @@ impl ShortcutKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const DEFAULT_BINDINGS: Bindings = Bindings {
+        plain: Some(Action::Editor),
+        control: Some(Action::QuickCopy),
+    };
     fn key(keys: &mut ShortcutKeys, key: Key, down: bool) -> Decision {
-        keys.update(key, down, true, true, false)
+        keys.update(key, down, true, DEFAULT_BINDINGS, false)
     }
     #[test]
     fn exact_chords_route_quick_copy_and_editor() {
@@ -134,30 +148,85 @@ mod tests {
         key(&mut keys, Key::WinLeft, true);
         key(&mut keys, Key::ShiftLeft, true);
         assert_eq!(
-            keys.update(Key::T, true, true, false, false),
+            keys.update(
+                Key::T,
+                true,
+                true,
+                Bindings {
+                    plain: None,
+                    ..DEFAULT_BINDINGS
+                },
+                false
+            ),
             Decision::Pass
         );
         key(&mut keys, Key::T, false);
         key(&mut keys, Key::ControlRight, true);
         assert_eq!(
-            keys.update(Key::T, true, true, false, false),
+            keys.update(
+                Key::T,
+                true,
+                true,
+                Bindings {
+                    plain: None,
+                    ..DEFAULT_BINDINGS
+                },
+                false
+            ),
             Decision::Suppress(Some(Action::QuickCopy))
         );
     }
+    #[test]
+    fn remapping_quick_copy_releases_its_previous_chord() {
+        let mut keys = ShortcutKeys::default();
+        keys.resynchronize([Key::WinLeft, Key::ShiftLeft, Key::ControlLeft]);
+        let bindings = Bindings {
+            control: None,
+            ..DEFAULT_BINDINGS
+        };
+        assert_eq!(
+            keys.update(Key::T, true, true, bindings, false),
+            Decision::Pass
+        );
+        assert_eq!(
+            keys.update(Key::T, false, true, bindings, false),
+            Decision::Pass
+        );
+    }
+    #[test]
+    fn either_action_can_use_either_intercepted_chord() {
+        let mut keys = ShortcutKeys::default();
+        let bindings = Bindings {
+            plain: Some(Action::QuickCopy),
+            control: Some(Action::Editor),
+        };
+        keys.resynchronize([Key::WinRight, Key::ShiftLeft]);
+        assert_eq!(
+            keys.update(Key::T, true, true, bindings, false),
+            Decision::Suppress(Some(Action::QuickCopy))
+        );
+        keys.update(Key::T, false, true, bindings, false);
+        key(&mut keys, Key::ControlLeft, true);
+        assert_eq!(
+            keys.update(Key::T, true, true, bindings, false),
+            Decision::Suppress(Some(Action::Editor))
+        );
+    }
+
     #[test]
     fn disabled_and_unrelated_keys_pass_through_and_keyup_is_balanced() {
         let mut keys = ShortcutKeys::default();
         key(&mut keys, Key::WinRight, true);
         key(&mut keys, Key::ShiftLeft, true);
         assert_eq!(
-            keys.update(Key::T, true, false, true, false),
+            keys.update(Key::T, true, false, DEFAULT_BINDINGS, false),
             Decision::Pass
         );
         key(&mut keys, Key::T, false);
         assert_eq!(key(&mut keys, Key::Other, true), Decision::Pass);
         key(&mut keys, Key::T, true);
         assert_eq!(
-            keys.update(Key::T, false, false, true, false),
+            keys.update(Key::T, false, false, DEFAULT_BINDINGS, false),
             Decision::Suppress(None)
         );
         key(&mut keys, Key::ControlRight, true);
@@ -172,13 +241,13 @@ mod tests {
         key(&mut keys, Key::WinLeft, false);
         key(&mut keys, Key::ShiftLeft, true);
         assert_eq!(
-            keys.update(Key::T, true, false, true, true),
+            keys.update(Key::T, true, false, Bindings::default(), true),
             Decision::Suppress(Some(Action::RecordEditor))
         );
         key(&mut keys, Key::T, false);
         key(&mut keys, Key::ControlRight, true);
         assert_eq!(
-            keys.update(Key::T, true, false, true, true),
+            keys.update(Key::T, true, false, Bindings::default(), true),
             Decision::Suppress(Some(Action::RecordQuick))
         );
     }

@@ -1,5 +1,5 @@
 use super::{
-    shortcut_keys::{Action, Decision, Key, ShortcutKeys},
+    shortcut_keys::{Action, Bindings, Decision, Key, ShortcutKeys},
     windows::{self, CaptureMode},
 };
 use std::{
@@ -11,7 +11,6 @@ use std::{
         OnceLock,
     },
 };
-use tauri::Manager;
 use windows_sys::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
@@ -32,10 +31,16 @@ const MENU_MASK_TAG: usize = 0x5055_4C53;
 static EVENTS: OnceLock<SyncSender<Action>> = OnceLock::new();
 thread_local! { static KEYS: RefCell<ShortcutKeys> = RefCell::new(ShortcutKeys::default()); }
 
-pub fn configure(enabled: bool, editor_default: bool) {
+pub fn configure(enabled: bool, bindings: Bindings) {
+    let encode = |action| match action {
+        Some(Action::Editor) => 1,
+        Some(Action::QuickCopy) => 2,
+        _ => 0,
+    };
+    let routes = (encode(bindings.plain) << 4) | (encode(bindings.control) << 6);
     FLAGS
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |flags| {
-            Some((flags & 12) | u8::from(enabled) | (u8::from(editor_default) << 1))
+            Some((flags & 12) | u8::from(enabled) | routes)
         })
         .ok();
 }
@@ -84,26 +89,37 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), String> {
         return Err("Windows could not install the Text Extractor shortcuts.".into());
     }
     let app = app.clone();
-    std::thread::Builder::new().name("pulse-extractor-actions".into()).spawn(move || {
-        while let Ok(action) = receive.recv() {
-            mask_windows_menu();
-            match action {
-                Action::RecordQuick | Action::RecordEditor => {
-                    if let Some(window) = app.get_webview_window("settings") {
-                        let shortcut = if action == Action::RecordQuick { "Control+Super+Shift+KeyT" } else { "Super+Shift+KeyT" };
-                        let _ = window.eval(format!("window.dispatchEvent(new CustomEvent('pulse-extractor-shortcut', {{detail: '{shortcut}'}}))"));
+    std::thread::Builder::new()
+        .name("pulse-extractor-actions".into())
+        .spawn(move || {
+            while let Ok(action) = receive.recv() {
+                mask_windows_menu();
+                match action {
+                    Action::RecordQuick | Action::RecordEditor => {
+                        let shortcut = if action == Action::RecordQuick {
+                            "Control+Super+Shift+KeyT"
+                        } else {
+                            "Super+Shift+KeyT"
+                        };
+                        windows::report_recorded_shortcut(&app, shortcut);
+                    }
+                    Action::QuickCopy | Action::Editor => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let mode = if action == Action::QuickCopy {
+                                CaptureMode::Quick
+                            } else {
+                                CaptureMode::Editor
+                            };
+                            if let Err(error) = windows::start(&app, mode).await {
+                                windows::report_error(&app, error);
+                            }
+                        });
                     }
                 }
-                Action::QuickCopy | Action::Editor => {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let mode = if action == Action::QuickCopy { CaptureMode::Quick } else { CaptureMode::Editor };
-                        if let Err(error) = windows::start(&app, mode).await { windows::report_error(&app, error); }
-                    });
-                }
             }
-        }
-    }).map_err(|_| "Could not start the Text Extractor shortcut actions.")?;
+        })
+        .map_err(|_| "Could not start the Text Extractor shortcut actions.")?;
     Ok(())
 }
 
@@ -151,7 +167,16 @@ unsafe extern "system" fn keyboard(code: i32, message: WPARAM, event: LPARAM) ->
                         .filter_map(|(vk, key)| (GetAsyncKeyState(vk) < 0).then_some(key)),
                     );
                 }
-                keys.update(key, down, flags & 1 != 0, flags & 2 != 0, flags & 4 != 0)
+                let decode = |value| match value & 3 {
+                    1 => Some(Action::Editor),
+                    2 => Some(Action::QuickCopy),
+                    _ => None,
+                };
+                let bindings = Bindings {
+                    plain: decode(flags >> 4),
+                    control: decode(flags >> 6),
+                };
+                keys.update(key, down, flags & 1 != 0, bindings, flags & 4 != 0)
             });
             if let Decision::Suppress(action) = decision {
                 if let Some(action) = action {

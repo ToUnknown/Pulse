@@ -2,6 +2,7 @@ use super::{
     capture, hotkeys, ocr,
     pixels::DesktopFrame,
     protocol::{self, Crop, Preferences},
+    shortcut_keys::{Action, Bindings},
 };
 use crate::openai_credentials;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -99,21 +100,11 @@ fn save(path: &PathBuf, preferences: &Preferences) -> Result<(), String> {
 pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let path = app.path().app_config_dir()?.join("text-extractor.json");
-    let mut preferences = match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes).unwrap_or_default(),
-        Err(_) => Preferences::default(),
-    };
-    // Migrate legacy defaults, including the chord now reserved for Quick Copy.
-    if shortcut(&preferences.shortcut).is_ok_and(|key| {
-        key == shortcut("Control+Shift+E").unwrap()
-            || key == shortcut(protocol::QUICK_SHORTCUT).unwrap()
-    }) {
-        preferences.shortcut = protocol::DEFAULT_SHORTCUT.into();
-        let _ = save(&path, &preferences);
-    }
-    if shortcut(&preferences.shortcut).is_err() {
-        preferences = Preferences::default();
-    }
+    let preferences = fs::read(&path)
+        .ok()
+        .and_then(|bytes| load_preferences(&bytes).ok())
+        .unwrap_or_default();
+    let _ = save(&path, &preferences);
     app.manage(TextExtractor {
         preferences: Mutex::new(preferences.clone()),
         path,
@@ -136,15 +127,29 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
                 let key = *key;
                 // Do not lock preferences on the event thread while registration is in flight.
                 tauri::async_runtime::spawn(async move {
-                    let matches = {
-                        let state = app.state::<TextExtractor>();
+                    let state = app.state::<TextExtractor>();
+                    if state.recording_shortcut.load(Ordering::Acquire) {
+                        report_recorded_shortcut(&app, &key.to_string());
+                        return;
+                    }
+                    let mode = {
                         let prefs = state.preferences.lock().unwrap();
-                        !state.recording_shortcut.load(Ordering::Acquire)
-                            && prefs.enabled
-                            && shortcut(&prefs.shortcut).is_ok_and(|registered| registered == key)
+                        if !prefs.enabled {
+                            None
+                        } else if shortcut(&prefs.shortcut)
+                            .is_ok_and(|registered| registered == key)
+                        {
+                            Some(CaptureMode::Editor)
+                        } else if shortcut(&prefs.quick_shortcut)
+                            .is_ok_and(|registered| registered == key)
+                        {
+                            Some(CaptureMode::Quick)
+                        } else {
+                            None
+                        }
                     };
-                    if matches {
-                        if let Err(error) = start(&app, CaptureMode::Editor).await {
+                    if let Some(mode) = mode {
+                        if let Err(error) = start(&app, mode).await {
                             *app.state::<TextExtractor>().error.lock().unwrap() = Some(error);
                             let _ = crate::open_settings(&app);
                         }
@@ -171,7 +176,8 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .enabled
     {
-        if let Err(reason) = register_editor(app, shortcut(&preferences.shortcut)?) {
+        let keys = registered_shortcuts(&preferences)?;
+        if let Err(reason) = change_registered_shortcuts(app, &[], &keys, || Ok(())) {
             let state = app.state::<TextExtractor>();
             state.preferences.lock().unwrap().enabled = false;
             *state.error.lock().unwrap() = Some(reason);
@@ -183,10 +189,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         .lock()
         .unwrap()
         .enabled;
-    hotkeys::configure(
-        enabled,
-        is_editor_override(shortcut(&preferences.shortcut)?),
-    );
+    hotkeys::configure(enabled, hook_bindings(shortcut_pair(&preferences)?));
     queue_prewarm(app);
     Ok(())
 }
@@ -205,7 +208,7 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
         .clone()
         .or_else(|| credential_state.err());
     Ok(
-        json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut,
+        json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut, "quickShortcut": preferences.quick_shortcut,
         "apiKeyConfigured": configured, "error": error}),
     )
 }
@@ -237,24 +240,124 @@ pub fn settings_blurred(app: &tauri::AppHandle) {
         .store(false, Ordering::Release);
 }
 
-fn is_editor_override(key: Shortcut) -> bool {
-    key == shortcut(protocol::DEFAULT_SHORTCUT).unwrap()
-}
-fn register_editor(app: &tauri::AppHandle, key: Shortcut) -> Result<(), String> {
-    if is_editor_override(key) {
-        return Ok(());
+fn shortcut_pair(preferences: &Preferences) -> Result<[Shortcut; 2], String> {
+    let keys = [
+        shortcut(&preferences.shortcut)?,
+        shortcut(&preferences.quick_shortcut)?,
+    ];
+    if keys[0] == keys[1] {
+        return Err("Choose different shortcuts for Quick copy and Open editor.".into());
     }
-    app.global_shortcut()
-        .register(key)
-        .map_err(|_| "This shortcut is already in use. Choose another combination.".into())
+    Ok(keys)
 }
-fn unregister_editor(app: &tauri::AppHandle, key: Shortcut) -> Result<(), String> {
-    if is_editor_override(key) {
-        return Ok(());
+
+fn load_preferences(bytes: &[u8]) -> Result<Preferences, String> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|_| "Could not read Text Extractor settings.")?;
+    let legacy = value.get("quickShortcut").is_none();
+    let mut preferences: Preferences =
+        serde_json::from_value(value).map_err(|_| "Could not read Text Extractor settings.")?;
+    // Only legacy files need migration. New custom assignments must survive restarts.
+    if legacy
+        && shortcut(&preferences.shortcut).is_ok_and(|key| {
+            key == shortcut("Control+Shift+E").unwrap()
+                || key == shortcut(protocol::QUICK_SHORTCUT).unwrap()
+        })
+    {
+        preferences.shortcut = protocol::DEFAULT_SHORTCUT.into();
     }
-    app.global_shortcut()
-        .unregister(key)
-        .map_err(|_| "Could not release the previous shortcut. Try again.".into())
+    shortcut_pair(&preferences)?;
+    Ok(preferences)
+}
+
+fn hook_bindings(keys: [Shortcut; 2]) -> Bindings {
+    let action = |key| {
+        if keys[0] == key {
+            Some(Action::Editor)
+        } else if keys[1] == key {
+            Some(Action::QuickCopy)
+        } else {
+            None
+        }
+    };
+    Bindings {
+        plain: action(shortcut(protocol::DEFAULT_SHORTCUT).unwrap()),
+        control: action(shortcut(protocol::QUICK_SHORTCUT).unwrap()),
+    }
+}
+
+fn registered_shortcuts(preferences: &Preferences) -> Result<Vec<Shortcut>, String> {
+    let keys = shortcut_pair(preferences)?;
+    Ok(keys
+        .into_iter()
+        .filter(|key| {
+            preferences.enabled
+                && *key != shortcut(protocol::DEFAULT_SHORTCUT).unwrap()
+                && *key != shortcut(protocol::QUICK_SHORTCUT).unwrap()
+        })
+        .collect())
+}
+
+fn change_registered_shortcuts(
+    app: &tauri::AppHandle,
+    old: &[Shortcut],
+    next: &[Shortcut],
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    transition_shortcuts(
+        old,
+        next,
+        |key| {
+            app.global_shortcut()
+                .register(*key)
+                .map_err(|_| "This shortcut is already in use. Choose another combination.".into())
+        },
+        |key| {
+            app.global_shortcut()
+                .unregister(*key)
+                .map_err(|_| "Could not release the previous shortcut. Try again.".into())
+        },
+        persist,
+    )
+}
+
+fn transition_shortcuts(
+    old: &[Shortcut],
+    next: &[Shortcut],
+    mut register: impl FnMut(&Shortcut) -> Result<(), String>,
+    mut unregister: impl FnMut(&Shortcut) -> Result<(), String>,
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let result = (|| {
+        // Reserve every new combination before releasing any working combination.
+        for key in next.iter().filter(|key| !old.contains(key)) {
+            register(key)?;
+            added.push(key);
+        }
+        for key in old.iter().filter(|key| !next.contains(key)) {
+            unregister(key)?;
+            removed.push(key);
+        }
+        persist()
+    })();
+    if result.is_err() {
+        for key in added {
+            let _ = unregister(key);
+        }
+        for key in removed {
+            let _ = register(key);
+        }
+    }
+    result
+}
+
+pub(super) fn report_recorded_shortcut(app: &tauri::AppHandle, shortcut: &str) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let detail = json!(shortcut);
+        let _ = window.eval(format!("window.dispatchEvent(new CustomEvent('pulse-extractor-shortcut', {{detail: {detail}}}))"));
+    }
 }
 
 pub(super) fn report_error(app: &tauri::AppHandle, error: String) {
@@ -268,15 +371,17 @@ pub async fn set_text_extractor(
     window: WebviewWindow,
     enabled: bool,
     shortcut_value: String,
+    quick_shortcut_value: String,
 ) -> Result<(), String> {
     settings_only(&window)?;
-    let next_shortcut = shortcut(&shortcut_value)?;
-    if next_shortcut == shortcut(protocol::QUICK_SHORTCUT)? {
-        return Err(
-            "Ctrl + Win + Shift + T is reserved for quick copy. Choose another editor shortcut."
-                .into(),
-        );
-    }
+    let mut next = Preferences {
+        enabled,
+        shortcut: shortcut_value,
+        quick_shortcut: quick_shortcut_value,
+    };
+    let keys = shortcut_pair(&next)?;
+    next.shortcut = keys[0].to_string();
+    next.quick_shortcut = keys[1].to_string();
     let state = app.state::<TextExtractor>();
     if enabled && !state.hotkeys_ready.load(Ordering::Acquire) {
         return Err(
@@ -285,35 +390,14 @@ pub async fn set_text_extractor(
         );
     }
     let mut current = state.preferences.lock().unwrap();
-    let old_shortcut = shortcut(&current.shortcut)?;
-    let changed = old_shortcut != next_shortcut;
-    // Reserve the new shortcut before releasing the working one.
-    let added = enabled && (!current.enabled || changed);
-    if added {
-        register_editor(&app, next_shortcut)?;
-    }
-    let removed = current.enabled && (!enabled || changed);
-    if removed && unregister_editor(&app, old_shortcut).is_err() {
-        if added {
-            let _ = unregister_editor(&app, next_shortcut);
-        }
-        return Err("Could not release the previous shortcut. Try again.".into());
-    }
-    let next = Preferences {
-        enabled,
-        shortcut: next_shortcut.to_string(),
-    };
-    if let Err(error) = save(&state.path, &next) {
-        if added {
-            let _ = unregister_editor(&app, next_shortcut);
-        }
-        if removed {
-            let _ = register_editor(&app, old_shortcut);
-        }
-        return Err(error);
-    }
+    change_registered_shortcuts(
+        &app,
+        &registered_shortcuts(&current)?,
+        &registered_shortcuts(&next)?,
+        || save(&state.path, &next),
+    )?;
     *current = next;
-    hotkeys::configure(enabled, is_editor_override(next_shortcut));
+    hotkeys::configure(enabled, hook_bindings(keys));
     *state.error.lock().unwrap() = None;
     drop(current);
     if !enabled {
@@ -1015,6 +1099,97 @@ mod tests {
             request_cancel: CancellationToken::new(),
             shown: true,
         }
+    }
+
+    #[test]
+    fn legacy_preferences_migrate_once_and_custom_assignments_survive() {
+        for editor in ["Control+Shift+E", "shift+control+super+KeyT"] {
+            let bytes = serde_json::to_vec(&json!({"enabled": true, "shortcut": editor})).unwrap();
+            let prefs = load_preferences(&bytes).unwrap();
+            assert!(prefs.enabled);
+            assert_eq!(prefs.shortcut, protocol::DEFAULT_SHORTCUT);
+            assert_eq!(prefs.quick_shortcut, protocol::QUICK_SHORTCUT);
+        }
+        let prefs = Preferences {
+            enabled: true,
+            shortcut: protocol::QUICK_SHORTCUT.into(),
+            quick_shortcut: "Control+Alt+Q".into(),
+        };
+        let restored = load_preferences(&serde_json::to_vec(&prefs).unwrap()).unwrap();
+        assert_eq!(restored.shortcut, prefs.shortcut);
+        assert_eq!(restored.quick_shortcut, prefs.quick_shortcut);
+        assert_eq!(
+            hook_bindings(shortcut_pair(&restored).unwrap()).control,
+            Some(Action::Editor)
+        );
+    }
+
+    #[test]
+    fn duplicate_shortcuts_are_rejected_regardless_of_modifier_order() {
+        let prefs = Preferences {
+            enabled: true,
+            shortcut: "Shift+Super+KeyT".into(),
+            quick_shortcut: "Super+Shift+T".into(),
+        };
+        assert!(shortcut_pair(&prefs).is_err());
+    }
+
+    #[test]
+    fn shortcut_registration_conflict_preserves_both_previous_assignments() {
+        use std::cell::RefCell;
+        let old = [
+            shortcut("Control+Alt+E").unwrap(),
+            shortcut("Control+Alt+Q").unwrap(),
+        ];
+        let next = [
+            shortcut("Control+Alt+R").unwrap(),
+            shortcut("Control+Alt+W").unwrap(),
+        ];
+        let active = RefCell::new(old.to_vec());
+        let result = transition_shortcuts(
+            &old,
+            &next,
+            |key| {
+                if *key == next[1] {
+                    return Err("Occupied".into());
+                }
+                active.borrow_mut().push(*key);
+                Ok(())
+            },
+            |key| {
+                active.borrow_mut().retain(|k| k != key);
+                Ok(())
+            },
+            || panic!("Conflicting shortcuts must never be persisted"),
+        );
+        assert!(result.is_err());
+        assert_eq!(*active.borrow(), old);
+    }
+
+    #[test]
+    fn failed_settings_write_restores_previous_shortcuts() {
+        use std::cell::RefCell;
+        let old = [
+            shortcut("Control+Alt+E").unwrap(),
+            shortcut("Control+Alt+Q").unwrap(),
+        ];
+        let next = [old[0], shortcut("Control+Alt+W").unwrap()];
+        let active = RefCell::new(old.to_vec());
+        let result = transition_shortcuts(
+            &old,
+            &next,
+            |key| {
+                active.borrow_mut().push(*key);
+                Ok(())
+            },
+            |key| {
+                active.borrow_mut().retain(|k| k != key);
+                Ok(())
+            },
+            || Err("Settings folder is not writable".into()),
+        );
+        assert!(result.is_err());
+        assert_eq!(*active.borrow(), old);
     }
 
     #[test]

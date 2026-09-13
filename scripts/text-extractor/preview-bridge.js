@@ -2,7 +2,7 @@
   const query = new URLSearchParams(location.search);
   const scenario = query.get('scenario') || 'success';
   const text = 'A little space to think.\n\nGood ideas often begin with something small: a line in a book, a passing thought, a few words worth keeping.\n\nMake room for what matters.';
-  let settings = { enabled: false, shortcut: 'Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null };
+  let settings = { enabled: false, shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null };
   const calls = [];
   window.__preview = { calls, copied: null, closed: false };
   const screenshot = () => {
@@ -41,7 +41,12 @@
       case 'settings_state': return { platform: query.get('platform') || 'windows', startAtLogin: false, trayIcon: 'default', autoSchedule: { lightStart: 7, darkStart: 19 } };
       case 'text_extractor_state': return { ...settings };
       case 'save_openai_api_key': if (scenario === 'key-error') throw 'Could not save the OpenAI key securely.'; settings.apiKeyConfigured = true; return;
-      case 'set_text_extractor': if (scenario === 'shortcut-error') throw 'This shortcut is already in use. Choose another combination.'; settings = { ...settings, enabled: args.enabled, shortcut: args.shortcutValue }; return;
+      case 'set_text_extractor': {
+        const normalize = value => value.toLowerCase().split('+').map(part => part.replace(/^key/, '')).sort().join('+');
+        if (normalize(args.shortcutValue) === normalize(args.quickShortcutValue)) throw 'Choose different shortcuts for Quick copy and Open editor.';
+        if (scenario === 'shortcut-error') throw 'This shortcut is already in use. Choose another combination.';
+        settings = { ...settings, enabled: args.enabled, shortcut: args.shortcutValue, quickShortcut: args.quickShortcutValue }; return;
+      }
       case 'text_extractor_ready': return !query.has('warm');
       case 'text_extractor_capture': return { width: 1440, height: 900, mode: query.has('quick') ? 'quick' : 'editor' };
       case 'text_extractor_capture_selection': {

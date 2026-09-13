@@ -2,31 +2,33 @@ const invoke = window.__TAURI__.core.invoke;
 const $ = (selector) => document.querySelector(selector);
 const section = $("#text-extractor-section");
 const enabled = $("#text-extractor-enabled");
-const shortcutButton = $("#extractor-shortcut");
+const shortcutButtons = { shortcut: $("#extractor-shortcut"), quickShortcut: $("#extractor-quick-shortcut") };
 const keySection = $("#openai-key-section");
 const keyInput = $("#openai-api-key");
 const keySave = $("#openai-key-save");
 const keyError = $("#openai-key-error");
 const settingsError = $("#extractor-settings-error");
 let state;
-let recording = false;
+let recording = null;
 let busy = false;
 
 function displayShortcut(value) {
-  return value.replace(/Key(?=[A-Z](?:\+|$))/g, "").replace(/Digit(?=\d)/g, "")
-    .replace(/Control/g, "Ctrl").replace(/Super|Meta/g, "Win").split("+").join(" + ");
+  return value.split("+").map((part) => {
+    const labels = { control: "Ctrl", ctrl: "Ctrl", super: "Win", meta: "Win", shift: "Shift", alt: "Alt" };
+    return labels[part.toLowerCase()] || part.replace(/^Key(?=[A-Z]$)/, "").replace(/^Digit(?=\d$)/, "");
+  }).join(" + ");
 }
 function error(reason) { settingsError.textContent = String(reason); settingsError.hidden = false; $("#tab-advanced").click(); }
 function lock(value) {
   busy = value;
   enabled.disabled = value;
-  shortcutButton.disabled = value;
+  for (const button of Object.values(shortcutButtons)) button.disabled = value;
   keyInput.disabled = value;
   keySave.disabled = value || !keyInput.value.trim();
 }
 function render() {
   enabled.checked = state.enabled;
-  shortcutButton.textContent = displayShortcut(state.shortcut);
+  for (const [field, button] of Object.entries(shortcutButtons)) button.textContent = displayShortcut(state[field]);
   $("#extractor-key-status").textContent = state.apiKeyConfigured ? "Shared key saved securely. Advanced and Translate are available." : "No key saved. Basic text recognition is available.";
   keyInput.placeholder = state.apiKeyConfigured ? "Enter a replacement key" : "sk-…";
   keySave.textContent = state.apiKeyConfigured ? "Update key" : "Save key";
@@ -37,10 +39,10 @@ function render() {
   else settingsError.hidden = true;
 }
 async function load() { state = await invoke("text_extractor_state"); render(); }
-async function save(nextEnabled, nextShortcut = state.shortcut) {
+async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcut = state.quickShortcut) {
   lock(true);
   settingsError.hidden = true;
-  try { await invoke("set_text_extractor", { enabled: nextEnabled, shortcutValue: nextShortcut }); await load(); }
+  try { await invoke("set_text_extractor", { enabled: nextEnabled, shortcutValue: nextShortcut, quickShortcutValue: nextQuickShortcut }); await load(); }
   catch (reason) { render(); error(reason); }
   finally { lock(false); }
 }
@@ -58,39 +60,45 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
   } catch (reason) { keyInput.value = ""; keyError.textContent = String(reason); keyError.hidden = false; }
   finally { lock(false); }
 });
-shortcutButton.addEventListener("click", () => {
-  shortcutButton.focus();
-  recording = true;
-  shortcutButton.textContent = "Press a combination…";
-  shortcutButton.setAttribute("aria-pressed", "true");
-  invoke("record_text_extractor_shortcut", { recording: true }).catch((reason) => { stopRecording(); error(reason); });
-});
 function stopRecording() {
   if (recording) invoke("record_text_extractor_shortcut", { recording: false }).catch(error);
-  recording = false;
-  shortcutButton.setAttribute("aria-pressed", "false");
-  if (state) shortcutButton.textContent = displayShortcut(state.shortcut);
-}
-shortcutButton.addEventListener("blur", stopRecording);
-shortcutButton.addEventListener("keydown", (event) => {
-  if (!recording) return;
-  event.preventDefault();
-  event.stopPropagation();
-  if (event.key === "Escape") { stopRecording(); return; }
-  if (/^(Control|Shift|Alt|Meta)/.test(event.code)) return;
-  if (!event.ctrlKey && !event.altKey && !event.metaKey) { error("Include Ctrl, Alt, or Windows in your shortcut."); return; }
-  if (!/^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-9]|2[0-4])|Space|Arrow(Up|Down|Left|Right))$/.test(event.code)) {
-    error("Use a letter, number, function key, arrow, or Space."); return;
+  recording = null;
+  for (const [field, button] of Object.entries(shortcutButtons)) {
+    button.setAttribute("aria-pressed", "false");
+    if (state) button.textContent = displayShortcut(state[field]);
   }
-  const combination = [event.ctrlKey && "Control", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super", event.code].filter(Boolean).join("+");
+}
+function acceptShortcut(combination) {
+  const field = recording;
+  if (!field) return;
   stopRecording();
-  save(state.enabled, combination);
-});
+  save(state.enabled, field === "shortcut" ? combination : state.shortcut,
+    field === "quickShortcut" ? combination : state.quickShortcut);
+}
+for (const [field, button] of Object.entries(shortcutButtons)) {
+  button.addEventListener("click", () => {
+    button.focus();
+    recording = field;
+    button.textContent = "Press a combination…";
+    button.setAttribute("aria-pressed", "true");
+    invoke("record_text_extractor_shortcut", { recording: true }).catch((reason) => { stopRecording(); error(reason); });
+  });
+  button.addEventListener("blur", stopRecording);
+  button.addEventListener("keydown", (event) => {
+    if (recording !== field) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Escape") { stopRecording(); return; }
+    if (/^(Control|Shift|Alt|Meta)/.test(event.code)) return;
+    if (!event.ctrlKey && !event.altKey && !event.metaKey) { error("Include Ctrl, Alt, or Windows in your shortcut."); return; }
+    if (!/^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-9]|2[0-4])|Space|Arrow(Up|Down|Left|Right))$/.test(event.code)) {
+      error("Use a letter, number, function key, arrow, or Space."); return;
+    }
+    acceptShortcut([event.ctrlKey && "Control", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super", event.code].filter(Boolean).join("+"));
+  });
+}
 window.addEventListener("pulse-extractor-shortcut", (event) => {
-  if (!recording) return;
-  stopRecording();
-  if (event.detail === "Control+Super+Shift+KeyT") { error("Ctrl + Win + Shift + T is reserved for quick copy. Choose another editor shortcut."); return; }
-  if (event.detail === "Super+Shift+KeyT") save(state.enabled, event.detail);
+  if (typeof event.detail === "string") acceptShortcut(event.detail);
 });
 window.addEventListener("focus", () => {
   if (!section.hidden && !busy && !recording) load().catch(error);
