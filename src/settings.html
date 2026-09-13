@@ -43,25 +43,24 @@
           <div class="extractor-settings-card">
             <label class="setting-row extractor-toggle-row">
               <span class="setting-copy">
-                <span class="setting-feature-icon extractor-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="3" y="3" width="26" height="26" rx="9" fill="currentColor"/><path d="M10 12V9h12v3M16 9v14m-3 0h6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                <span class="setting-text"><strong>Extract text from your screen</strong><small>Select an area. Edit and copy its text.</small></span>
+                <span class="setting-feature-icon extractor-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><path d="M10 12V9h12v3M16 9v14m-3 0h6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <span class="setting-text"><strong>Extract text from your screen</strong><small>Select an area to copy its text.</small></span>
               </span>
               <input id="text-extractor-enabled" type="checkbox" disabled />
             </label>
             <div class="extractor-detail-row"><span>Quick copy</span><button id="extractor-quick-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Quick copy shortcut">Ctrl + Win + Shift + T</button></div>
             <div class="extractor-detail-row"><span>Open editor</span><button id="extractor-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Open editor shortcut">Win + Shift + T</button></div>
-            <p id="extractor-availability" class="extractor-note" hidden></p>
             <p id="extractor-settings-error" class="extractor-error" role="alert" hidden></p>
           </div>
         </section>
         <section id="openai-key-section" class="settings-group" aria-labelledby="openai-key-title" hidden>
-          <h2 id="openai-key-title">Shared API key</h2>
+          <h2 id="openai-key-title">API key</h2>
           <form id="openai-key-form" class="api-key-card">
             <div class="api-key-heading">
               <img class="api-key-icon" src="translation-icons/key-icon-yellow.svg" alt="" aria-hidden="true" />
               <div class="api-key-copy">
                 <label for="openai-api-key">OpenAI API key</label>
-                <small id="extractor-key-status" role="status" aria-live="polite">Checking secure storage…</small>
+                <small id="extractor-key-status" role="status" aria-live="polite">Loading…</small>
               </div>
             </div>
             <div class="api-key-controls">
@@ -74,7 +73,6 @@
                 <button id="openai-key-remove" class="settings-button" type="button" hidden>Remove</button>
               </div>
             </div>
-            <small class="api-key-help">Shared with Live Translate. Save checks the key with a small OpenAI request before storing it. Basic works without a key.</small>
             <p id="openai-key-error" class="extractor-error" role="alert" hidden></p>
           </form>
         </section>
