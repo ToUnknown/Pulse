@@ -493,15 +493,25 @@ body { overflow-y: auto; }
 .extractor-note { margin: 0; padding: 0 16px 14px; color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
 .extractor-error { color: var(--error); font-size: 12px; line-height: 1.4; }
 #extractor-settings-error { margin: 0; padding: 0 16px 14px; }
-#openai-key-dialog { width: min(380px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); color: inherit; box-shadow: var(--menu-shadow); }
-#openai-key-dialog::backdrop { background: #0a102b66; backdrop-filter: blur(5px); }
-.key-dialog-icon { display: block; color: #829cff; font-size: 30px; margin-bottom: 12px; }
-#openai-key-dialog h3 { font-size: 19px; letter-spacing: -.4px; margin: 0 0 10px; font-weight: 600; }
-#openai-key-dialog p { font-size: 13px; line-height: 1.5; color: var(--secondary-text); margin: 0 0 20px; }
-#openai-key-dialog label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
-#openai-api-key { width: 100%; padding: 10px 12px; border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-background); color: inherit; font: inherit; }
-#openai-key-dialog small { display: block; color: var(--secondary-text); font-size: 11px; line-height: 1.5; margin-top: 10px; }
-#openai-key-dialog .extractor-error { margin-top: 12px; color: var(--error); }
-.key-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
-.settings-button-primary { background: #316be6; border-color: #316be6; color: white; }
-.settings-button-primary:hover { background: #285fce; }
+/* Settings pages share the same controls and saved state. */
+main { max-width: 720px; margin: 0 auto; }
+.settings-tabs { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; margin-bottom: 28px; background: var(--control-hover); border: 1px solid var(--border); border-radius: 999px; }
+.settings-tabs button { position: relative; padding: 10px 8px; border: 0; border-radius: 999px; background: transparent; color: var(--secondary-text); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; transition: color 180ms; }
+.settings-tabs button[aria-selected="true"] { color: inherit; }
+.settings-tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.settings-tab-slider { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); background: var(--surface); border-radius: 999px; box-shadow: 0 2px 6px #00000012; transform: translateX(calc(var(--page-index) * 100%)); transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
+.settings-page { outline: none; animation: settings-page-in 220ms ease-out; }
+.settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: 14px; }
+.api-key-card { border: 1px solid var(--border); border-radius: 14px; padding: 18px 16px; background: var(--surface); }
+.api-key-card label { font-size: 13px; font-weight: 600; }
+.api-key-card p { color: var(--secondary-text); font-size: 12px; line-height: 1.5; margin: 8px 0 14px; }
+.api-key-field { display: flex; gap: 8px; }
+#openai-api-key { flex: 1; min-width: 0; width: 100%; padding: 10px 12px; border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; }
+.api-key-field button { flex: none; }
+.api-key-card small { display: block; color: var(--secondary-text); font-size: 11px; line-height: 1.5; margin-top: 12px; }
+.api-key-card .extractor-error { color: var(--error); margin-bottom: 0; }
+.page-note { color: var(--secondary-text); font-size: 13px; line-height: 1.6; }
+@keyframes settings-page-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .settings-tabs *, .settings-page { animation: none !important; transition: none !important; }
+}

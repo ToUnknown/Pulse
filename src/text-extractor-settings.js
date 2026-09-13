@@ -3,14 +3,12 @@ const $ = (selector) => document.querySelector(selector);
 const section = $("#text-extractor-section");
 const enabled = $("#text-extractor-enabled");
 const shortcutButton = $("#extractor-shortcut");
-const keyButton = $("#extractor-key");
-const dialog = $("#openai-key-dialog");
+const keySection = $("#openai-key-section");
 const keyInput = $("#openai-api-key");
 const keySave = $("#openai-key-save");
 const keyError = $("#openai-key-error");
 const settingsError = $("#extractor-settings-error");
 let state;
-let enableAfterSave = false;
 let recording = false;
 let busy = false;
 
@@ -23,13 +21,18 @@ function lock(value) {
   busy = value;
   enabled.disabled = value;
   shortcutButton.disabled = value;
-  keyButton.disabled = value;
+  keyInput.disabled = value;
+  keySave.disabled = value || !keyInput.value.trim();
 }
 function render() {
   enabled.checked = state.enabled;
   shortcutButton.textContent = displayShortcut(state.shortcut);
-  $("#extractor-key-status").textContent = state.apiKeyConfigured ? "Shared OpenAI key saved" : "OpenAI API key required";
-  keyButton.textContent = state.apiKeyConfigured ? "Update key" : "Add key";
+  $("#extractor-key-status").textContent = state.apiKeyConfigured ? "Shared key saved securely. Advanced and Translate are available." : "No key saved. Basic text recognition is available.";
+  keyInput.placeholder = state.apiKeyConfigured ? "Enter a replacement key" : "sk-…";
+  keySave.textContent = state.apiKeyConfigured ? "Update key" : "Save key";
+  const availability = $("#extractor-availability");
+  availability.hidden = !state.enabled;
+  availability.textContent = state.apiKeyConfigured ? "Basic is the default. Advanced and Translate are ready to use." : "Basic works on your PC. Add an API key below to unlock Advanced and Translate.";
   if (state.error) error(state.error);
 }
 async function load() { state = await invoke("text_extractor_state"); render(); }
@@ -40,39 +43,20 @@ async function save(nextEnabled, nextShortcut = state.shortcut) {
   catch (reason) { render(); error(reason); }
   finally { lock(false); }
 }
-function openKeyDialog(enable) {
-  enableAfterSave = enable;
-  enabled.checked = state.enabled;
-  keyInput.value = "";
-  keyError.hidden = true;
-  keySave.textContent = enable ? "Save & enable" : "Save key";
-  dialog.showModal();
-  keyInput.focus();
-}
-enabled.addEventListener("change", () => {
-  if (enabled.checked && !state.apiKeyConfigured) openKeyDialog(true);
-  else save(enabled.checked);
-});
-keyButton.addEventListener("click", () => openKeyDialog(false));
-$("#openai-key-cancel").addEventListener("click", () => dialog.close());
-dialog.addEventListener("close", () => { keyInput.value = ""; enableAfterSave = false; });
+enabled.addEventListener("change", () => save(enabled.checked));
+keyInput.addEventListener("input", () => { keySave.disabled = busy || !keyInput.value.trim(); });
 $("#openai-key-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const shouldEnable = enableAfterSave;
-  keySave.disabled = true;
-  keyInput.disabled = true;
-  $("#openai-key-cancel").disabled = true;
+  if (busy || !keyInput.value.trim()) return;
+  lock(true);
   keyError.hidden = true;
   try {
     await invoke("save_openai_api_key", { apiKey: keyInput.value });
     keyInput.value = "";
     await load();
-    dialog.close();
-    if (shouldEnable) await save(true);
   } catch (reason) { keyInput.value = ""; keyError.textContent = String(reason); keyError.hidden = false; }
-  finally { keySave.disabled = false; keyInput.disabled = false; $("#openai-key-cancel").disabled = false; }
+  finally { lock(false); }
 });
-dialog.addEventListener("cancel", (event) => { if (keySave.disabled) event.preventDefault(); });
 shortcutButton.addEventListener("click", () => {
   shortcutButton.focus();
   recording = true;
@@ -102,13 +86,14 @@ shortcutButton.addEventListener("keydown", (event) => {
   save(state.enabled, combination);
 });
 window.addEventListener("focus", () => {
-  if (!section.hidden && !busy && !recording && !dialog.open) load().catch(error);
+  if (!section.hidden && !busy && !recording) load().catch(error);
 });
 try {
   const settings = await invoke("settings_state");
   if (settings.platform === "windows") {
     section.hidden = false;
+    keySection.hidden = false;
     await load();
     lock(false);
-  }
+  } else { $("#advanced-unavailable").hidden = false; }
 } catch (reason) { if (!section.hidden) error(reason); }
