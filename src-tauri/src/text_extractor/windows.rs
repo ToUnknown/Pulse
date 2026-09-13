@@ -103,6 +103,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes).unwrap_or_default(),
         Err(_) => Preferences::default(),
     };
+    // Migrate legacy defaults, including the chord now reserved for Quick Copy.
     if shortcut(&preferences.shortcut).is_ok_and(|key| {
         key == shortcut("Control+Shift+E").unwrap()
             || key == shortcut(protocol::QUICK_SHORTCUT).unwrap()
@@ -272,7 +273,8 @@ pub async fn set_text_extractor(
     let next_shortcut = shortcut(&shortcut_value)?;
     if next_shortcut == shortcut(protocol::QUICK_SHORTCUT)? {
         return Err(
-            "Win + Shift + T is reserved for quick copy. Choose another editor shortcut.".into(),
+            "Ctrl + Win + Shift + T is reserved for quick copy. Choose another editor shortcut."
+                .into(),
         );
     }
     let state = app.state::<TextExtractor>();

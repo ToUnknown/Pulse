@@ -89,8 +89,8 @@ shortcutButton.addEventListener("keydown", (event) => {
 window.addEventListener("pulse-extractor-shortcut", (event) => {
   if (!recording) return;
   stopRecording();
-  if (event.detail === "Super+Shift+KeyT") { error("Win + Shift + T is reserved for quick copy. Choose another editor shortcut."); return; }
-  if (event.detail === "Control+Super+Shift+KeyT") save(state.enabled, event.detail);
+  if (event.detail === "Control+Super+Shift+KeyT") { error("Ctrl + Win + Shift + T is reserved for quick copy. Choose another editor shortcut."); return; }
+  if (event.detail === "Super+Shift+KeyT") save(state.enabled, event.detail);
 });
 window.addEventListener("focus", () => {
   if (!section.hidden && !busy && !recording) load().catch(error);

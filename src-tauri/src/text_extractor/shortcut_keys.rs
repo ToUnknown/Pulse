@@ -90,10 +90,10 @@ impl ShortcutKeys {
         }
         if (enabled || recording) && self.win != 0 && self.shift != 0 && self.alt == 0 {
             let action = match (self.control != 0, recording) {
-                (false, true) => Action::RecordQuick,
-                (true, true) => Action::RecordEditor,
-                (false, false) => Action::QuickCopy,
-                (true, false) if editor_default => Action::Editor,
+                (false, true) => Action::RecordEditor,
+                (true, true) => Action::RecordQuick,
+                (true, false) => Action::QuickCopy,
+                (false, false) if editor_default => Action::Editor,
                 _ => return Decision::Pass,
             };
             self.captured = true;
@@ -115,18 +115,34 @@ mod tests {
         key(&mut keys, Key::ShiftRight, true);
         assert_eq!(
             key(&mut keys, Key::T, true),
-            Decision::Suppress(Some(Action::QuickCopy))
+            Decision::Suppress(Some(Action::Editor))
         );
         assert_eq!(key(&mut keys, Key::T, true), Decision::Suppress(None));
         assert_eq!(key(&mut keys, Key::T, false), Decision::Suppress(None));
         key(&mut keys, Key::ControlLeft, true);
         assert_eq!(
             key(&mut keys, Key::T, true),
-            Decision::Suppress(Some(Action::Editor))
+            Decision::Suppress(Some(Action::QuickCopy))
         );
         key(&mut keys, Key::T, false);
         key(&mut keys, Key::AltLeft, true);
         assert_eq!(key(&mut keys, Key::T, true), Decision::Pass);
+    }
+    #[test]
+    fn custom_editor_shortcut_keeps_control_chord_reserved_for_quick_copy() {
+        let mut keys = ShortcutKeys::default();
+        key(&mut keys, Key::WinLeft, true);
+        key(&mut keys, Key::ShiftLeft, true);
+        assert_eq!(
+            keys.update(Key::T, true, true, false, false),
+            Decision::Pass
+        );
+        key(&mut keys, Key::T, false);
+        key(&mut keys, Key::ControlRight, true);
+        assert_eq!(
+            keys.update(Key::T, true, true, false, false),
+            Decision::Suppress(Some(Action::QuickCopy))
+        );
     }
     #[test]
     fn disabled_and_unrelated_keys_pass_through_and_keyup_is_balanced() {
@@ -157,13 +173,13 @@ mod tests {
         key(&mut keys, Key::ShiftLeft, true);
         assert_eq!(
             keys.update(Key::T, true, false, true, true),
-            Decision::Suppress(Some(Action::RecordQuick))
+            Decision::Suppress(Some(Action::RecordEditor))
         );
         key(&mut keys, Key::T, false);
         key(&mut keys, Key::ControlRight, true);
         assert_eq!(
             keys.update(Key::T, true, false, true, true),
-            Decision::Suppress(Some(Action::RecordEditor))
+            Decision::Suppress(Some(Action::RecordQuick))
         );
     }
 
@@ -175,13 +191,13 @@ mod tests {
         key(&mut keys, Key::ControlLeft, true);
         key(&mut keys, Key::T, true);
         // The focused selector handled key-up. The hook must recover before
-        // another chord, including changing from the editor to Quick Copy.
+        // another chord, including changing from Quick Copy to the editor.
         keys.resynchronize([]);
         key(&mut keys, Key::WinLeft, true);
         key(&mut keys, Key::ShiftLeft, true);
         assert_eq!(
             key(&mut keys, Key::T, true),
-            Decision::Suppress(Some(Action::QuickCopy))
+            Decision::Suppress(Some(Action::Editor))
         );
         keys.resynchronize([Key::WinLeft, Key::ShiftLeft, Key::T]);
         assert_eq!(key(&mut keys, Key::T, true), Decision::Suppress(None));

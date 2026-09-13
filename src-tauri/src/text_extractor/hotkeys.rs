@@ -90,7 +90,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), String> {
             match action {
                 Action::RecordQuick | Action::RecordEditor => {
                     if let Some(window) = app.get_webview_window("settings") {
-                        let shortcut = if action == Action::RecordQuick { "Super+Shift+KeyT" } else { "Control+Super+Shift+KeyT" };
+                        let shortcut = if action == Action::RecordQuick { "Control+Super+Shift+KeyT" } else { "Super+Shift+KeyT" };
                         let _ = window.eval(format!("window.dispatchEvent(new CustomEvent('pulse-extractor-shortcut', {{detail: '{shortcut}'}}))"));
                     }
                 }

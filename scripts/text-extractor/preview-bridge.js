@@ -2,7 +2,7 @@
   const query = new URLSearchParams(location.search);
   const scenario = query.get('scenario') || 'success';
   const text = 'A little space to think.\n\nGood ideas often begin with something small: a line in a book, a passing thought, a few words worth keeping.\n\nMake room for what matters.';
-  let settings = { enabled: false, shortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null };
+  let settings = { enabled: false, shortcut: 'Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null };
   const calls = [];
   window.__preview = { calls, copied: null, closed: false };
   const screenshot = () => {
