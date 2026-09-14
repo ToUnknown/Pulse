@@ -1,7 +1,7 @@
 use super::{
+    session::{self, CaptureMode},
     shortcut_keys::{Action, Bindings, Decision, Key, ShortcutKeys},
     shortcut_worker::{self, Control},
-    windows::{self, CaptureMode},
 };
 use std::{
     cell::RefCell,
@@ -83,7 +83,7 @@ pub(super) fn dispatch(app: &tauri::AppHandle, action: Action) {
             } else {
                 "Super+Shift+KeyT"
             };
-            windows::report_recorded_shortcut(app, shortcut);
+            session::report_recorded_shortcut(app, shortcut);
         }
         Action::QuickCopy | Action::Editor => {
             let app = app.clone();
@@ -93,8 +93,8 @@ pub(super) fn dispatch(app: &tauri::AppHandle, action: Action) {
                 } else {
                     CaptureMode::Editor
                 };
-                if let Err(error) = windows::start(&app, mode).await {
-                    windows::report_error(&app, error);
+                if let Err(error) = session::start(&app, mode).await {
+                    session::report_error(&app, error);
                 }
             });
         }

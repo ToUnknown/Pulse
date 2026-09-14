@@ -1,6 +1,6 @@
+use super::super::local_ocr::ModelStatus;
 use super::ocr::Ocr;
 use image::RgbaImage;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
@@ -69,26 +69,6 @@ fn connection_error(error: reqwest::Error) -> DownloadError {
     DownloadError::Remote(reason.into())
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelStatus {
-    phase: &'static str,
-    model_index: usize,
-    downloaded_bytes: u64,
-    total_bytes: Option<u64>,
-    error: Option<String>,
-}
-impl ModelStatus {
-    fn new(phase: &'static str) -> Self {
-        Self {
-            phase,
-            model_index: 0,
-            downloaded_bytes: 0,
-            total_bytes: None,
-            error: None,
-        }
-    }
-}
 struct Setup {
     enabled: bool,
     cancel: CancellationToken,

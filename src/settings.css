@@ -613,7 +613,7 @@ select,
 #extractor-key-status[data-tone="error"] { color: var(--error); }
 #openai-api-key[aria-invalid="true"] { border-color: var(--error); box-shadow: inset 0 0 0 1px var(--error); }
 
-/* The Windows panel owns its chrome; transparent margins leave room for its shadow. */
+/* The floating panel owns its chrome; transparent margins leave room for its shadow. */
 .settings-header, .settings-footer { display: none; }
 :root[data-floating="true"], :root[data-floating="true"] body { background: transparent; overflow: hidden; }
 :root[data-floating="true"] body { padding: 12px; }

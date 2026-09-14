@@ -1,8 +1,7 @@
 //! Private, inherited pipes carry shortcut settings and actions, never typed text.
 use super::{
-    hotkeys,
+    hotkeys, session,
     shortcut_keys::{Action, Bindings},
-    windows,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -132,7 +131,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> Result<(), String> {
             }
             let _ = stop.send(None);
             AVAILABLE.store(false, Ordering::Release);
-            windows::shortcuts_stopped(&app);
+            session::shortcuts_stopped(&app);
         })
         .map_err(|_| "Could not receive Text Extractor shortcuts.")?;
 

@@ -19,20 +19,21 @@ const ocrProgress = $("#ocr-setup-progress");
 const ocrRetry = $("#ocr-setup-retry");
 let ocrPoll;
 let state;
+let platform = "windows";
 let recording = null;
 let busy = false;
 let checkingKey = false;
 
 function displayShortcut(value) {
   return value.split("+").map((part) => {
-    const labels = { control: "Ctrl", ctrl: "Ctrl", super: "Win", meta: "Win", shift: "Shift", alt: "Alt" };
+    const labels = { control: "Ctrl", ctrl: "Ctrl", super: platform === "macos" ? "⌘" : "Win", meta: platform === "macos" ? "⌘" : "Win", shift: "Shift", alt: platform === "macos" ? "Option" : "Alt" };
     return labels[part.toLowerCase()] || part.replace(/^Key(?=[A-Z]$)/, "").replace(/^Digit(?=\d$)/, "");
   }).join(" + ");
 }
 function error(reason) { settingsError.textContent = String(reason); settingsError.hidden = false; $("#tab-advanced").click(); }
 function lock(value) {
   busy = value;
-  enabled.disabled = value;
+  enabled.disabled = value || state?.captureAccess?.supported === false;
   for (const button of Object.values(shortcutButtons)) button.disabled = value;
   keyInput.disabled = value;
   keyRemove.disabled = value;
@@ -57,6 +58,11 @@ function renderModes() {
 }
 function render() {
   enabled.checked = state.enabled;
+  const access = state.captureAccess;
+  $("#capture-access").hidden = platform !== "macos" || !state.enabled || access?.granted;
+  $("#extractor-description").textContent = platform === "macos"
+    ? (access?.supported === false ? "Requires macOS 14 or later." : "Offline. Uses built-in Apple text recognition.")
+    : "Offline. Downloads a small model on first use.";
   setExpanded(state.enabled);
   renderOcrStatus(state.localOcr);
   renderModes();
@@ -212,7 +218,7 @@ for (const [field, button] of Object.entries(shortcutButtons)) {
     event.stopPropagation();
     if (event.key === "Escape") { stopRecording(); return; }
     if (/^(Control|Shift|Alt|Meta)/.test(event.code)) return;
-    if (!event.ctrlKey && !event.altKey && !event.metaKey) { error("Include Ctrl, Alt, or Windows in your shortcut."); return; }
+    if (!event.ctrlKey && !event.altKey && !event.metaKey) { error(platform === "macos" ? "Include Control, Option, or Command in your shortcut." : "Include Ctrl, Alt, or Windows in your shortcut."); return; }
     if (!/^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-9]|2[0-4])|Space|Arrow(Up|Down|Left|Right))$/.test(event.code)) {
       error("Use a letter, number, function key, arrow, or Space."); return;
     }
@@ -227,7 +233,8 @@ window.addEventListener("focus", () => {
 });
 try {
   const settings = await invoke("settings_state");
-  if (settings.platform === "windows") {
+  platform = settings.platform;
+  if (["windows", "macos"].includes(platform)) {
     section.hidden = false;
     keySection.hidden = false;
     await load();
@@ -235,3 +242,11 @@ try {
     pollOcrStatus();
   } else { $("#advanced-unavailable").hidden = false; }
 } catch (reason) { if (!section.hidden) error(reason); }
+
+$("#capture-access-request").addEventListener("click", async () => {
+  const button = $("#capture-access-request");
+  button.disabled = true;
+  try { await invoke("request_text_extractor_access"); await load(); }
+  catch (reason) { $("#capture-access-label").textContent = String(reason); button.textContent = "Retry"; }
+  finally { button.disabled = false; }
+});

@@ -1,6 +1,6 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod openai_credentials;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod text_extractor;
 
 use tauri::{
@@ -781,7 +781,6 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window.show()?;
         window
     } else {
-        #[cfg(target_os = "windows")]
         let window_height = app
             .primary_monitor()?
             .map(|monitor| {
@@ -789,8 +788,6 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
                     .clamp(360.0, 608.0)
             })
             .unwrap_or(608.0);
-        #[cfg(target_os = "macos")]
-        let window_height = 288.0;
 
         let builder =
             WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
@@ -798,7 +795,6 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
                 .resizable(false)
                 .maximizable(false)
                 .minimizable(false);
-        #[cfg(target_os = "windows")]
         let builder = builder
             .inner_size(580.0, window_height)
             .decorations(false)
@@ -806,17 +802,12 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
             .shadow(false)
             .visible(false)
             .initialization_script("window.__PULSE_FLOATING_SETTINGS__ = true;");
-        #[cfg(target_os = "macos")]
-        let builder = builder.inner_size(460.0, window_height);
+
         builder.build()?
     };
 
-    #[cfg(target_os = "windows")]
-    if let Ok(theme) = visual_windows_theme(app) {
-        let _ = window.set_theme(Some(match theme {
-            WindowsTheme::Light => tauri::Theme::Light,
-            WindowsTheme::Dark => tauri::Theme::Dark,
-        }));
+    if let Ok(theme) = visual_app_theme(app) {
+        let _ = window.set_theme(Some(theme));
     }
     let _ = window.eval("window.dispatchEvent(new Event('pulse-settings-open'))");
     if window.is_visible()? {
@@ -826,7 +817,7 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn settings_window_action(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
     if window.label() != "settings" {
@@ -1218,7 +1209,13 @@ impl WindowsAppearanceController {
     }
 
     fn update_visuals(&self, previous_mode: ThemeMode, next_mode: ThemeMode, theme: WindowsTheme) {
-        text_extractor::appearance_changed(&self.app, theme);
+        text_extractor::appearance_changed(
+            &self.app,
+            match theme {
+                WindowsTheme::Light => tauri::Theme::Light,
+                WindowsTheme::Dark => tauri::Theme::Dark,
+            },
+        );
         if let Err(error) = set_appearance_selection(&self.menu_items, previous_mode, next_mode) {
             eprintln!("appearance menu icon update failed: {error}");
         }
@@ -1399,6 +1396,21 @@ fn visual_windows_theme(app: &tauri::AppHandle) -> Result<WindowsTheme, String> 
     }
 }
 
+/// Pulse's effective appearance, independent of the operating system adapter.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn visual_app_theme(app: &tauri::AppHandle) -> Result<tauri::Theme, String> {
+    #[cfg(target_os = "windows")]
+    return visual_windows_theme(app).map(|theme| match theme {
+        WindowsTheme::Light => tauri::Theme::Light,
+        WindowsTheme::Dark => tauri::Theme::Dark,
+    });
+    #[cfg(target_os = "macos")]
+    return visual_macos_appearance(app).map(|theme| match theme {
+        MacosAppearance::Light => tauri::Theme::Light,
+        MacosAppearance::Dark => tauri::Theme::Dark,
+    });
+}
+
 #[cfg(target_os = "macos")]
 fn current_macos_appearance() -> MacosAppearance {
     let main_thread =
@@ -1465,6 +1477,9 @@ fn start_macos_appearance_watcher(app: tauri::AppHandle) {
         };
 
         if changed {
+            if let Ok(theme) = visual_app_theme(&app) {
+                text_extractor::appearance_changed(&app, theme);
+            }
             if let Err(error) = refresh_tray_icon(&app, &settings.mode, &settings.update_status) {
                 eprintln!("macOS appearance tray icon update failed: {error}");
             }
@@ -1614,14 +1629,16 @@ pub fn run() {
     }
     let builder = tauri::Builder::default();
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
         settings_window_action,
         set_start_at_login,
         set_tray_icon_mode,
+        #[cfg(target_os = "windows")]
         set_auto_schedule,
         text_extractor::text_extractor_state,
+        text_extractor::request_text_extractor_access,
         text_extractor::local_ocr_state,
         text_extractor::retry_local_ocr_setup,
         text_extractor::save_openai_api_key,
@@ -1642,13 +1659,6 @@ pub fn run() {
         text_extractor::close_text_extractor
     ]);
 
-    #[cfg(target_os = "macos")]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        settings_state,
-        set_start_at_login,
-        set_tray_icon_mode
-    ]);
-
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.plugin(tauri_plugin_autostart::init(
         MacosLauncher::LaunchAgent,
@@ -1663,12 +1673,10 @@ pub fn run() {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.on_window_event(|window, event| {
-        #[cfg(target_os = "windows")]
         if matches!(event, tauri::WindowEvent::Destroyed) {
             text_extractor::window_destroyed(window.app_handle(), window.label());
         }
         if window.label() == "settings" {
-            #[cfg(target_os = "windows")]
             if matches!(
                 event,
                 tauri::WindowEvent::Focused(false) | tauri::WindowEvent::CloseRequested { .. }
@@ -1686,8 +1694,6 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            #[cfg(target_os = "windows")]
-            text_extractor::install(app.handle())?;
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -1933,6 +1939,9 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            text_extractor::install(app.handle())?;
+
             #[cfg(target_os = "macos")]
             start_macos_appearance_watcher(app.handle().clone());
 
@@ -1964,7 +1973,7 @@ pub fn run() {
             // The selector may be the only Tauri window. Keep the tray app and
             // shortcut hook alive while its replacement is prepared. Explicit
             // Quit and updater restarts have an exit code and still go through.
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::ExitRequested {
                 code: None, api, ..
             } = _event
