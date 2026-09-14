@@ -236,6 +236,15 @@ async function run() {
       cardWindow = (await state()).windows.find(w => w.handle === cardWindow.handle);
       return cardWindow && cardWindow.left === monitor.left && cardWindow.top === monitor.top && cardWindow.width === monitor.width && cardWindow.height === monitor.height;
     });
+    // Windows can resize the native frame before Edge finishes its web viewport
+    // transition. Wait for both coordinate systems before placing a selection.
+    let viewport;
+    try {
+      await until('fullscreen card viewport', async () => {
+        viewport = await cards.evaluate('({ width:innerWidth,height:innerHeight,dpr:devicePixelRatio,outerWidth,outerHeight })');
+        return Math.abs(viewport.width * viewport.dpr - monitor.width) <= 2 && Math.abs(viewport.height * viewport.dpr - monitor.height) <= 2;
+      }, 5000);
+    } finally { report.viewport = viewport; }
     console.log(`Running ${report.results.length} native Basic OCR cases. F8 stops the run.`);
     for (const result of report.results) {
       const fixture = allFixtures.find(f => f.id === result.fixtureId);
@@ -248,7 +257,7 @@ async function run() {
         const rectangle = await cards.evaluate(`window.showOcrCard(${JSON.stringify(fixture.id)}, ${JSON.stringify(result.theme)})`);
         report.dpr = rectangle.dpr;
         if (rectangle.overflow || rectangle.x < 0 || rectangle.y < 0 || rectangle.x + rectangle.width > rectangle.viewportWidth || rectangle.y + rectangle.height > rectangle.viewportHeight) throw new Error('Fixture does not fit this desktop. Use a larger display or lower display scaling.');
-        if (Math.abs(rectangle.viewportWidth * rectangle.dpr - monitor.width) > 2 || Math.abs(rectangle.viewportHeight * rectangle.dpr - monitor.height) > 2) throw new Error('Browser/native DPI geometry mismatch. Selection is blocked rather than guessing screen coordinates.');
+        if (Math.abs(rectangle.viewportWidth * rectangle.dpr - monitor.width) > 2 || Math.abs(rectangle.viewportHeight * rectangle.dpr - monitor.height) > 2) throw new Error(`Browser/native DPI geometry mismatch: ${JSON.stringify(rectangle)} versus ${JSON.stringify(monitor)}. Selection is blocked rather than guessing screen coordinates.`);
         const crop = { x: Math.round(monitor.left + rectangle.x * rectangle.dpr), y: Math.round(monitor.top + rectangle.y * rectangle.dpr), width: Math.round(rectangle.width * rectangle.dpr), height: Math.round(rectangle.height * rectangle.dpr) };
         result.crop = crop;
         await bridge.call('foreground', { handle: cardWindow.handle });
@@ -295,7 +304,7 @@ async function run() {
         await bridge.call('drag', { pid: pulse.pid, x1: fixture.reverseDrag ? right : left, y1: fixture.reverseDrag ? bottom : top, x2: fixture.reverseDrag ? left : right, y2: fixture.reverseDrag ? top : bottom });
         const released = performance.now();
         if (result.mode === 'quick') {
-          let observedNotice = false;
+          let observedNotice = false, observedSuccess = false;
           const outcome = await until('Quick Copy completion or No text found notice', async () => {
             const desktop = await state();
             const notice = desktop.windows.find(w => w.pid === pulse.pid && w.title === 'Pulse Quick Copy Notice');
@@ -303,12 +312,15 @@ async function run() {
               const noticeTarget = (await targets(pulsePort)).find(t => t.url.includes('quick-copy-notice.html'));
               if (noticeTarget) {
                 const noticePage = await connect(noticeTarget);
-                observedNotice = await noticePage.evaluate('document.body.innerText.includes("No text found")');
+                const noticeState = await noticePage.evaluate(`(() => { const n = document.querySelector('.notice'); return { text:n.textContent,kind:n.dataset.kind,background:getComputedStyle(n).backgroundColor }; })()`);
+                observedNotice = noticeState.text === 'No text found';
+                observedSuccess = noticeState.text === 'Text copied' && noticeState.kind === 'success';
+                result.noticeStyle = noticeState;
                 result.notice = { left: notice.left, top: notice.top, width: notice.width, height: notice.height };
               }
             }
             const clipboard = (await bridge.call('clipboardGet')).text;
-            return clipboard !== sentinel || observedNotice ? { clipboard, observedNotice } : false;
+            return observedNotice || (clipboard !== sentinel && observedSuccess) ? { clipboard, observedNotice, observedSuccess } : false;
           });
           result.recognitionMs = Math.round(performance.now() - released);
           result.actual = outcome.clipboard === sentinel ? '' : outcome.clipboard;
@@ -317,7 +329,12 @@ async function run() {
           result.checks.quickPathObserved = result.phases.some(sample => sample.phase === 'copying');
           result.checks.clipboard = fixture.expected ? outcome.clipboard !== sentinel : outcome.clipboard === sentinel;
           result.checks.noTextNotice = fixture.expected ? !outcome.observedNotice : outcome.observedNotice;
-          if (!fixture.expected && result.notice) {
+          result.checks.successNotice = fixture.expected ? outcome.observedSuccess : !outcome.observedSuccess;
+          if (outcome.observedSuccess) {
+            const [r, g, b] = result.noticeStyle.background.match(/[\d.]+/gu).map(Number);
+            result.checks.greenSuccessNotice = g > r && g > b;
+          }
+          if (result.notice) {
             const n = result.notice;
             result.checks.noticeTopCenter = Math.abs(n.left + n.width / 2 - monitor.left - monitor.width / 2) <= 3 && n.top >= monitor.top && n.top - monitor.top <= 40 * rectangle.dpr;
           }

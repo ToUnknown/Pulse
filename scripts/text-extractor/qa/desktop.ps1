@@ -134,7 +134,7 @@ try {
         }
         'hotkey' {
           if ([OcrDesktop]::ForegroundPid() -ne $request.pid) { throw 'Foreground changed before shortcut' }
-          $pressed = [Collections.Generic.List[ushort]]::new()
+          $pressed = [System.Collections.Generic.List[System.UInt16]]::new()
           try {
             foreach ($key in $request.keys) { [OcrDesktop]::Key([ushort]$key, $false); $pressed.Add([ushort]$key) }
             Start-Sleep -Milliseconds 35

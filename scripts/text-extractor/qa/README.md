@@ -1,10 +1,12 @@
 # Native Windows OCR acceptance pipeline
 
-Prepared for a future, explicitly requested acceptance run. **This pipeline has not been launched or validated on Windows.** Adding it does not run OCR, open cards, change settings, or schedule anything. It is not connected to CI or the app's startup.
+This pipeline runs only when explicitly requested. It is not connected to CI or the app's startup. Initial Windows attempts on September 14 reached the card screen but stopped before OCR on harness integration errors; see [run status](RUN_STATUS.md). The complete matrix has not passed. Manual testing is currently selected at the user's request.
 
 The runner opens synthetic English and Ukrainian cards in a separate Edge window and uses Pulse's real Windows shortcuts, native mouse selection, capture, downloaded Basic recognizer, editor, and clipboard. It observes the actual webview through local WebView2 debugging; it does not substitute recognition results or call the OCR command directly. Advanced extraction and translation are outside this suite.
 
 ## Run when ready
+
+For a single screen you can test yourself, start Pulse and run `pnpm ocr:cards`. This opens English and Ukrainian text in one Edge window, with a card picker and a light/dark toggle. Use your own Pulse shortcuts to select any portion. It does not send input, change preferences, touch the clipboard, or run OCR automatically. Close the Edge window when finished; its local card server exits with it.
 
 Use a terminal on the unlocked Windows desktop, in the Pulse checkout. Close Pulse through its tray menu and stop any running Tauri dev process first. The runner refuses to replace an existing Pulse process. Keep the desktop unlocked and leave the mouse and keyboard to the runner until it finishes; F8 or Ctrl+C stops it.
 
@@ -62,7 +64,7 @@ These are acceptance expectations, not a claim that every layout already works. 
 
 Every nonempty case compares the recognized text with its expected string. Normalization is limited to Unicode NFC, CRLF line endings, nonbreaking spaces, and whitespace at line edges. Internal spaces, punctuation, case, blank lines, and reading order remain significant. The report includes character and word error rates, expected/actual space and line counts, and a specific flag when removing spaces is the only difference. The pass condition is exact normalized equality, not an average accuracy threshold.
 
-Quick Copy checks clipboard output, observation of the quick path, absence of a result panel, and closure of the selector. The blank card requires the clipboard sentinel to remain intact and a visible, top-centered **No text found** notice. Opening Settings is an unexpected failure. The editor path checks that the field becomes editable, tests replacing text on the two spacing cards, clicks the real Copy button, and checks exact clipboard content and dismissal. Blank editor results must disable Copy and preserve the clipboard. The original OCR text is compared before editing.
+Quick Copy checks clipboard output, observation of the quick path, absence of a result panel, closure of the selector, and a green, top-centered **Text copied** notice. The blank card requires the clipboard sentinel to remain intact and a visible, top-centered **No text found** notice. Opening Settings is an unexpected failure. The editor path checks that the field becomes editable, tests replacing text on the two spacing cards, clicks the real Copy button, and checks exact clipboard content and dismissal. Blank editor results must disable Copy and preserve the clipboard. The original OCR text is compared before editing.
 
 The runner verifies fullscreen browser/native pixel geometry and records monitor bounds and DPI. If a card overflows the desktop or the coordinate mapping is ambiguous, it stops without guessing where to select. Source images are captured only from the synthetic card rectangle; editor evidence is limited to the result panel. The original clipboard is kept privately in the STA bridge's memory, never in reports.
 
