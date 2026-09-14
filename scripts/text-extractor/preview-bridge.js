@@ -2,7 +2,7 @@
   const query = new URLSearchParams(location.search);
   const scenario = query.get('scenario') || 'success';
   const text = 'A little space to think.\n\nGood ideas often begin with something small: a line in a book, a passing thought, a few words worth keeping.\n\nMake room for what matters.';
-  let settings = { enabled: query.has('enabled'), editorMode: query.get('editorMode') || 'basic', quickMode: query.get('quickMode') || 'basic', shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null };
+  let settings = { enabled: query.has('enabled'), editorMode: query.get('editorMode') || 'basic', quickMode: query.get('quickMode') || 'basic', shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null, localOcr: { phase: 'ready' } };
   window.__PULSE_FLOATING_SETTINGS__ = (query.get('platform') || 'windows') === 'windows';
   const calls = [];
   window.__preview = { calls, copied: null, closed: false };
@@ -41,6 +41,8 @@
     switch (command) {
       case 'settings_state': return { platform: query.get('platform') || 'windows', startAtLogin: false, trayIcon: 'default', autoSchedule: { lightStart: 7, darkStart: 19 } };
       case 'text_extractor_state': return { ...settings };
+      case 'local_ocr_state': return settings.localOcr;
+      case 'retry_local_ocr_setup': settings.localOcr = { phase: 'ready' }; return;
       case 'save_openai_api_key':
         await new Promise(resolve => setTimeout(resolve, scenario === 'key-pending' ? 2500 : 120));
         if (scenario === 'key-invalid') throw 'Not a valid OpenAI API key.';
@@ -85,7 +87,7 @@
       case 'extract_screen_text': {
         if (args.mode === 'basic') {
           await new Promise(resolve => setTimeout(resolve, scenario === 'basic-pending' ? 10000 : 100));
-          if (scenario === 'basic-error') throw 'Install an OCR language in Windows Settings, then try again.';
+          if (scenario === 'basic-error') throw 'Offline text recognition is getting ready. Check Settings → Advanced.';
           return scenario === 'basic-empty' ? '' : text.replaceAll('\n\n', '\n');
         }
         if (!settings.apiKeyConfigured) throw 'Add an OpenAI API key in Pulse Settings to use Advanced or Translate.';

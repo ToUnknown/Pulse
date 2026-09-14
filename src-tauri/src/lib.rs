@@ -1618,6 +1618,8 @@ pub fn run() {
         set_tray_icon_mode,
         set_auto_schedule,
         text_extractor::text_extractor_state,
+        text_extractor::local_ocr_state,
+        text_extractor::retry_local_ocr_setup,
         text_extractor::save_openai_api_key,
         text_extractor::clear_openai_api_key,
         text_extractor::set_text_extractor,

@@ -1,5 +1,6 @@
 use super::{
-    capture, hotkeys, ocr,
+    capture, hotkeys,
+    ocr_models::{LocalOcr, ModelStatus},
     pixels::DesktopFrame,
     protocol::{self, Crop, ExtractionMode, Preferences, QuickCopyOutcome},
     selector_window,
@@ -33,6 +34,7 @@ const RESPONSE_URL: &str = "https://api.openai.com/v1/responses";
 
 pub struct TextExtractor {
     preferences: Mutex<Preferences>,
+    local_ocr: Arc<LocalOcr>,
     path: PathBuf,
     session: Mutex<Option<Session>>,
     warm: Mutex<Option<WarmWindow>>,
@@ -110,6 +112,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     let _ = save(&path, &preferences);
     app.manage(TextExtractor {
         preferences: Mutex::new(preferences.clone()),
+        local_ocr: LocalOcr::new(app.path().app_local_data_dir()?),
         path,
         session: Mutex::new(None),
         warm: Mutex::new(None),
@@ -193,6 +196,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .enabled;
     hotkeys::configure(enabled, hook_bindings(shortcut_pair(&preferences)?));
+    app.state::<TextExtractor>().local_ocr.set_enabled(enabled);
     queue_prewarm(app);
     Ok(())
 }
@@ -213,8 +217,23 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
     Ok(
         json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut, "quickShortcut": preferences.quick_shortcut,
         "editorMode": preferences.editor_mode, "quickMode": preferences.quick_mode,
-        "apiKeyConfigured": configured, "error": error}),
+        "apiKeyConfigured": configured, "error": error, "localOcr": state.local_ocr.status()}),
     )
+}
+
+#[tauri::command]
+pub fn local_ocr_state(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<ModelStatus, String> {
+    settings_only(&window)?;
+    Ok(app.state::<TextExtractor>().local_ocr.status())
+}
+
+#[tauri::command]
+pub fn retry_local_ocr_setup(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
+    settings_only(&window)?;
+    app.state::<TextExtractor>().local_ocr.retry()
 }
 
 #[tauri::command]
@@ -415,6 +434,7 @@ pub async fn set_text_extractor(
     hotkeys::configure(enabled, hook_bindings(keys));
     *state.error.lock().unwrap() = None;
     drop(current);
+    state.local_ocr.set_enabled(enabled);
     if !enabled {
         close_active(&app);
         let warm = state.warm.lock().unwrap().take();
@@ -870,7 +890,7 @@ pub async fn text_extractor_quick_copy(
                 .await.map_err(|_| "Screen capture stopped unexpectedly.".to_string())??;
             // Keep credential I/O off the shortcut-to-selector path. A removed key falls back locally.
             let mode = default_mode.with_api_key(openai_credentials::is_configured().unwrap_or(false));
-            recognize_selection(image, mode).await
+            recognize_selection(&app, image, mode, cancel.clone()).await
         } => result,
     };
     let result = (|| {
@@ -1012,7 +1032,7 @@ pub async fn extract_screen_text(
             let selection = tauri::async_runtime::spawn_blocking(move || image.crop(crop))
                 .await.map_err(|_| "Could not prepare this selection.")??;
             let mode = if mode == "basic" { ExtractionMode::Basic } else { ExtractionMode::Advanced };
-            recognize_selection(selection, mode).await
+            recognize_selection(&app, selection, mode, cancel.clone()).await
         } => result,
     };
     finish_request(&app, &window, request_id, result)
@@ -1059,12 +1079,18 @@ fn finish_request(
     result
 }
 
-async fn recognize_selection(image: RgbaImage, mode: ExtractionMode) -> Result<String, String> {
+async fn recognize_selection(
+    app: &tauri::AppHandle,
+    image: RgbaImage,
+    mode: ExtractionMode,
+    cancel: CancellationToken,
+) -> Result<String, String> {
     match mode {
         ExtractionMode::Basic => {
-            tauri::async_runtime::spawn_blocking(move || ocr::recognize(image))
+            let engine = app.state::<TextExtractor>().local_ocr.clone();
+            tauri::async_runtime::spawn_blocking(move || engine.recognize(image, &cancel))
                 .await
-                .map_err(|_| "Windows text recognition stopped unexpectedly.".to_string())?
+                .map_err(|_| "Offline text recognition stopped unexpectedly.".to_string())?
         }
         ExtractionMode::Advanced => {
             let image_url = tauri::async_runtime::spawn_blocking(move || png_url(&image))

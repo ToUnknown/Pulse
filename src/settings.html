@@ -49,7 +49,7 @@
             <label class="setting-row extractor-toggle-row">
               <span class="setting-copy">
                 <span class="setting-feature-icon extractor-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><path d="M10 12V9h12v3M16 9v14m-3 0h6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                <span class="setting-text"><strong>Extract text from your screen</strong><small>Select an area to copy its text.</small></span>
+                <span class="setting-text"><strong>Extract text from your screen</strong><small>Offline. Downloads a small model on first use.</small></span>
               </span>
               <input id="text-extractor-enabled" type="checkbox" disabled />
             </label>
@@ -78,6 +78,13 @@
                   </div>
                 </div>
               </div>
+            </div>
+            <div id="ocr-setup" class="ocr-setup" hidden>
+              <div class="ocr-setup-copy">
+                <span id="ocr-setup-label" role="status" aria-live="polite"></span>
+                <progress id="ocr-setup-progress" max="1" aria-label="Offline model download" hidden></progress>
+              </div>
+              <button id="ocr-setup-retry" class="settings-button" type="button" hidden>Retry</button>
             </div>
             <p id="extractor-settings-error" class="extractor-error" role="alert" hidden></p>
           </div>

@@ -3,6 +3,8 @@ mod capture;
 #[cfg(target_os = "windows")]
 mod ocr;
 #[cfg(target_os = "windows")]
+mod ocr_models;
+#[cfg(target_os = "windows")]
 mod pixels;
 pub mod protocol;
 #[cfg(target_os = "windows")]
