@@ -4,12 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Settings</title>
+    <script>if (window.__PULSE_FLOATING_SETTINGS__) document.documentElement.dataset.floating = "true";</script>
     <link rel="stylesheet" href="settings.css" />
     <script src="settings.js" defer></script>
     <script type="module" src="text-extractor-settings.js"></script>
   </head>
   <body>
-    <main>
+    <main class="settings-shell">
+      <header class="settings-header"><h1>Settings</h1></header>
       <nav class="settings-tabs" role="tablist" aria-label="Settings pages" style="--page-index: 0">
         <span class="settings-tab-slider" aria-hidden="true">
           <span class="settings-tab-highlight"><span>General</span><span>Advanced</span><span>Appearance</span></span>
@@ -18,6 +20,7 @@
         <button id="tab-advanced" type="button" role="tab" aria-selected="false" aria-controls="page-advanced" tabindex="-1"><span>Advanced</span></button>
         <button id="tab-appearance" type="button" role="tab" aria-selected="false" aria-controls="page-appearance" tabindex="-1"><span>Appearance</span></button>
       </nav>
+      <div class="settings-content">
       <div id="page-general" class="settings-page" role="tabpanel" aria-labelledby="tab-general" tabindex="0">
         <section class="settings-group" aria-labelledby="general-heading">
           <h2 id="general-heading">General</h2>
@@ -50,8 +53,32 @@
               </span>
               <input id="text-extractor-enabled" type="checkbox" disabled />
             </label>
-            <div class="extractor-detail-row"><span>Quick copy</span><button id="extractor-quick-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Quick copy shortcut">Ctrl + Win + Shift + T</button></div>
-            <div class="extractor-detail-row"><span>Open editor</span><button id="extractor-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Open editor shortcut">Win + Shift + T</button></div>
+            <div id="extractor-shortcuts" class="extractor-shortcuts" data-expanded="false" inert>
+              <div class="extractor-shortcuts-inner">
+                <div class="extractor-detail-row">
+                  <span>Quick copy</span>
+                  <div class="shortcut-controls">
+                    <div class="shortcut-mode" data-field="quickMode" role="radiogroup" aria-label="Quick copy default mode" style="--mode-index: 0" hidden>
+                      <span class="shortcut-mode-pill" aria-hidden="true"><span class="shortcut-mode-highlight"><span>Basic</span><span>Advanced</span></span></span>
+                      <button type="button" role="radio" data-mode="basic" aria-checked="true">Basic</button>
+                      <button type="button" role="radio" data-mode="advanced" aria-checked="false" tabindex="-1">Advanced</button>
+                    </div>
+                    <button id="extractor-quick-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Quick copy shortcut">Ctrl + Win + Shift + T</button>
+                  </div>
+                </div>
+                <div class="extractor-detail-row">
+                  <span>Open editor</span>
+                  <div class="shortcut-controls">
+                    <div class="shortcut-mode" data-field="editorMode" role="radiogroup" aria-label="Open editor default mode" style="--mode-index: 0" hidden>
+                      <span class="shortcut-mode-pill" aria-hidden="true"><span class="shortcut-mode-highlight"><span>Basic</span><span>Advanced</span></span></span>
+                      <button type="button" role="radio" data-mode="basic" aria-checked="true">Basic</button>
+                      <button type="button" role="radio" data-mode="advanced" aria-checked="false" tabindex="-1">Advanced</button>
+                    </div>
+                    <button id="extractor-shortcut" class="settings-button shortcut-button" type="button" disabled aria-label="Record Open editor shortcut">Win + Shift + T</button>
+                  </div>
+                </div>
+              </div>
+            </div>
             <p id="extractor-settings-error" class="extractor-error" role="alert" hidden></p>
           </div>
         </section>
@@ -167,6 +194,8 @@
         </section>
       </div>
       <p id="error" role="alert" hidden></p>
+      </div>
+      <footer class="settings-footer"><button id="settings-done" class="settings-button" type="button">Done</button></footer>
     </main>
   </body>
 </html>
