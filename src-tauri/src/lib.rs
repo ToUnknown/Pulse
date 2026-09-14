@@ -1,6 +1,6 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod openai_credentials;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod text_extractor;
 
 use tauri::{
@@ -370,14 +370,10 @@ const TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-iconTemplate@2x.png");
 
 #[cfg(target_os = "macos")]
-// Update icons stay non-template to preserve the blue badge, so Pulse selects
-// a contrasting waveform for the current macOS appearance.
-const UPDATE_DARK_TRAY_ICON_BYTES: &[u8] =
+// Keep the waveform white and preserve the blue update badge. App appearance
+// does not reliably describe the menu bar's background on each display.
+const UPDATE_WHITE_TRAY_ICON_BYTES: &[u8] =
     include_bytes!("../icons/tray/pulse-tray-expanded-update-macos@2x.png");
-
-#[cfg(target_os = "macos")]
-const UPDATE_LIGHT_TRAY_ICON_BYTES: &[u8] =
-    include_bytes!("../icons/tray/pulse-tray-expanded-update-macos-light@2x.png");
 
 #[cfg(target_os = "windows")]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/pulse-tray-expanded-icon-32.png");
@@ -643,7 +639,7 @@ fn default_tray_icon_variant(theme: WindowsTheme) -> DefaultTrayIconVariant {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MacosAppearance {
     Light,
@@ -655,7 +651,6 @@ enum MacosAppearance {
 enum MacosTrayIconAsset {
     DefaultTemplate,
     Red,
-    UpdateBlack,
     UpdateWhite,
     UpdateRed,
 }
@@ -781,7 +776,6 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         window.show()?;
         window
     } else {
-        #[cfg(target_os = "windows")]
         let window_height = app
             .primary_monitor()?
             .map(|monitor| {
@@ -789,8 +783,6 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
                     .clamp(360.0, 608.0)
             })
             .unwrap_or(608.0);
-        #[cfg(target_os = "macos")]
-        let window_height = 288.0;
 
         let builder =
             WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
@@ -798,7 +790,6 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
                 .resizable(false)
                 .maximizable(false)
                 .minimizable(false);
-        #[cfg(target_os = "windows")]
         let builder = builder
             .inner_size(580.0, window_height)
             .decorations(false)
@@ -806,17 +797,12 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
             .shadow(false)
             .visible(false)
             .initialization_script("window.__PULSE_FLOATING_SETTINGS__ = true;");
-        #[cfg(target_os = "macos")]
-        let builder = builder.inner_size(460.0, window_height);
+
         builder.build()?
     };
 
-    #[cfg(target_os = "windows")]
-    if let Ok(theme) = visual_windows_theme(app) {
-        let _ = window.set_theme(Some(match theme {
-            WindowsTheme::Light => tauri::Theme::Light,
-            WindowsTheme::Dark => tauri::Theme::Dark,
-        }));
+    if let Ok(theme) = visual_app_theme(app) {
+        let _ = window.set_theme(Some(theme));
     }
     let _ = window.eval("window.dispatchEvent(new Event('pulse-settings-open'))");
     if window.is_visible()? {
@@ -826,7 +812,7 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn settings_window_action(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
     if window.label() != "settings" {
@@ -862,13 +848,12 @@ impl TrayIconMode {
     }
 
     #[cfg(any(target_os = "macos", test))]
-    fn macos_asset(self, appearance: MacosAppearance, update_ready: bool) -> MacosTrayIconAsset {
-        match (self, appearance, update_ready) {
-            (Self::Default, _, false) => MacosTrayIconAsset::DefaultTemplate,
-            (Self::Red, _, false) => MacosTrayIconAsset::Red,
-            (Self::Default, MacosAppearance::Light, true) => MacosTrayIconAsset::UpdateBlack,
-            (Self::Default, MacosAppearance::Dark, true) => MacosTrayIconAsset::UpdateWhite,
-            (Self::Red, _, true) => MacosTrayIconAsset::UpdateRed,
+    fn macos_asset(self, update_ready: bool) -> MacosTrayIconAsset {
+        match (self, update_ready) {
+            (Self::Default, false) => MacosTrayIconAsset::DefaultTemplate,
+            (Self::Red, false) => MacosTrayIconAsset::Red,
+            (Self::Default, true) => MacosTrayIconAsset::UpdateWhite,
+            (Self::Red, true) => MacosTrayIconAsset::UpdateRed,
         }
     }
 
@@ -897,12 +882,11 @@ impl TrayIconMode {
     }
 
     #[cfg(target_os = "macos")]
-    fn bytes(self, appearance: MacosAppearance, update_ready: bool) -> &'static [u8] {
-        match self.macos_asset(appearance, update_ready) {
+    fn bytes(self, update_ready: bool) -> &'static [u8] {
+        match self.macos_asset(update_ready) {
             MacosTrayIconAsset::DefaultTemplate => TRAY_ICON_BYTES,
             MacosTrayIconAsset::Red => RED_TRAY_ICON_BYTES,
-            MacosTrayIconAsset::UpdateBlack => UPDATE_LIGHT_TRAY_ICON_BYTES,
-            MacosTrayIconAsset::UpdateWhite => UPDATE_DARK_TRAY_ICON_BYTES,
+            MacosTrayIconAsset::UpdateWhite => UPDATE_WHITE_TRAY_ICON_BYTES,
             MacosTrayIconAsset::UpdateRed => UPDATE_RED_TRAY_ICON_BYTES,
         }
     }
@@ -1218,7 +1202,13 @@ impl WindowsAppearanceController {
     }
 
     fn update_visuals(&self, previous_mode: ThemeMode, next_mode: ThemeMode, theme: WindowsTheme) {
-        text_extractor::appearance_changed(&self.app, theme);
+        text_extractor::appearance_changed(
+            &self.app,
+            match theme {
+                WindowsTheme::Light => tauri::Theme::Light,
+                WindowsTheme::Dark => tauri::Theme::Dark,
+            },
+        );
         if let Err(error) = set_appearance_selection(&self.menu_items, previous_mode, next_mode) {
             eprintln!("appearance menu icon update failed: {error}");
         }
@@ -1399,6 +1389,21 @@ fn visual_windows_theme(app: &tauri::AppHandle) -> Result<WindowsTheme, String> 
     }
 }
 
+/// Pulse's effective appearance, independent of the operating system adapter.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn visual_app_theme(app: &tauri::AppHandle) -> Result<tauri::Theme, String> {
+    #[cfg(target_os = "windows")]
+    return visual_windows_theme(app).map(|theme| match theme {
+        WindowsTheme::Light => tauri::Theme::Light,
+        WindowsTheme::Dark => tauri::Theme::Dark,
+    });
+    #[cfg(target_os = "macos")]
+    return visual_macos_appearance(app).map(|theme| match theme {
+        MacosAppearance::Light => tauri::Theme::Light,
+        MacosAppearance::Dark => tauri::Theme::Dark,
+    });
+}
+
 #[cfg(target_os = "macos")]
 fn current_macos_appearance() -> MacosAppearance {
     let main_thread =
@@ -1437,9 +1442,8 @@ fn set_tray_icon(
     let tray = app
         .tray_by_id("pulse-tray")
         .ok_or_else(|| "pulse tray not found".to_string())?;
-    let icon =
-        tauri::image::Image::from_bytes(mode.bytes(visual_macos_appearance(app)?, update_ready))
-            .map_err(|error| error.to_string())?;
+    let icon = tauri::image::Image::from_bytes(mode.bytes(update_ready))
+        .map_err(|error| error.to_string())?;
     tray.set_icon_with_as_template(Some(icon), mode == TrayIconMode::Default && !update_ready)
         .map_err(|error| error.to_string())
 }
@@ -1465,6 +1469,9 @@ fn start_macos_appearance_watcher(app: tauri::AppHandle) {
         };
 
         if changed {
+            if let Ok(theme) = visual_app_theme(&app) {
+                text_extractor::appearance_changed(&app, theme);
+            }
             if let Err(error) = refresh_tray_icon(&app, &settings.mode, &settings.update_status) {
                 eprintln!("macOS appearance tray icon update failed: {error}");
             }
@@ -1608,16 +1615,22 @@ fn start_auto_scheduler(controller: WindowsAppearanceController) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if text_extractor::run_shortcut_worker_if_requested() {
+        return;
+    }
     let builder = tauri::Builder::default();
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
         settings_window_action,
         set_start_at_login,
         set_tray_icon_mode,
+        #[cfg(target_os = "windows")]
         set_auto_schedule,
         text_extractor::text_extractor_state,
+        text_extractor::request_text_extractor_access,
         text_extractor::local_ocr_state,
         text_extractor::retry_local_ocr_setup,
         text_extractor::save_openai_api_key,
@@ -1638,13 +1651,6 @@ pub fn run() {
         text_extractor::close_text_extractor
     ]);
 
-    #[cfg(target_os = "macos")]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        settings_state,
-        set_start_at_login,
-        set_tray_icon_mode
-    ]);
-
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.plugin(tauri_plugin_autostart::init(
         MacosLauncher::LaunchAgent,
@@ -1659,12 +1665,10 @@ pub fn run() {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.on_window_event(|window, event| {
-        #[cfg(target_os = "windows")]
         if matches!(event, tauri::WindowEvent::Destroyed) {
             text_extractor::window_destroyed(window.app_handle(), window.label());
         }
         if window.label() == "settings" {
-            #[cfg(target_os = "windows")]
             if matches!(
                 event,
                 tauri::WindowEvent::Focused(false) | tauri::WindowEvent::CloseRequested { .. }
@@ -1682,8 +1686,6 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            #[cfg(target_os = "windows")]
-            text_extractor::install(app.handle())?;
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -1723,9 +1725,7 @@ pub fn run() {
                 initial_tray_icon_mode.bytes(initial_windows_theme, false),
             )?;
             #[cfg(target_os = "macos")]
-            let tray_icon = tauri::image::Image::from_bytes(
-                initial_tray_icon_mode.bytes(initial_macos_appearance, false),
-            )?;
+            let tray_icon = tauri::image::Image::from_bytes(initial_tray_icon_mode.bytes(false))?;
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let tray_icon = tauri::image::Image::from_bytes(TRAY_ICON_BYTES)?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1929,6 +1929,9 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            text_extractor::install(app.handle())?;
+
             #[cfg(target_os = "macos")]
             start_macos_appearance_watcher(app.handle().clone());
 
@@ -1960,7 +1963,7 @@ pub fn run() {
             // The selector may be the only Tauri window. Keep the tray app and
             // shortcut hook alive while its replacement is prepared. Explicit
             // Quit and updater restarts have an exit code and still go through.
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::ExitRequested {
                 code: None, api, ..
             } = _event
@@ -1974,8 +1977,8 @@ pub fn run() {
 mod tests {
     use super::{
         default_tray_icon_variant, AppearanceSnapshot, AppearanceState, AutoSchedule,
-        DefaultTrayIconVariant, MacosAppearance, MacosTrayIconAsset, ThemeMode, TrayIconAsset,
-        TrayIconMode, UpdateResult, WindowsTheme,
+        DefaultTrayIconVariant, MacosTrayIconAsset, ThemeMode, TrayIconAsset, TrayIconMode,
+        UpdateResult, WindowsTheme,
     };
 
     #[test]
@@ -2062,25 +2065,25 @@ mod tests {
     }
 
     #[test]
-    fn macos_update_default_tray_icon_follows_appearance() {
+    fn macos_update_default_tray_icon_stays_white() {
         assert_eq!(
-            TrayIconMode::Default.macos_asset(MacosAppearance::Light, true),
-            MacosTrayIconAsset::UpdateBlack
+            TrayIconMode::Default.macos_asset(false),
+            MacosTrayIconAsset::DefaultTemplate
         );
         assert_eq!(
-            TrayIconMode::Default.macos_asset(MacosAppearance::Dark, true),
+            TrayIconMode::Default.macos_asset(true),
             MacosTrayIconAsset::UpdateWhite
         );
     }
 
     #[test]
-    fn macos_update_red_tray_icon_ignores_appearance() {
+    fn macos_update_red_tray_icon_keeps_selected_style() {
         assert_eq!(
-            TrayIconMode::Red.macos_asset(MacosAppearance::Light, true),
-            MacosTrayIconAsset::UpdateRed
+            TrayIconMode::Red.macos_asset(false),
+            MacosTrayIconAsset::Red
         );
         assert_eq!(
-            TrayIconMode::Red.macos_asset(MacosAppearance::Dark, true),
+            TrayIconMode::Red.macos_asset(true),
             MacosTrayIconAsset::UpdateRed
         );
     }

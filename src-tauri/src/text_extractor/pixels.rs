@@ -1,7 +1,7 @@
 use super::protocol::Crop;
 use image::RgbaImage;
 
-/// Windows' top-down BGRA buffer. Keep the desktop in its native format so
+/// Top-down BGRA capture buffer shared by both native adapters. Keep the desktop in its native format so
 /// releasing a small selection never converts millions of unrelated pixels.
 pub struct DesktopFrame {
     width: u32,

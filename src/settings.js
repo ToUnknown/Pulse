@@ -319,7 +319,7 @@ settingsTabs.addEventListener("keydown", (event) => {
   selectPage(pageTabs[next]);
 });
 
-// Only the floating Windows panel supplies its own window controls.
+// The shared floating panel supplies its own window controls.
 if (window.__PULSE_FLOATING_SETTINGS__) {
   // Show only once the custom chrome is laid out, avoiding the native white first frame.
   invoke("settings_window_action", { action: "ready" }).catch(showError);

@@ -148,7 +148,7 @@ async function run() {
     report.revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
     report.workingTree = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
     // Model hashes are derived from the production manifest, not a second drifting list.
-    const modelSource = await readFile(join(root, 'src-tauri/src/text_extractor/ocr_models.rs'), 'utf8');
+    const modelSource = await readFile(join(root, 'src-tauri/src/text_extractor/windows/ocr_models.rs'), 'utf8');
     const version = /const CACHE_VERSION: &str = "([^"]+)"/u.exec(modelSource)?.[1];
     const pinned = [...modelSource.matchAll(/name: "(\w+\.onnx)"[\s\S]*?sha256: "([a-f0-9]{64})"/gu)];
     if (!version || pinned.length !== 2) throw new Error('Cannot read the current production OCR model manifest. Update the harness before running.');

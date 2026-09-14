@@ -12,14 +12,14 @@ pub enum Key {
     T,
     Other,
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     QuickCopy,
     Editor,
     RecordQuick,
     RecordEditor,
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bindings {
     pub plain: Option<Action>,
     pub control: Option<Action>,

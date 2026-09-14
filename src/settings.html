@@ -49,7 +49,7 @@
             <label class="setting-row extractor-toggle-row">
               <span class="setting-copy">
                 <span class="setting-feature-icon extractor-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><path d="M10 12V9h12v3M16 9v14m-3 0h6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                <span class="setting-text"><strong>Extract text from your screen</strong><small>Offline. Downloads a small model on first use.</small></span>
+                <span class="setting-text"><strong>Extract text from your screen</strong><small id="extractor-description">Offline. Downloads a small model on first use.</small></span>
               </span>
               <input id="text-extractor-enabled" type="checkbox" disabled />
             </label>
@@ -78,6 +78,10 @@
                   </div>
                 </div>
               </div>
+            </div>
+            <div id="capture-access" class="ocr-setup" hidden>
+              <span id="capture-access-label" role="status">Allow screen access to select text.</span>
+              <button id="capture-access-request" class="settings-button" type="button">Allow access</button>
             </div>
             <div id="ocr-setup" class="ocr-setup" hidden>
               <div class="ocr-setup-copy">
@@ -112,7 +116,7 @@
             <p id="openai-key-error" class="extractor-error" role="alert" hidden></p>
           </form>
         </section>
-        <p id="advanced-unavailable" class="page-note" hidden>Advanced features are currently available on Windows.</p>
+        <p id="advanced-unavailable" class="page-note" hidden>Text Extractor is available on macOS and Windows.</p>
       </div>
       <div id="page-appearance" class="settings-page" role="tabpanel" aria-labelledby="tab-appearance" tabindex="0" hidden>
         <section
