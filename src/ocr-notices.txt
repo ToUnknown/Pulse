@@ -8,6 +8,9 @@ ONNX model conversion and model registry
 RapidAI / RapidOCR contributors — Apache License 2.0
 https://github.com/RapidAI/RapidOCR
 Pinned model release: v3.9.2
+Fallback mirror: https://huggingface.co/DjB314/RapidOCR
+Pinned mirror revision: 04e88d0483f0bfcdd0f29429594244c10bfc2867
+Mirror files must match the original RapidOCR SHA-256 digests.
 
 paddle-ocr-rs 0.6.1 — Apache License 2.0
 Copyright 2024 paddle-ocr-rust Contributors

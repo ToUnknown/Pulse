@@ -16,19 +16,57 @@ const CACHE_VERSION: &str = "ppocr-v5-cyrillic-rapidocr-3.9.2";
 const MODELS: [Model; 2] = [
     Model {
         name: "detector.onnx",
-        url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+        sources: [
+            ModelSource {
+                name: "ModelScope",
+                url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+            },
+            ModelSource {
+                name: "Hugging Face",
+                url: "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+            },
+        ],
         sha256: "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
     },
     Model {
         name: "recognizer.onnx",
-        url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
+        sources: [
+            ModelSource {
+                name: "ModelScope",
+                url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
+            },
+            ModelSource {
+                name: "Hugging Face",
+                url: "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
+            },
+        ],
         sha256: "90f761b4bfcce0c8c561c0cb5c887b0971d3ec01c32164bdf7374a35b0982711",
     },
 ];
-struct Model {
+struct ModelSource {
     name: &'static str,
     url: &'static str,
+}
+struct Model {
+    name: &'static str,
+    sources: [ModelSource; 2],
     sha256: &'static str,
+}
+
+enum DownloadError {
+    Remote(String),
+    Local(&'static str),
+}
+
+fn connection_error(error: reqwest::Error) -> DownloadError {
+    // Signed CDN URLs contain temporary credentials. Keep them out of logs/UI.
+    let reason = if error.is_timeout() {
+        "connection timed out"
+    } else {
+        "connection failed"
+    };
+    eprintln!("Offline model download: {:#}", error.without_url());
+    DownloadError::Remote(reason.into())
 }
 
 #[derive(Clone, Serialize)]
@@ -137,8 +175,10 @@ impl LocalOcr {
                     *this.engine.lock().unwrap() = Some(engine);
                     setup.ready = true;
                     setup.status = ModelStatus::new("ready");
+                    eprintln!("Offline OCR models are ready.");
                 }
                 Err(error) => {
+                    eprintln!("Offline OCR setup: {error}");
                     setup.status = ModelStatus::new("error");
                     setup.status.error = Some(error);
                 }
@@ -162,6 +202,8 @@ impl LocalOcr {
         // Building a client does not contact the network. Valid cached files work offline.
         let client = reqwest::Client::builder()
             .https_only(true)
+            // ModelScope's CDN rejects an absent User-Agent with HTTP 403.
+            .user_agent(concat!("Pulse/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::limited(5))
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(30))
@@ -198,65 +240,103 @@ impl LocalOcr {
         path: &Path,
         cancel: &CancellationToken,
     ) -> Result<(), String> {
+        let mut failures = Vec::new();
+        for source in &model.sources {
+            if cancel.is_cancelled() {
+                return Err("Download cancelled.".into());
+            }
+            match self
+                .download_from(client, model, source, index, path, cancel)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(DownloadError::Local(message)) => return Err(message.into()),
+                Err(DownloadError::Remote(reason)) => {
+                    eprintln!(
+                        "Offline model {} from {}: {reason}",
+                        model.name, source.name
+                    );
+                    failures.push(format!("{}: {reason}", source.name));
+                }
+            }
+        }
+        Err(format!(
+            "Could not download offline OCR ({}). Retry setup.",
+            failures.join("; ")
+        ))
+    }
+
+    async fn download_from(
+        &self,
+        client: &reqwest::Client,
+        model: &Model,
+        source: &ModelSource,
+        index: usize,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<(), DownloadError> {
         let mut status = ModelStatus::new("downloading");
         status.model_index = index;
         self.update(cancel, status.clone());
         let partial = path.with_extension("onnx.part");
         let result = async {
             let mut response = client
-                .get(model.url)
+                .get(source.url)
                 .send()
                 .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(|_| {
-                    "Could not download the offline model. Check your connection and retry."
-                })?;
+                .map_err(connection_error)?;
+            if !response.status().is_success() {
+                return Err(DownloadError::Remote(format!(
+                    "HTTP {}",
+                    response.status().as_u16()
+                )));
+            }
             let total = response.content_length();
             if total.is_some_and(|size| size == 0 || size > MAX_MODEL_BYTES) {
-                return Err("The model download has an unexpected size. Retry setup.".into());
+                return Err(DownloadError::Remote("unexpected file size".into()));
             }
             status.total_bytes = total;
-            let mut file = tokio::fs::File::create(&partial)
-                .await
-                .map_err(|_| "Could not save the offline model. Check available disk space.")?;
+            let mut file = tokio::fs::File::create(&partial).await.map_err(|_| {
+                DownloadError::Local(
+                    "Could not save the offline model. Check available disk space.",
+                )
+            })?;
             let mut hash = Sha256::new();
-            while let Some(chunk) = response.chunk().await.map_err(|_| {
-                "The model download was interrupted. Check your connection and retry."
-            })? {
+            while let Some(chunk) = response.chunk().await.map_err(connection_error)? {
                 status.downloaded_bytes += chunk.len() as u64;
                 if status.downloaded_bytes > MAX_MODEL_BYTES {
-                    return Err("The model download is too large. Retry setup.".into());
+                    return Err(DownloadError::Remote("unexpected file size".into()));
                 }
                 hash.update(&chunk);
-                file.write_all(&chunk)
-                    .await
-                    .map_err(|_| "Could not save the offline model. Check available disk space.")?;
+                file.write_all(&chunk).await.map_err(|_| {
+                    DownloadError::Local(
+                        "Could not save the offline model. Check available disk space.",
+                    )
+                })?;
                 self.update(cancel, status.clone());
             }
             if format!("{:x}", hash.finalize()) != model.sha256 {
-                return Err(
-                    "The offline model download is incomplete or damaged. Retry setup.".into(),
-                );
+                return Err(DownloadError::Remote("file checksum mismatch".into()));
             }
             file.flush()
                 .await
-                .map_err(|_| "Could not finish saving the offline model.")?;
+                .map_err(|_| DownloadError::Local("Could not finish saving the offline model."))?;
             file.sync_all()
                 .await
-                .map_err(|_| "Could not finish saving the offline model.")?;
+                .map_err(|_| DownloadError::Local("Could not finish saving the offline model."))?;
             drop(file);
             // Windows rename cannot replace an existing corrupted cache file.
             if tokio::fs::try_exists(path)
                 .await
-                .map_err(|_| "Could not read the model folder.")?
+                .map_err(|_| DownloadError::Local("Could not read the model folder."))?
             {
-                tokio::fs::remove_file(path)
-                    .await
-                    .map_err(|_| "Could not replace the damaged offline model.")?;
+                tokio::fs::remove_file(path).await.map_err(|_| {
+                    DownloadError::Local("Could not replace the damaged offline model.")
+                })?;
             }
             tokio::fs::rename(&partial, path)
                 .await
-                .map_err(|_| "Could not install the offline model.")?;
+                .map_err(|_| DownloadError::Local("Could not install the offline model."))?;
             Ok(())
         }
         .await;
