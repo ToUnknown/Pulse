@@ -530,7 +530,8 @@ input:focus-visible,
 }
 
 /* Windows Text Extractor */
-body { overflow-y: auto; }
+body { overflow-y: auto; scrollbar-width: none; }
+body::-webkit-scrollbar { display: none; }
 [hidden] { display: none !important; }
 .extractor-settings-card { border: 1px solid var(--border); border-radius: var(--card-radius); background: var(--surface); overflow: hidden; }
 .extractor-toggle-row { border: 0; border-radius: 0; }
@@ -625,7 +626,10 @@ select,
 :root[data-floating="true"] .settings-header { display: flex; flex: none; align-items: center; justify-content: center; margin: -24px -24px 0; padding: 24px 24px 20px; cursor: default; user-select: none; }
 .settings-header h1 { margin: 0; font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.02em; }
 :root[data-floating="true"] .settings-tabs { flex: none; margin-bottom: 20px; }
-:root[data-floating="true"] .settings-content { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+:root[data-floating="true"] .settings-content { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+/* Page entrance transforms may briefly overflow. Keep scrolling available without
+   a scrollbar taking width away from the controls during that transition. */
+:root[data-floating="true"] .settings-content::-webkit-scrollbar { display: none; }
 :root[data-floating="true"] .settings-footer { display: flex; flex: none; justify-content: center; padding-top: 20px; }
 #settings-done { min-width: 112px; border-color: transparent; background: var(--settings-pill); color: var(--settings-pill-text); }
 #settings-done:hover { opacity: .85; }
