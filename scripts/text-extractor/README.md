@@ -68,7 +68,7 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 
 ## Windows verification and remaining acceptance checks
 
-The [manual native OCR pipeline](qa/README.md) provides English and Ukrainian cards with strict expected-text comparisons through the real Basic Quick Copy and editor paths. Initial automated attempts stopped before OCR on harness errors; the full matrix remains unverified. Use `pnpm ocr:cards` for a single screen to test yourself, or explicitly run `pnpm ocr:qa --run` for automation on an unlocked Windows desktop. Neither is attached to CI.
+The [manual native OCR pipeline](qa/README.md) provides English and Ukrainian cards with strict expected-text comparisons through the real Basic Quick Copy and editor paths. The user confirmed the current Windows changes work after manual testing. Initial automated attempts stopped before OCR on harness errors; the full automated matrix remains unverified. Use `pnpm ocr:cards` for a single screen to test yourself, or explicitly run `pnpm ocr:qa --run` for automation on an unlocked Windows desktop. Neither is attached to CI.
 
 Successful Quick Copy now shows a green “Text copied” pill at the top center of the selected monitor. Empty recognition retains the neutral “No text found” pill. Both follow Pulse's appearance, dismiss automatically after three seconds, and do not take focus.
 

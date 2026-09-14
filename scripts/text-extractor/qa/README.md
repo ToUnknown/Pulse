@@ -1,6 +1,6 @@
 # Native Windows OCR acceptance pipeline
 
-This pipeline runs only when explicitly requested. It is not connected to CI or the app's startup. Initial Windows attempts on September 14 reached the card screen but stopped before OCR on harness integration errors; see [run status](RUN_STATUS.md). The complete matrix has not passed. Manual testing is currently selected at the user's request.
+This pipeline runs only when explicitly requested. It is not connected to CI or the app's startup. Initial Windows attempts on September 14 reached the card screen but stopped before OCR on harness integration errors; see [run status](RUN_STATUS.md). The user subsequently confirmed that the current Windows changes work in manual testing. The complete automated matrix remains incomplete.
 
 The runner opens synthetic English and Ukrainian cards in a separate Edge window and uses Pulse's real Windows shortcuts, native mouse selection, capture, downloaded Basic recognizer, editor, and clipboard. It observes the actual webview through local WebView2 debugging; it does not substitute recognition results or call the OCR command directly. Advanced extraction and translation are outside this suite.
 

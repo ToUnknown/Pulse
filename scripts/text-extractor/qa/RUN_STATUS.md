@@ -11,6 +11,8 @@ The pipeline built the Windows app, verified both cached model hashes, loaded th
 
 The comparison helper passed local checks for missing Ukrainian/English spaces, punctuation loss, reading order, CRLF normalization, and empty text. The desktop bridge passed PowerShell parsing, and the fully qualified generic list now resolves on Windows. Neither proves native OCR accuracy. The corrected shortcut path and new success-notice checks await an automated rerun; automation was stopped as requested.
 
-The updated Windows app passed formatting, Clippy with warnings denied, and a debug build. Tauri dev was restarted, the cached OCR sessions reported ready, and the manual English/Ukrainian card was visibly confirmed on the Windows desktop. Successful-copy notification behavior and OCR accuracy are left to the user's manual test.
+The updated Windows app passed formatting, Clippy with warnings denied, and a debug build. Tauri dev was restarted, the cached OCR sessions reported ready, and the manual English/Ukrainian card was visibly confirmed on the Windows desktop. The user then completed hands-on testing and confirmed: “Everything is working.” This records manual acceptance of the current Windows changes; it does not claim that the automated 52-case matrix completed.
 
 Use `pnpm ocr:cards` for manual acceptance. The full 52-case suite remains available through `pnpm ocr:qa --run` when requested again.
+
+During PR preparation, formatting and Clippy passed on both platforms, together with all 49 Windows and 33 macOS Rust unit tests. These include the OCR dictionary/space decoder regressions on Windows. The automated native card matrix was not restarted.
