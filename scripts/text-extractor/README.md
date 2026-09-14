@@ -68,6 +68,8 @@ Run `node scripts/text-extractor/preview.mjs` and open `http://127.0.0.1:4178`. 
 
 ## Windows verification and remaining acceptance checks
 
+The [manual native OCR pipeline](qa/README.md) provides English and Ukrainian cards with strict expected-text comparisons through the real Basic Quick Copy and editor paths. It is prepared but has not been run. It requires an explicit `pnpm ocr:qa --run` on an unlocked Windows desktop and is not attached to CI.
+
 ### Custom shortcuts and key validation on 2026-09-13
 
 Both shortcuts are independently editable. The Windows dev app loaded a temporary Ctrl + Alt + Q Quick Copy assignment and reported native `quick` capture mode when that combination was sent; Win + Shift + T still reported `editor`. The original preferences were restored afterward. Duplicate assignments, legacy migration, custom assignments surviving reload, registration conflicts, and settings-write rollback passed unit tests. All 40 Windows Rust tests passed, including a local HTTP server that verifies the Luna validation request and confirms failed checks preserve the previous key. Desktop browser fixtures verified shortcut recording and cancellation, light/dark key controls, Save/Remove, Checking feedback, invalid keys, offline errors, and storage failures. No real key was changed and no live OpenAI request was made.
