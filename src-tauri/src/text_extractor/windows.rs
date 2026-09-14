@@ -489,7 +489,11 @@ fn dismiss_notices(app: &tauri::AppHandle) {
     }
 }
 
-fn show_no_text_notice(app: &tauri::AppHandle, monitor: capture::Monitor) -> Result<(), String> {
+fn show_quick_copy_notice(
+    app: &tauri::AppHandle,
+    monitor: capture::Monitor,
+    outcome: &QuickCopyOutcome,
+) -> Result<(), String> {
     dismiss_notices(app);
     let scale = app
         .available_monitors()
@@ -512,6 +516,11 @@ fn show_no_text_notice(app: &tauri::AppHandle, monitor: capture::Monitor) -> Res
         WebviewUrl::App("quick-copy-notice.html".into()),
     )
     .title("Pulse Quick Copy Notice")
+    .initialization_script(if matches!(outcome, QuickCopyOutcome::Copied) {
+        "window.pulseQuickCopySucceeded = true;"
+    } else {
+        "window.pulseQuickCopySucceeded = false;"
+    })
     .theme(Some(native_theme(crate::visual_windows_theme(app)?)))
     .visible(false)
     .focused(false)
@@ -913,13 +922,12 @@ pub async fn text_extractor_quick_copy(
     if close_matching(&app, window.label(), false) {
         queue_prewarm(&app);
         match &result {
-            Ok(QuickCopyOutcome::NoText) => {
-                if let Err(error) = show_no_text_notice(&app, monitor) {
+            Ok(outcome) => {
+                if let Err(error) = show_quick_copy_notice(&app, monitor, outcome) {
                     eprintln!("Quick Copy notice: {error}");
                 }
             }
             Err(error) => report_error(&app, format!("Quick copy: {error}")),
-            Ok(QuickCopyOutcome::Copied) => {}
         }
     }
     result.map(|_| ())
