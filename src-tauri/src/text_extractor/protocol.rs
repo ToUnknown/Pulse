@@ -30,28 +30,10 @@ impl ExtractionMode {
     }
 }
 
-/// Persist the selected provider, never credentials or model responses.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AdvancedProvider {
-    Openai,
-    Apple,
-}
-impl Default for AdvancedProvider {
-    fn default() -> Self {
-        if cfg!(target_os = "macos") {
-            Self::Apple
-        } else {
-            Self::Openai
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Preferences {
     pub enabled: bool,
-    pub advanced_provider: AdvancedProvider,
     pub shortcut: String,
     pub quick_shortcut: String,
     pub editor_mode: ExtractionMode,
@@ -62,7 +44,6 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             enabled: false,
-            advanced_provider: AdvancedProvider::default(),
             shortcut: DEFAULT_SHORTCUT.into(),
             quick_shortcut: QUICK_SHORTCUT.into(),
             editor_mode: ExtractionMode::Basic,

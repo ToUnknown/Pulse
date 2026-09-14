@@ -23,69 +23,6 @@ let platform = "windows";
 let recording = null;
 let busy = false;
 let checkingKey = false;
-const providerSelector = $("#advanced-provider");
-const providerButtons = [...providerSelector.querySelectorAll("[data-provider]")];
-const appleStatus = $("#apple-intelligence-status");
-const appleMessage = $("#apple-intelligence-message");
-const appleRetry = $("#apple-intelligence-retry");
-function advancedAvailable() { return state?.advancedAvailable ?? state?.apiKeyConfigured ?? false; }
-function usingApple() { return platform === "macos" && state?.advancedProvider === "apple"; }
-function renderProvider() {
-  providerSelector.hidden = platform !== "macos";
-  if (platform === "macos") $("#openai-key-title").textContent = "Advanced model";
-  const apple = usingApple();
-  providerSelector.style.setProperty("--mode-index", apple ? 0 : 1);
-  for (const button of providerButtons) {
-    const selected = button.dataset.provider === (apple ? "apple" : "openai");
-    button.setAttribute("aria-checked", String(selected));
-    button.tabIndex = selected ? 0 : -1;
-    button.disabled = busy;
-  }
-  appleStatus.hidden = !apple;
-  const status = state?.appleIntelligence;
-  appleStatus.setAttribute("aria-busy", String(!!status?.checking));
-  appleStatus.dataset.error = String(!status?.available && !status?.checking);
-  appleMessage.textContent = status?.checking ? "Checking availability…"
-    : status?.available ? "Ready. Uses Apple’s Private Cloud Compute."
-    : status?.message || "Apple Intelligence is unavailable.";
-  appleRetry.hidden = !apple || !!status?.checking || !!status?.available;
-  appleRetry.disabled = busy;
-  $(".api-key-heading").hidden = apple;
-  $(".api-key-controls").hidden = apple;
-  keyInput.disabled = busy || apple;
-  keyInput.required = !apple;
-  if (apple) keyError.hidden = true;
-}
-async function chooseProvider(provider) {
-  if (busy || provider === state.advancedProvider) return;
-  lock(true);
-  settingsError.hidden = true;
-  const previous = state.advancedProvider;
-  state.advancedProvider = provider;
-  if (provider === "apple") state.appleIntelligence = { checking: true, available: false };
-  renderProvider();
-  try { await invoke("set_advanced_provider", { provider }); await load(); }
-  catch (reason) { state.advancedProvider = previous; render(); error(reason); }
-  finally { lock(false); }
-}
-providerButtons.forEach(button => button.addEventListener("click", () => chooseProvider(button.dataset.provider)));
-providerSelector.addEventListener("keydown", event => {
-  if (busy || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-  event.preventDefault();
-  const index = event.key === "Home" ? 0 : event.key === "End" ? 1 : usingApple() ? 1 : 0;
-  providerButtons[index].focus();
-  chooseProvider(providerButtons[index].dataset.provider);
-});
-appleRetry.addEventListener("click", async () => {
-  if (busy) return;
-  lock(true);
-  state.appleIntelligence = { checking: true, available: false };
-  renderProvider();
-  try { await invoke("retry_apple_intelligence"); await load(); }
-  catch (reason) { state.appleIntelligence = { available: false, message: String(reason) }; renderProvider(); }
-  finally { lock(false); }
-});
-
 function displayShortcut(value) {
   return value.split("+").map((part) => {
     const labels = { control: "Ctrl", ctrl: "Ctrl", super: platform === "macos" ? "⌘" : "Win", meta: platform === "macos" ? "⌘" : "Win", shift: "Shift", alt: platform === "macos" ? "Option" : "Alt" };
@@ -101,7 +38,6 @@ function lock(value) {
   keyRemove.disabled = value;
   for (const group of modeControls) for (const button of group.querySelectorAll("button")) button.disabled = value;
   renderKeyControls();
-  renderProvider();
 }
 function setExpanded(value) {
   shortcutRows.dataset.expanded = String(value);
@@ -109,7 +45,7 @@ function setExpanded(value) {
 }
 function renderModes() {
   for (const group of modeControls) {
-    group.hidden = !advancedAvailable();
+    group.hidden = !state.apiKeyConfigured;
     const mode = state[group.dataset.field] || "basic";
     group.style.setProperty("--mode-index", mode === "advanced" ? 1 : 0);
     for (const button of group.querySelectorAll("button")) {
@@ -129,7 +65,6 @@ function render() {
   setExpanded(state.enabled);
   renderOcrStatus(state.localOcr);
   renderModes();
-  renderProvider();
   for (const [field, button] of Object.entries(shortcutButtons)) { button.textContent = displayShortcut(state[field]); button.title = button.textContent; }
   keyStatus.textContent = state.apiKeyConfigured
     ? "Key saved."
@@ -161,10 +96,9 @@ function renderOcrStatus(status) {
 }
 async function pollOcrStatus() {
   try {
-    if (state?.appleIntelligence?.checking && !busy && !document.hidden) await load();
     if (state?.enabled && !document.hidden) renderOcrStatus(await invoke("local_ocr_state"));
   } catch { /* The window may be closing; the next visible poll can refresh it. */ }
-  const pending = state?.appleIntelligence?.checking || ["preparing", "downloading", "loading"].includes(state?.localOcr?.phase);
+  const pending = ["preparing", "downloading", "loading"].includes(state?.localOcr?.phase);
   ocrPoll = window.setTimeout(pollOcrStatus, pending ? 500 : 2500);
 }
 ocrRetry.addEventListener("click", async () => {
@@ -187,7 +121,7 @@ async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcu
 enabled.addEventListener("change", () => save(enabled.checked));
 for (const group of modeControls) {
   async function selectMode(button) {
-    if (busy || !state.enabled || !advancedAvailable()) return;
+    if (busy || !state.enabled || !state.apiKeyConfigured) return;
     const field = group.dataset.field;
     const previous = state[field] || "basic";
     if (previous === button.dataset.mode) return;
@@ -213,7 +147,7 @@ for (const group of modeControls) {
   });
 }
 function renderKeyControls() {
-  keySave.disabled = busy || usingApple() || !keyInput.value.trim();
+  keySave.disabled = busy || !keyInput.value.trim();
   keySave.textContent = checkingKey ? "Checking…" : "Save";
   keyMask.hidden = keyInput.dataset.configured !== "true" || keyInput.value.trim() !== "";
 }
@@ -226,7 +160,7 @@ keyInput.addEventListener("input", () => {
 });
 $("#openai-key-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (busy || usingApple() || !keyInput.value.trim()) return;
+  if (busy || !keyInput.value.trim()) return;
   checkingKey = true;
   lock(true);
   keyError.hidden = true;

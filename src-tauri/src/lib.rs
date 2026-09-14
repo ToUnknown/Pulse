@@ -1638,8 +1638,6 @@ pub fn run() {
         #[cfg(target_os = "windows")]
         set_auto_schedule,
         text_extractor::text_extractor_state,
-        text_extractor::set_advanced_provider,
-        text_extractor::retry_apple_intelligence,
         text_extractor::request_text_extractor_access,
         text_extractor::local_ocr_state,
         text_extractor::retry_local_ocr_setup,

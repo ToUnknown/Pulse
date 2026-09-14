@@ -3,7 +3,7 @@ use super::{
     local_ocr::ModelStatus,
     pixels::DesktopFrame,
     platform::{self, capture, LocalOcr},
-    protocol::{self, AdvancedProvider, Crop, ExtractionMode, Preferences, QuickCopyOutcome},
+    protocol::{self, Crop, ExtractionMode, Preferences, QuickCopyOutcome},
 };
 use crate::openai_credentials;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -56,7 +56,6 @@ struct Session {
     label: String,
     mode: CaptureMode,
     default_mode: ExtractionMode,
-    provider: AdvancedProvider,
     monitor: capture::Monitor,
     image: Option<Arc<DesktopFrame>>,
     crop: Option<Crop>,
@@ -106,7 +105,6 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         .and_then(|bytes| load_preferences(&bytes).ok())
         .unwrap_or_default();
     let _ = save(&path, &preferences);
-    advanced::install(app, preferences.advanced_provider);
     app.manage(TextExtractor {
         preferences: Mutex::new(preferences.clone()),
         local_ocr: LocalOcr::new(app.path().app_local_data_dir()?),
@@ -198,60 +196,18 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
     let credential_state = openai_credentials::is_configured();
     let configured = credential_state.as_ref().copied().unwrap_or(false);
     let preferences = state.preferences.lock().unwrap().clone();
-    let error = state.error.lock().unwrap().clone().or_else(|| {
-        if preferences.advanced_provider == AdvancedProvider::Openai {
-            credential_state.err()
-        } else {
-            None
-        }
-    });
+    let error = state
+        .error
+        .lock()
+        .unwrap()
+        .clone()
+        .or_else(|| credential_state.err());
     Ok(
         json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut, "quickShortcut": preferences.quick_shortcut,
         "editorMode": preferences.editor_mode, "quickMode": preferences.quick_mode,
-        "advancedProvider": preferences.advanced_provider,
-        "advancedAvailable": advanced::available(&app, preferences.advanced_provider),
-        "appleIntelligence": advanced::apple_status(&app),
         "apiKeyConfigured": configured, "error": error, "localOcr": state.local_ocr.status(),
         "captureAccess": platform::capture_access()}),
     )
-}
-
-#[tauri::command]
-pub async fn set_advanced_provider(
-    app: tauri::AppHandle,
-    window: WebviewWindow,
-    provider: AdvancedProvider,
-) -> Result<(), String> {
-    settings_only(&window)?;
-    if provider == AdvancedProvider::Apple && !cfg!(target_os = "macos") {
-        return Err("Apple Intelligence is available only on macOS.".into());
-    }
-    let state = app.state::<TextExtractor>();
-    {
-        let mut current = state.preferences.lock().unwrap();
-        let mut next = current.clone();
-        next.advanced_provider = provider;
-        save(&state.path, &next)?;
-        *current = next;
-    }
-    // A pending capture must never be silently redirected to a different cloud.
-    close_active(&app);
-    queue_prewarm(&app);
-    *state.error.lock().unwrap() = None;
-    if provider == AdvancedProvider::Apple {
-        advanced::refresh_apple(&app).await;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn retry_apple_intelligence(
-    app: tauri::AppHandle,
-    window: WebviewWindow,
-) -> Result<(), String> {
-    settings_only(&window)?;
-    advanced::refresh_apple(&app).await;
-    Ok(())
 }
 
 #[tauri::command]
@@ -437,15 +393,8 @@ pub async fn set_text_extractor(
     if enabled {
         platform::ensure_supported()?;
     }
-    let provider = app
-        .state::<TextExtractor>()
-        .preferences
-        .lock()
-        .unwrap()
-        .advanced_provider;
     let mut next = Preferences {
         enabled,
-        advanced_provider: provider,
         shortcut: shortcut_value,
         quick_shortcut: quick_shortcut_value,
         editor_mode,
@@ -461,7 +410,6 @@ pub async fn set_text_extractor(
         );
     }
     let mut current = state.preferences.lock().unwrap();
-    next.advanced_provider = current.advanced_provider;
     change_registered_shortcuts(
         &app,
         &registered_shortcuts(&current)?,
@@ -719,7 +667,6 @@ pub(crate) async fn start(app: &tauri::AppHandle, mode: CaptureMode) -> Result<(
                 CaptureMode::Quick => preferences.quick_mode,
                 CaptureMode::Editor => preferences.editor_mode,
             },
-            provider: preferences.advanced_provider,
             monitor,
             image: None,
             crop: None,
@@ -863,7 +810,7 @@ pub async fn text_extractor_quick_copy(
     window: WebviewWindow,
     crop: Crop,
 ) -> Result<(), String> {
-    let (monitor, default_mode, provider, cancel) = {
+    let (monitor, default_mode, cancel) = {
         let state = app.state::<TextExtractor>();
         let mut active = state.session.lock().unwrap();
         let session = active
@@ -878,7 +825,6 @@ pub async fn text_extractor_quick_copy(
         (
             session.monitor,
             session.default_mode,
-            session.provider,
             session.cancel.clone(),
         )
     };
@@ -890,8 +836,8 @@ pub async fn text_extractor_quick_copy(
             let image = tauri::async_runtime::spawn_blocking(move || capture::selection(monitor, crop))
                 .await.map_err(|_| "Screen capture stopped unexpectedly.".to_string())??;
             // Keep credential I/O off the shortcut-to-selector path. A removed key falls back locally.
-            let mode = default_mode.with_advanced_available(advanced::available(&app, provider));
-            recognize_selection(&app, image, mode, provider, cancel.clone()).await
+            let mode = default_mode.with_advanced_available(openai_credentials::is_configured().unwrap_or(false));
+            recognize_selection(&app, image, mode, cancel.clone()).await
         } => result,
     };
     let result = (|| {
@@ -970,16 +916,8 @@ pub fn text_extractor_capabilities(
     window: WebviewWindow,
 ) -> Result<bool, String> {
     ensure_session(&app, &window)?;
-    let state = app.state::<TextExtractor>();
-    let provider = state
-        .session
-        .lock()
-        .unwrap()
-        .as_ref()
-        .filter(|session| session.label == window.label())
-        .ok_or("This capture has ended.")?
-        .provider;
-    Ok(advanced::available(&app, provider))
+    // Credential storage failure must not prevent local OCR.
+    Ok(openai_credentials::is_configured().unwrap_or(false))
 }
 
 /// Request IDs also order cancellation IPC, so a late request can never replace a
@@ -1021,7 +959,7 @@ pub async fn extract_screen_text(
     if mode != "basic" && mode != "advanced" {
         return Err("Choose Basic or Advanced.".into());
     }
-    let (image, provider, cancel) = {
+    let (image, cancel) = {
         let state = app.state::<TextExtractor>();
         let mut active = state.session.lock().unwrap();
         let session = active
@@ -1032,7 +970,7 @@ pub async fn extract_screen_text(
             return Err("Start a new selection to read a different area.".into());
         }
         let image = session.image.clone().ok_or("Select an area first.")?;
-        (image, session.provider, begin_request(session, request_id)?)
+        (image, begin_request(session, request_id)?)
     };
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
@@ -1040,7 +978,7 @@ pub async fn extract_screen_text(
             let selection = tauri::async_runtime::spawn_blocking(move || image.crop(crop))
                 .await.map_err(|_| "Could not prepare this selection.")??;
             let mode = if mode == "basic" { ExtractionMode::Basic } else { ExtractionMode::Advanced };
-            recognize_selection(&app, selection, mode, provider, cancel.clone()).await
+            recognize_selection(&app, selection, mode, cancel.clone()).await
         } => result,
     };
     finish_request(&app, &window, request_id, result)
@@ -1055,18 +993,18 @@ pub async fn translate_extracted_text(
     request_id: u32,
 ) -> Result<String, String> {
     let body = protocol::translation_body(&text, &language)?;
-    let (provider, cancel) = {
+    let cancel = {
         let state = app.state::<TextExtractor>();
         let mut active = state.session.lock().unwrap();
         let session = active
             .as_mut()
             .filter(|s| s.label == window.label())
             .ok_or("This capture has ended.")?;
-        (session.provider, begin_request(session, request_id)?)
+        begin_request(session, request_id)?
     };
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
-        result = advanced::request(&app, provider, body, cancel.clone()) => result,
+        result = advanced::request(body, cancel.clone()) => result,
     };
     finish_request(&app, &window, request_id, result)
 }
@@ -1091,7 +1029,6 @@ async fn recognize_selection(
     app: &tauri::AppHandle,
     image: RgbaImage,
     mode: ExtractionMode,
-    provider: AdvancedProvider,
     cancel: CancellationToken,
 ) -> Result<String, String> {
     match mode {
@@ -1105,7 +1042,7 @@ async fn recognize_selection(
             let image_url = tauri::async_runtime::spawn_blocking(move || png_url(&image))
                 .await
                 .map_err(|_| "Could not prepare this selection.")??;
-            advanced::request(app, provider, protocol::request_body(&image_url), cancel).await
+            advanced::request(protocol::request_body(&image_url), cancel).await
         }
     }
 }
@@ -1209,7 +1146,6 @@ mod tests {
             label: "text-extractor-test".into(),
             mode: CaptureMode::Editor,
             default_mode: ExtractionMode::Basic,
-            provider: AdvancedProvider::default(),
             #[cfg(target_os = "macos")]
             monitor: capture::Monitor {
                 width: 4,

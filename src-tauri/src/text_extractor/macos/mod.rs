@@ -1,6 +1,5 @@
 //! Native macOS integration. AppKit stays on the main thread; capture and Vision
 //! run on background workers. No downloaded weights or Windows hook are linked.
-pub(crate) mod apple_intelligence;
 pub mod capture;
 mod native;
 mod ocr;

@@ -4,15 +4,11 @@
   const text = 'A little space to think.\n\nGood ideas often begin with something small: a line in a book, a passing thought, a few words worth keeping.\n\nMake room for what matters.';
   const platform = query.get('platform') || 'windows';
   let settings = { enabled: query.has('enabled'), editorMode: query.get('editorMode') || 'basic', quickMode: query.get('quickMode') || 'basic', shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null, localOcr: { phase: 'ready' } };
-  settings.advancedProvider = query.get('provider') || (platform === 'macos' ? 'apple' : 'openai');
   settings.captureAccess = { supported: true, granted: scenario !== 'capture-denied' };
-  settings.appleIntelligence = { available: scenario !== 'apple-denied', checking: false,
-    message: scenario === 'apple-denied' ? "Access denied. This Pulse build needs Apple's Private Cloud Compute permission." : null };
   if (platform === 'macos') {
     settings.shortcut = 'Alt+Shift+KeyT';
     settings.quickShortcut = 'Control+Alt+Shift+KeyT';
   }
-  const advancedAvailable = () => settings.advancedProvider === 'apple' ? settings.appleIntelligence.available : settings.apiKeyConfigured;
   window.__PULSE_FLOATING_SETTINGS__ = true;
   const calls = [];
   window.__preview = { calls, copied: null, closed: false };
@@ -50,11 +46,7 @@
     calls.push({ command, args: command === 'save_openai_api_key' ? '[redacted fixture]' : args });
     switch (command) {
       case 'settings_state': return { platform, startAtLogin: false, trayIcon: 'default', autoSchedule: platform === 'macos' ? null : { lightStart: 7, darkStart: 19 } };
-      case 'text_extractor_state': return { ...settings, advancedAvailable: advancedAvailable() };
-      case 'set_advanced_provider': settings.advancedProvider = args.provider; return;
-      case 'retry_apple_intelligence':
-        await new Promise(resolve => setTimeout(resolve, 500));
-        settings.appleIntelligence = { available: true, checking: false, message: null }; return;
+      case 'text_extractor_state': return { ...settings };
       case 'request_text_extractor_access': settings.captureAccess.granted = true; return;
       case 'local_ocr_state': return settings.localOcr;
       case 'retry_local_ocr_setup': settings.localOcr = { phase: 'ready' }; return;
@@ -95,7 +87,7 @@
         if (scenario === 'basic-error' || scenario === 'clipboard-error') { window.__preview.error = 'Quick copy failed'; throw 'Quick copy failed'; }
         window.__preview.copied = text.replaceAll('\n\n', '\n'); return;
       }
-      case 'text_extractor_capabilities': return advancedAvailable();
+      case 'text_extractor_capabilities': return settings.apiKeyConfigured;
       case 'cancel_text_extraction': return;
       case 'text_extractor_show': return;
       case 'record_text_extractor_shortcut': return;
@@ -105,14 +97,14 @@
           if (scenario === 'basic-error') throw 'Offline text recognition is getting ready. Check Settings → Advanced.';
           return scenario === 'basic-empty' ? '' : text.replaceAll('\n\n', '\n');
         }
-        if (!advancedAvailable()) throw 'Configure the selected advanced provider in Settings.';
+        if (!settings.apiKeyConfigured) throw 'Add your OpenAI API key in Settings to use Advanced and Translate.';
         await new Promise(resolve => setTimeout(resolve, scenario === 'pending' ? 30000 : scenario === 'demo' ? 6500 : 1600));
         window.__preview.extractionReadyAt = performance.now();
         if (scenario === 'error') throw 'Could not reach OpenAI. Check your connection and try again.';
         return scenario === 'empty' ? '' : text;
       }
       case 'translate_extracted_text': {
-        if (!advancedAvailable()) throw 'Configure the selected advanced provider in Settings.';
+        if (!settings.apiKeyConfigured) throw 'Add your OpenAI API key in Settings to use Advanced and Translate.';
         await new Promise(resolve => setTimeout(resolve, scenario === 'translation-pending' ? 30000 : 1600));
         if (scenario === 'translation-error') throw 'Could not reach OpenAI. Your text is unchanged.';
         if (scenario === 'translation-empty') return '';
