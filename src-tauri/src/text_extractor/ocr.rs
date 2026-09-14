@@ -1,16 +1,20 @@
+use super::ocr_recognizer::Recognizer;
 use image::{Rgba, RgbaImage};
-use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
+use ort::session::{
+    builder::{GraphOptimizationLevel, SessionBuilder},
+    Session,
+};
 use paddle_ocr_rs::{
-    base_net::BaseNet, crnn_net::CrnnNet, db_net::DbNet, ocr_result::TextBox, ocr_utils::OcrUtils,
+    base_net::BaseNet, db_net::DbNet, ocr_result::TextBox, ocr_utils::OcrUtils,
     scale_param::ScaleParam,
 };
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
 /// Reused CPU sessions. Creating these loads weights, but never runs inference.
 pub struct Ocr {
     detector: DbNet,
-    recognizer: CrnnNet,
+    recognizer: Recognizer,
 }
 
 fn session_options(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
@@ -27,7 +31,6 @@ fn session_options(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error
 impl Ocr {
     pub fn load(detector_path: &Path, recognizer_path: &Path) -> Result<Self, String> {
         let mut detector = DbNet::new();
-        let mut recognizer = CrnnNet::new();
         detector
             .init_model(
                 detector_path
@@ -37,16 +40,11 @@ impl Ocr {
                 Some(session_options),
             )
             .map_err(|error| format!("Could not load the text detector: {error}"))?;
-        // The pinned RapidOCR model embeds its Cyrillic + Latin character dictionary.
-        recognizer
-            .init_model(
-                recognizer_path
-                    .to_str()
-                    .ok_or("Could not read the model folder.")?,
-                1,
-                Some(session_options),
-            )
+        let session = Session::builder()
+            .and_then(session_options)
+            .and_then(|builder| builder.commit_from_file(recognizer_path))
             .map_err(|error| format!("Could not load the text recognizer: {error}"))?;
+        let recognizer = Recognizer::new(session)?;
         Ok(Self {
             detector,
             recognizer,
@@ -123,15 +121,10 @@ impl Ocr {
                 } else {
                     crop
                 };
-                let result = self
-                    .recognizer
-                    .get_text_lines(&[crop], &HashMap::new(), 0.0)
-                    .map_err(|error| format!("Could not read this selection: {error}"))?;
-                for line in result {
-                    let text = line.text.trim();
-                    if !text.is_empty() && line.text_score.is_finite() && line.text_score >= 0.5 {
-                        fragments.push(text.to_string());
-                    }
+                let line = self.recognizer.recognize(&crop)?;
+                let text = line.text.trim();
+                if !text.is_empty() && line.text_score.is_finite() && line.text_score >= 0.5 {
+                    fragments.push(text.to_string());
                 }
             }
             if !fragments.is_empty() {
