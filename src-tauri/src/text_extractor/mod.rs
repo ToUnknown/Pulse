@@ -20,3 +20,7 @@ pub use windows::*;
 mod hotkeys;
 #[cfg(any(target_os = "windows", test))]
 mod shortcut_keys;
+#[cfg(target_os = "windows")]
+mod shortcut_worker;
+#[cfg(target_os = "windows")]
+pub(crate) use shortcut_worker::run_if_requested as run_shortcut_worker_if_requested;

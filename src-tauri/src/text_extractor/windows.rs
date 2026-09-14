@@ -40,7 +40,6 @@ pub struct TextExtractor {
     warm: Mutex<Option<WarmWindow>>,
     preparing: tokio::sync::Mutex<()>,
     starting: AtomicBool,
-    hotkeys_ready: AtomicBool,
     recording_shortcut: AtomicBool,
     next_id: AtomicU64,
     error: Mutex<Option<String>>,
@@ -118,7 +117,6 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         warm: Mutex::new(None),
         preparing: tokio::sync::Mutex::new(()),
         starting: AtomicBool::new(false),
-        hotkeys_ready: AtomicBool::new(false),
         recording_shortcut: AtomicBool::new(false),
         next_id: AtomicU64::new(1),
         error: Mutex::new(None),
@@ -164,16 +162,10 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
             })
             .build(),
     )?;
-    match hotkeys::install(app) {
-        Ok(()) => app
-            .state::<TextExtractor>()
-            .hotkeys_ready
-            .store(true, Ordering::Release),
-        Err(error) => {
-            let state = app.state::<TextExtractor>();
-            state.preferences.lock().unwrap().enabled = false;
-            *state.error.lock().unwrap() = Some(error);
-        }
+    if let Err(error) = hotkeys::install(app) {
+        let state = app.state::<TextExtractor>();
+        state.preferences.lock().unwrap().enabled = false;
+        *state.error.lock().unwrap() = Some(error);
     }
     if app
         .state::<TextExtractor>()
@@ -267,6 +259,12 @@ pub fn settings_blurred(app: &tauri::AppHandle) {
     app.state::<TextExtractor>()
         .recording_shortcut
         .store(false, Ordering::Release);
+}
+
+pub(super) fn shortcuts_stopped(app: &tauri::AppHandle) {
+    let state = app.state::<TextExtractor>();
+    *state.error.lock().unwrap() =
+        Some("Text Extractor shortcuts stopped. Restart Pulse to enable them again.".into());
 }
 
 fn shortcut_pair(preferences: &Preferences) -> Result<[Shortcut; 2], String> {
@@ -417,7 +415,7 @@ pub async fn set_text_extractor(
     next.shortcut = keys[0].to_string();
     next.quick_shortcut = keys[1].to_string();
     let state = app.state::<TextExtractor>();
-    if enabled && !state.hotkeys_ready.load(Ordering::Acquire) {
+    if enabled && !hotkeys::available() {
         return Err(
             "Windows could not install Text Extractor shortcuts. Restart Pulse and try again."
                 .into(),

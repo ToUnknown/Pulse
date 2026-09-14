@@ -1608,6 +1608,10 @@ fn start_auto_scheduler(controller: WindowsAppearanceController) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if text_extractor::run_shortcut_worker_if_requested() {
+        return;
+    }
     let builder = tauri::Builder::default();
 
     #[cfg(target_os = "windows")]
