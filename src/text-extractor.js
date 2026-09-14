@@ -36,6 +36,7 @@ let busy = false;
 let retryAction;
 let mode = "basic";
 let advancedAvailable = false;
+let capabilitiesReady = Promise.resolve();
 const drafts = { basic: null, advanced: null };
 
 function phase(value) { document.body.dataset.phase = value; }
@@ -183,7 +184,7 @@ surface.addEventListener("pointerup", async (event) => {
     phase("copying");
     surface.hidden = true;
     closing = true;
-    // Native local OCR writes the clipboard and closes this window. No result UI.
+    // The configured recognizer writes the clipboard and closes this window. No result UI.
     await invoke("text_extractor_quick_copy", { crop }).catch(() => invoke("close_text_extractor").catch(() => {}));
     return;
   }
@@ -192,7 +193,7 @@ surface.addEventListener("pointerup", async (event) => {
     const images = await invoke("text_extractor_capture_selection", { crop });
     if (closing) return;
     cropImage.src = images.imageUrl;
-    await cropImage.decode();
+    await Promise.all([cropImage.decode(), capabilitiesReady]);
     if (closing) return;
     surface.hidden = true;
     result.hidden = false;
@@ -273,7 +274,7 @@ async function runExtraction(initial = false, force = false) {
     details.inert = true;
     modeControl.inert = true;
     editor.disabled = true;
-    document.body.dataset.zoomed = "false";
+    document.body.dataset.zoomed = String(mode === "advanced");
     if (!reducedMotion.matches) {
       const target = frame.getBoundingClientRect();
       await motion(frame, [
@@ -283,7 +284,7 @@ async function runExtraction(initial = false, force = false) {
     }
     if (current !== generation || closing) return;
     modeControl.inert = false;
-    phase("basic-reading");
+    phase(mode === "advanced" ? "scanning" : "basic-reading");
   } else if (mode === "basic" || cached) {
     phase("basic-reading");
     editor.disabled = !cached;
@@ -407,7 +408,12 @@ async function beginCapture() {
     await new Promise(requestAnimationFrame);
     shown = true;
     if (capture.mode !== "quick") {
-      invoke("text_extractor_capabilities").then((available) => { if (!closing) setCapabilities(available); }).catch(() => {});
+      capabilitiesReady = invoke("text_extractor_capabilities").catch(() => false).then((available) => {
+        if (closing) return;
+        setCapabilities(available);
+        mode = available && capture.defaultMode === "advanced" ? "advanced" : "basic";
+        renderMode();
+      });
     }
   } catch (error) {
     if (!closing) {
