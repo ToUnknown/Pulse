@@ -5,6 +5,8 @@
   const platform = query.get('platform') || 'windows';
   let settings = { enabled: query.has('enabled'), editorMode: query.get('editorMode') || 'basic', quickMode: query.get('quickMode') || 'basic', shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null, localOcr: { phase: 'ready' } };
   settings.captureAccess = { supported: true, granted: scenario !== 'capture-denied' };
+  if (scenario === 'ocr-preparing') settings.localOcr = { phase: 'preparing' };
+  if (scenario === 'ocr-error') settings.localOcr = { phase: 'error', error: 'Could not prepare on-device OCR. Try again.' };
   if (platform === 'macos') {
     settings.shortcut = 'Alt+Shift+KeyT';
     settings.quickShortcut = 'Control+Alt+Shift+KeyT';

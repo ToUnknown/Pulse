@@ -18,4 +18,5 @@ void pulse_configure_overlay(void *window);
 bool pulse_position_overlay(void *window, PulseMonitor monitor, bool notice, char **error);
 bool pulse_capture_screen(PulseMonitor monitor, uint8_t **pixels, char **error);
 char *pulse_recognize_text(const uint8_t *rgba, uint32_t width, uint32_t height, char **error);
+bool pulse_prepare_text_recognition(char **error);
 void pulse_native_free(void *pointer);

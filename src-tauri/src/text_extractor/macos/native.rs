@@ -24,6 +24,7 @@ extern "C" {
         height: u32,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    pub fn pulse_prepare_text_recognition(error: *mut *mut c_char) -> bool;
     pub fn pulse_native_free(pointer: *mut c_void);
 }
 

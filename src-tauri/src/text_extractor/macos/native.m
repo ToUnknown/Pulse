@@ -1,5 +1,6 @@
 #import "native.h"
 #import <AppKit/AppKit.h>
+#import <CoreText/CoreText.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <Vision/Vision.h>
 #import <unistd.h>
@@ -211,5 +212,48 @@ char *pulse_recognize_text(const uint8_t *rgba, uint32_t width, uint32_t height,
         }
         PulseError(error, @"Text Extractor requires macOS 14 or later.");
         return NULL;
+    }
+}
+
+bool pulse_prepare_text_recognition(char **error) {
+    @autoreleasepool {
+        // Synthetic text exercises the same multilingual recognition path as a
+        // capture, without screen access. A blank image only warms the detector.
+        const uint32_t width = 700, height = 160;
+        uint8_t *pixels = calloc((size_t)width * height, 4);
+        if (!pixels) return PulseError(error, @"Could not prepare on-device OCR. Try again.");
+        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGContextRef context = CGBitmapContextCreate(pixels, width, height, 8, width * 4,
+            space, kCGBitmapByteOrder32Big | kCGImageAlphaPremultipliedLast);
+        CGColorSpaceRelease(space);
+        if (!context) {
+            free(pixels);
+            return PulseError(error, @"Could not prepare on-device OCR. Try again.");
+        }
+        CGContextSetRGBFillColor(context, 1, 1, 1, 1);
+        CGContextFillRect(context, CGRectMake(0, 0, width, height));
+        CTFontRef font = CTFontCreateWithName(CFSTR("Helvetica"), 28, NULL);
+        CGFloat y = 100;
+        for (NSString *text in @[@"Pulse reads words with spaces.", @"Український текст для перевірки."]) {
+            NSAttributedString *string = [[NSAttributedString alloc] initWithString:text
+                attributes:@{(__bridge NSString *)kCTFontAttributeName: (__bridge id)font}];
+            CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)string);
+            CGContextSetTextPosition(context, 25, y);
+            CTLineDraw(line, context);
+            CFRelease(line);
+            y -= 50;
+        }
+        CFRelease(font);
+        CGContextRelease(context);
+        char *result = pulse_recognize_text(pixels, width, height, error);
+        free(pixels);
+        if (!result) return false;
+        NSData *data = [NSData dataWithBytes:result length:strlen(result)];
+        free(result);
+        NSArray *lines = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if (![lines isKindOfClass:NSArray.class] || !lines.count) {
+            return PulseError(error, @"Could not prepare on-device OCR. Try again.");
+        }
+        return true;
     }
 }
