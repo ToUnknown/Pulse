@@ -6,14 +6,14 @@ Pulse is a tray/menu-bar utility for macOS and Windows.
 
 ### macOS
 
-Text Extractor requires macOS 14 or later. Other menu-bar features remain available on older supported Macs.
+The Mac app requires macOS 12 or later; Text Extractor requires macOS 14 or later.
 
 - Settings from the menu-bar menu, organized into General, Advanced, and Appearance pages
 - Start at login
 - Default and Red menu-bar icons
 - In-app update checks and restart
 
-- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized.
+- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized. Advanced extraction and Translate use the provider selected in Settings: Apple Intelligence by default, or OpenAI with a saved API key. Apple’s cloud model requires macOS 27, a build made with Xcode 27, an eligible Apple Intelligence device, and Apple-approved Private Cloud Compute access. Unavailable access appears beside the provider with Retry; Basic stays usable.
 
 ### Windows
 
