@@ -13,7 +13,7 @@ Text Extractor requires macOS 14 or later. Other menu-bar features remain availa
 - Default and Red menu-bar icons
 - In-app update checks and restart
 
-- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized. Adding the optional shared OpenAI API key unlocks Advanced extraction with GPT-5.6 Luna (no reasoning) and Translate, using the same key validation and controls as Windows.
+- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Enabling Text Extractor prepares OCR in the background; Settings shows its status until it is ready. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized. Adding the optional shared OpenAI API key unlocks Advanced extraction with GPT-5.6 Luna (no reasoning) and Translate, using the same key validation and controls as Windows.
 
 ### Windows
 

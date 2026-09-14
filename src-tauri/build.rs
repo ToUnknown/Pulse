@@ -8,7 +8,7 @@ fn main() {
             .flag("-fobjc-arc")
             .flag("-fblocks")
             .compile("pulse_capture");
-        for framework in ["AppKit", "Vision", "CoreGraphics"] {
+        for framework in ["AppKit", "Vision", "CoreGraphics", "CoreText"] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }
         // Older Macs can still run the tray app; Text Extractor checks macOS 14

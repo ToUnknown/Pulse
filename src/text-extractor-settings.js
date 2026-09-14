@@ -85,9 +85,11 @@ function renderOcrStatus(status) {
   ocrSetup.hidden = !state?.enabled || ["idle", "ready"].includes(phase);
   ocrRetry.hidden = phase !== "error";
   ocrSetup.dataset.error = String(phase === "error");
+  ocrSetup.dataset.centered = String(platform === "macos");
   ocrLabel.textContent = phase === "downloading"
     ? `Downloading offline OCR · ${status.modelIndex}/2`
     : phase === "error" ? status.error
+    : platform === "macos" ? "On-device OCR is compiling. It will be available shortly."
     : "Preparing offline OCR…";
   ocrProgress.hidden = phase !== "downloading";
   if (status?.totalBytes) {
