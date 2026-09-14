@@ -325,17 +325,25 @@ if (window.__PULSE_FLOATING_SETTINGS__) {
   invoke("settings_window_action", { action: "ready" }).catch(showError);
   const done = document.querySelector("#settings-done");
   let dismissing = false;
+  let dismissalGeneration = 0;
   async function dismissSettings() {
     if (dismissing) return;
+    const generation = ++dismissalGeneration;
     dismissing = true;
     openCustomSelect?.close();
     document.documentElement.dataset.closing = "true";
     if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
       await new Promise(resolve => setTimeout(resolve, 160));
     }
+    if (generation !== dismissalGeneration) return;
     try { await invoke("settings_window_action", { action: "done" }); }
-    catch (error) { showError(error); }
-    finally { dismissing = false; delete document.documentElement.dataset.closing; }
+    catch (error) { if (generation === dismissalGeneration) showError(error); }
+    finally {
+      if (generation === dismissalGeneration) {
+        dismissing = false;
+        delete document.documentElement.dataset.closing;
+      }
+    }
   }
   done.addEventListener("click", dismissSettings);
   document.querySelector(".settings-header").addEventListener("pointerdown", event => {
@@ -348,6 +356,7 @@ if (window.__PULSE_FLOATING_SETTINGS__) {
     dismissSettings();
   });
   window.addEventListener("pulse-settings-open", () => {
+    dismissalGeneration += 1;
     dismissing = false;
     delete document.documentElement.dataset.closing;
     document.querySelector('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });

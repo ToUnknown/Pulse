@@ -33,13 +33,14 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri -> target
-      - name: Check JavaScript and crop geometry
+      - name: Check JavaScript and UI behavior
         run: |
+          node --check src/settings.js
           node --check src/text-extractor.js
           node --check src/text-extractor-settings.js
           node --check scripts/text-extractor/preview.mjs
           node --check scripts/text-extractor/preview-bridge.js
-          node --test tests/extraction-geometry.test.mjs
+          node --test tests/extraction-geometry.test.mjs tests/settings-dismissal.test.mjs
       - name: Check Rust formatting
         working-directory: src-tauri
         run: cargo fmt -- --check
