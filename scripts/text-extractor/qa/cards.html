@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pulse OCR cards</title>
+<style>
+:root { font-family: "Segoe UI", sans-serif; color: #181818; background: #dedede; }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: grid; grid-template-rows: auto 1fr auto; padding: 28px 36px; }
+header, footer { display: flex; justify-content: space-between; gap: 20px; color: #666; font-size: 13px; }
+main { min-height: 0; display: grid; place-items: center; }
+#capture-zone { width: min(1000px, calc(100vw - 100px)); padding: 28px; background: #fff; color: #151515; border-radius: 20px; font-size: 20px; line-height: 1.55; }
+#capture-zone.tight { width: max-content; padding: 2px; border-radius: 0; line-height: 1.1; }
+.block + .block { margin-top: 18px; }
+.line { white-space: pre; }
+.heading { font-size: 1.35em; font-weight: 700; }
+.subheading { font-size: 1.1em; font-weight: 650; }
+.table { display: grid; gap: 10px; }
+.table-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr; column-gap: 24px; border-bottom: 1px solid #bbb; padding-bottom: 7px; }
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; font-size: 17px; }
+.shapes { height: 180px; display: flex; align-items: center; justify-content: center; gap: 55px; }
+.shapes i { display: block; width: 70px; height: 70px; background: #999; border-radius: 50%; }
+.shapes i + i { border-radius: 18px; background: #777; }
+:root[data-theme="dark"] { background: #131313; color: #eee; }
+:root[data-theme="dark"] #capture-zone { background: #262626; color: #f2f2f2; }
+:root[data-theme="dark"] header, :root[data-theme="dark"] footer { color: #aaa; }
+button, select { font: inherit; border: 1px solid currentColor; border-radius: 999px; padding: 5px 14px; background: transparent; color: inherit; cursor: pointer; }
+select option { background: #fff; color: #171717; }
+.manual-controls { display: flex; gap: 10px; align-items: center; }
+</style>
+</head>
+<body>
+<header><span id="case-name">Waiting for the runner</span><span id="case-meta"></span></header>
+<main><article id="capture-zone" aria-label="OCR source card"></article></main>
+<footer><span>Pulse native OCR verification · synthetic text only</span><button id="stop">Stop · F8</button></footer>
+<script type="module">
+const params = new URLSearchParams(location.search);
+const token = params.get('token');
+document.title = `Pulse OCR cards ${params.get('run')}`;
+const cases = await (await fetch(`/fixtures.json?token=${encodeURIComponent(token)}`)).json();
+function line(text) { const node = document.createElement('div'); node.className = 'line'; node.textContent = text; return node; }
+window.showOcrCard = async (id, theme) => {
+  const fixture = cases.find(item => item.id === id);
+  if (!fixture) throw new Error('Unknown fixture');
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('#case-name').textContent = fixture.name;
+  document.querySelector('#case-meta').textContent = `${id} · ${theme}`;
+  const card = document.querySelector('#capture-zone');
+  card.replaceChildren(); card.className = fixture.tight ? 'tight' : '';
+  card.style.fontSize = `${fixture.fontSize || 20}px`;
+  card.style.fontFamily = fixture.font === 'monospace' ? 'Consolas, monospace' : '"Segoe UI", sans-serif';
+  for (const block of fixture.blocks) {
+    const node = document.createElement('div'); node.className = `block ${block.kind || ''}`;
+    if (block.indent) node.style.marginLeft = `${block.indent}px`;
+    if (block.kind === 'table') for (const cells of block.rows) {
+      const row = document.createElement('div'); row.className = 'table-row';
+      cells.forEach(text => row.append(line(text))); node.append(row);
+    } else if (block.kind === 'columns') for (const texts of block.columns) {
+      const column = document.createElement('div'); texts.forEach(text => column.append(line(text))); node.append(column);
+    } else if (block.kind === 'shapes') { node.append(document.createElement('i'), document.createElement('i')); }
+    else (block.lines || []).forEach(text => node.append(line(text)));
+    card.append(node);
+  }
+  await document.fonts.ready;
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const rect = card.getBoundingClientRect();
+  const overflow = [...card.querySelectorAll('.line')].some(node => {
+    const r = node.getBoundingClientRect(); return r.left < rect.left || r.right > rect.right || r.top < rect.top || r.bottom > rect.bottom || node.scrollWidth > node.clientWidth + 1;
+  });
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, viewportWidth: innerWidth, viewportHeight: innerHeight, dpr: devicePixelRatio, overflow };
+};
+function stop() { fetch(`/abort?token=${encodeURIComponent(token)}`, { method: 'POST' }); }
+document.querySelector('#stop').onclick = stop;
+document.addEventListener('keydown', event => { if (event.key === 'F8') stop(); });
+window.cardsReady = true;
+if (params.has('manual')) {
+  document.querySelector('#stop').hidden = true;
+  document.querySelector('footer span').textContent = 'Select any text using your Pulse shortcut. Close this browser window when finished.';
+  const controls = document.createElement('div'); controls.className = 'manual-controls';
+  const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Test card');
+  for (const fixture of cases) { const option = document.createElement('option'); option.value = fixture.id; option.textContent = fixture.name; picker.append(option); }
+  picker.value = params.get('case') || 'mixed-languages';
+  if (!picker.value) picker.value = cases[0].id;
+  let theme = 'light';
+  const themeButton = document.createElement('button'); themeButton.textContent = 'Dark card';
+  picker.onchange = () => window.showOcrCard(picker.value, theme);
+  themeButton.onclick = () => { theme = theme === 'light' ? 'dark' : 'light'; themeButton.textContent = theme === 'light' ? 'Dark card' : 'Light card'; window.showOcrCard(picker.value, theme); };
+  controls.append(picker, themeButton); document.querySelector('header').append(controls);
+  await window.showOcrCard(picker.value, theme);
+}
+</script>
+</body>
+</html>

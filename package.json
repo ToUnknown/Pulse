@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "ocr:qa": "node scripts/text-extractor/qa/run.mjs",
+    "ocr:cards": "node scripts/text-extractor/qa/manual.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"

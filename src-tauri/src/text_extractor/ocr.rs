@@ -1,75 +1,151 @@
+use super::ocr_recognizer::Recognizer;
 use image::{Rgba, RgbaImage};
-use windows::{
-    Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
-    Media::Ocr::OcrEngine,
-    Storage::Streams::DataWriter,
-    Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED},
+use ort::session::{
+    builder::{GraphOptimizationLevel, SessionBuilder},
+    Session,
 };
+use paddle_ocr_rs::{
+    base_net::BaseNet, db_net::DbNet, ocr_result::TextBox, ocr_utils::OcrUtils,
+    scale_param::ScaleParam,
+};
+use std::path::Path;
+use tokio_util::sync::CancellationToken;
 
-struct Runtime;
-impl Drop for Runtime {
-    fn drop(&mut self) {
-        // Balanced on the same blocking worker that successfully initialized WinRT.
-        unsafe { RoUninitialize() };
+/// Reused CPU sessions. Creating these loads weights, but never runs inference.
+pub struct Ocr {
+    detector: DbNet,
+    recognizer: Recognizer,
+}
+
+fn session_options(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
+    let threads = std::thread::available_parallelism().map_or(2, |count| count.get().min(4));
+    builder
+        .with_optimization_level(GraphOptimizationLevel::Level2)?
+        .with_intra_threads(threads)?
+        .with_inter_threads(1)?
+        .with_parallel_execution(false)?
+        .with_intra_op_spinning(false)?
+        .with_inter_op_spinning(false)
+}
+
+impl Ocr {
+    pub fn load(detector_path: &Path, recognizer_path: &Path) -> Result<Self, String> {
+        let mut detector = DbNet::new();
+        detector
+            .init_model(
+                detector_path
+                    .to_str()
+                    .ok_or("Could not read the model folder.")?,
+                1,
+                Some(session_options),
+            )
+            .map_err(|error| format!("Could not load the text detector: {error}"))?;
+        let session = Session::builder()
+            .and_then(session_options)
+            .and_then(|builder| builder.commit_from_file(recognizer_path))
+            .map_err(|error| format!("Could not load the text recognizer: {error}"))?;
+        let recognizer = Recognizer::new(session)?;
+        Ok(Self {
+            detector,
+            recognizer,
+        })
+    }
+
+    pub fn recognize(
+        &mut self,
+        image: RgbaImage,
+        cancel: &CancellationToken,
+    ) -> Result<String, String> {
+        if image.width() == 0 || image.height() == 0 {
+            return Err("Select a larger area inside this screen.".into());
+        }
+        if cancel.is_cancelled() {
+            return Err("Capture cancelled.".into());
+        }
+        let image = prepare_image(image, 4096);
+        let mut image = image::DynamicImage::ImageRgba8(image).into_rgb8();
+        // RapidOCR's ONNX models expect OpenCV's BGR channel order.
+        for pixel in image.pixels_mut() {
+            pixel.0.swap(0, 2);
+        }
+        let scale =
+            ScaleParam::get_scale_param(&image, image.width().max(image.height()).min(1536));
+        let boxes = self
+            .detector
+            .get_text_boxes(&image, &scale, 0.5, 0.3, 1.6)
+            .map_err(|error| format!("Could not find text in this selection: {error}"))?;
+        // Form rows first, then order fragments left to right. A fuzzy sort comparator
+        // would be non-transitive for boxes with slightly different baselines.
+        let mut boxes: Vec<_> = boxes
+            .into_iter()
+            .filter(|b| {
+                if b.points.len() != 4 {
+                    return false;
+                }
+                let (left, top, right, bottom) = bounds(b);
+                right > left + 1 && bottom > top + 1
+            })
+            .collect();
+        boxes.sort_by_key(|b| {
+            let (x, y, _, _) = bounds(b);
+            (y, x)
+        });
+        let mut rows: Vec<Vec<TextBox>> = Vec::new();
+        for text_box in boxes {
+            let (_, top, _, bottom) = bounds(&text_box);
+            if let Some(row) = rows.last_mut().filter(|row| {
+                let (_, row_top, _, row_bottom) = bounds(&row[0]);
+                let overlap = bottom.min(row_bottom).saturating_sub(top.max(row_top));
+                overlap * 2 >= (bottom - top).min(row_bottom - row_top)
+            }) {
+                row.push(text_box);
+            } else {
+                rows.push(vec![text_box]);
+            }
+        }
+        let mut lines = Vec::new();
+        for mut row in rows {
+            row.sort_by_key(|b| bounds(b).0);
+            let mut fragments = Vec::new();
+            for text_box in row {
+                if cancel.is_cancelled() {
+                    return Err("Capture cancelled.".into());
+                }
+                let crop = OcrUtils::get_rotate_crop_image(&image, &text_box.points);
+                if crop.width() == 0 || crop.height() == 0 {
+                    continue;
+                }
+                // Bound very long, thin selections before recognition allocates tensors.
+                let crop = if u64::from(crop.width()) * 48 > u64::from(crop.height()) * 4096 {
+                    image::imageops::resize(&crop, 4096, 48, image::imageops::FilterType::Triangle)
+                } else {
+                    crop
+                };
+                let line = self.recognizer.recognize(&crop)?;
+                let text = line.text.trim();
+                if !text.is_empty() && line.text_score.is_finite() && line.text_score >= 0.5 {
+                    fragments.push(text.to_string());
+                }
+            }
+            if !fragments.is_empty() {
+                lines.push(fragments.join(" "));
+            }
+        }
+        Ok(lines.join("\n"))
     }
 }
 
-/// Uses only installed Windows OCR languages. The selection never leaves this PC.
-pub fn recognize(image: RgbaImage) -> Result<String, String> {
-    if image.width() == 0 || image.height() == 0 {
-        return Err("Select a larger area inside this screen.".into());
-    }
-    unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
-        .map_err(|_| "Windows text recognition could not start. Try again.")?;
-    let _runtime = Runtime;
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-        .or_else(|_| {
-            let languages = OcrEngine::AvailableRecognizerLanguages()?;
-            OcrEngine::TryCreateFromLanguage(&languages.GetAt(0)?)
-        })
-        .map_err(|_| "Install an OCR language in Windows Settings > Time & language > Language & region, then try again.")?;
-    let limit = OcrEngine::MaxImageDimension().map_err(ocr_error)?;
-    if limit == 0 {
-        return Err("Windows text recognition is unavailable.".into());
-    }
-    let mut image = prepare_image(image, limit);
-    let (width, height) = image.dimensions();
-    for pixel in image.pixels_mut() {
-        pixel.0.swap(0, 2);
-        pixel[3] = 255;
-    }
-    let pixels = image.into_raw();
-    let writer = DataWriter::new().map_err(ocr_error)?;
-    writer.WriteBytes(&pixels).map_err(ocr_error)?;
-    let bitmap = SoftwareBitmap::CreateCopyFromBuffer(
-        &writer.DetachBuffer().map_err(ocr_error)?,
-        BitmapPixelFormat::Bgra8,
-        width as i32,
-        height as i32,
+fn bounds(text_box: &TextBox) -> (u32, u32, u32, u32) {
+    text_box.points.iter().fold(
+        (u32::MAX, u32::MAX, 0, 0),
+        |(left, top, right, bottom), p| {
+            (left.min(p.x), top.min(p.y), right.max(p.x), bottom.max(p.y))
+        },
     )
-    .map_err(ocr_error)?;
-    let result = engine
-        .RecognizeAsync(&bitmap)
-        .map_err(ocr_error)?
-        .get()
-        .map_err(ocr_error)?;
-    let lines = result.Lines().map_err(ocr_error)?;
-    let mut text = Vec::new();
-    for index in 0..lines.Size().map_err(ocr_error)? {
-        text.push(
-            lines
-                .GetAt(index)
-                .map_err(ocr_error)?
-                .Text()
-                .map_err(ocr_error)?
-                .to_string(),
-        );
-    }
-    Ok(text.join("\n"))
 }
 
 fn prepare_image(image: RgbaImage, limit: u32) -> RgbaImage {
-    // Tight crops can make Windows OCR return no lines at all. Add space using
+    // Tight crops can leave too little context around characters. Add space using
     // the crop's own background, without capturing text outside the selection.
     let padding = 16.min((limit - 1) / 2);
     let available = limit - padding * 2;
@@ -116,10 +192,6 @@ fn border_background(image: &RgbaImage) -> Rgba<u8> {
     background
 }
 
-fn ocr_error(_: windows::core::Error) -> String {
-    "Windows could not read this selection. Try again.".into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,18 +221,6 @@ mod tests {
             assert!(padded.width() <= limit && padded.height() <= limit);
             assert!(padded.width() > 0 && padded.height() > 0);
             assert!(padded.pixels().all(|pixel| *pixel == background));
-        }
-    }
-
-    #[test]
-    #[ignore = "requires an installed Windows OCR language that recognizes English"]
-    fn native_ocr_reads_tightly_cropped_small_lines() {
-        for fixture in [
-            include_bytes!("testdata/small-line-light.png").as_slice(),
-            include_bytes!("testdata/small-line-dark.png").as_slice(),
-        ] {
-            let image = image::load_from_memory(fixture).unwrap().into_rgba8();
-            assert_eq!(recognize(image).unwrap(), "Small text should still copy");
         }
     }
 }

@@ -318,3 +318,47 @@ settingsTabs.addEventListener("keydown", (event) => {
   pageTabs[next].focus();
   selectPage(pageTabs[next]);
 });
+
+// Only the floating Windows panel supplies its own window controls.
+if (window.__PULSE_FLOATING_SETTINGS__) {
+  // Show only once the custom chrome is laid out, avoiding the native white first frame.
+  invoke("settings_window_action", { action: "ready" }).catch(showError);
+  const done = document.querySelector("#settings-done");
+  let dismissing = false;
+  let dismissalGeneration = 0;
+  async function dismissSettings() {
+    if (dismissing) return;
+    const generation = ++dismissalGeneration;
+    dismissing = true;
+    openCustomSelect?.close();
+    document.documentElement.dataset.closing = "true";
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      await new Promise(resolve => setTimeout(resolve, 160));
+    }
+    if (generation !== dismissalGeneration) return;
+    try { await invoke("settings_window_action", { action: "done" }); }
+    catch (error) { if (generation === dismissalGeneration) showError(error); }
+    finally {
+      if (generation === dismissalGeneration) {
+        dismissing = false;
+        delete document.documentElement.dataset.closing;
+      }
+    }
+  }
+  done.addEventListener("click", dismissSettings);
+  document.querySelector(".settings-header").addEventListener("pointerdown", event => {
+    if (event.button === 0) invoke("settings_window_action", { action: "drag" }).catch(showError);
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (openCustomSelect) { openCustomSelect.close(); return; }
+    event.preventDefault();
+    dismissSettings();
+  });
+  window.addEventListener("pulse-settings-open", () => {
+    dismissalGeneration += 1;
+    dismissing = false;
+    delete document.documentElement.dataset.closing;
+    document.querySelector('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
+  });
+}

@@ -1,7 +1,8 @@
 use super::{
-    capture, hotkeys, ocr,
+    capture, hotkeys,
+    ocr_models::{LocalOcr, ModelStatus},
     pixels::DesktopFrame,
-    protocol::{self, Crop, Preferences, QuickCopyOutcome},
+    protocol::{self, Crop, ExtractionMode, Preferences, QuickCopyOutcome},
     selector_window,
     shortcut_keys::{Action, Bindings},
 };
@@ -33,6 +34,7 @@ const RESPONSE_URL: &str = "https://api.openai.com/v1/responses";
 
 pub struct TextExtractor {
     preferences: Mutex<Preferences>,
+    local_ocr: Arc<LocalOcr>,
     path: PathBuf,
     session: Mutex<Option<Session>>,
     warm: Mutex<Option<WarmWindow>>,
@@ -58,6 +60,7 @@ pub(super) enum CaptureMode {
 struct Session {
     label: String,
     mode: CaptureMode,
+    default_mode: ExtractionMode,
     monitor: capture::Monitor,
     image: Option<Arc<DesktopFrame>>,
     crop: Option<Crop>,
@@ -109,6 +112,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     let _ = save(&path, &preferences);
     app.manage(TextExtractor {
         preferences: Mutex::new(preferences.clone()),
+        local_ocr: LocalOcr::new(app.path().app_local_data_dir()?),
         path,
         session: Mutex::new(None),
         warm: Mutex::new(None),
@@ -192,6 +196,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         .unwrap()
         .enabled;
     hotkeys::configure(enabled, hook_bindings(shortcut_pair(&preferences)?));
+    app.state::<TextExtractor>().local_ocr.set_enabled(enabled);
     queue_prewarm(app);
     Ok(())
 }
@@ -211,8 +216,24 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
         .or_else(|| credential_state.err());
     Ok(
         json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut, "quickShortcut": preferences.quick_shortcut,
-        "apiKeyConfigured": configured, "error": error}),
+        "editorMode": preferences.editor_mode, "quickMode": preferences.quick_mode,
+        "apiKeyConfigured": configured, "error": error, "localOcr": state.local_ocr.status()}),
     )
+}
+
+#[tauri::command]
+pub fn local_ocr_state(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<ModelStatus, String> {
+    settings_only(&window)?;
+    Ok(app.state::<TextExtractor>().local_ocr.status())
+}
+
+#[tauri::command]
+pub fn retry_local_ocr_setup(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
+    settings_only(&window)?;
+    app.state::<TextExtractor>().local_ocr.retry()
 }
 
 #[tauri::command]
@@ -380,12 +401,17 @@ pub async fn set_text_extractor(
     enabled: bool,
     shortcut_value: String,
     quick_shortcut_value: String,
+    editor_mode: ExtractionMode,
+    quick_mode: ExtractionMode,
 ) -> Result<(), String> {
     settings_only(&window)?;
+    let configured = openai_credentials::is_configured().unwrap_or(false);
     let mut next = Preferences {
         enabled,
         shortcut: shortcut_value,
         quick_shortcut: quick_shortcut_value,
+        editor_mode: editor_mode.with_api_key(configured),
+        quick_mode: quick_mode.with_api_key(configured),
     };
     let keys = shortcut_pair(&next)?;
     next.shortcut = keys[0].to_string();
@@ -408,6 +434,7 @@ pub async fn set_text_extractor(
     hotkeys::configure(enabled, hook_bindings(keys));
     *state.error.lock().unwrap() = None;
     drop(current);
+    state.local_ocr.set_enabled(enabled);
     if !enabled {
         close_active(&app);
         let warm = state.warm.lock().unwrap().take();
@@ -448,7 +475,7 @@ pub fn appearance_changed(app: &tauri::AppHandle, theme: crate::WindowsTheme) {
         }
     }
     for window in app.webview_windows().into_values() {
-        if window.label().starts_with(NOTICE_PREFIX) {
+        if window.label().starts_with(NOTICE_PREFIX) || window.label() == "settings" {
             let _ = window.set_theme(Some(native_theme(theme)));
         }
     }
@@ -462,7 +489,11 @@ fn dismiss_notices(app: &tauri::AppHandle) {
     }
 }
 
-fn show_no_text_notice(app: &tauri::AppHandle, monitor: capture::Monitor) -> Result<(), String> {
+fn show_quick_copy_notice(
+    app: &tauri::AppHandle,
+    monitor: capture::Monitor,
+    outcome: &QuickCopyOutcome,
+) -> Result<(), String> {
     dismiss_notices(app);
     let scale = app
         .available_monitors()
@@ -485,6 +516,11 @@ fn show_no_text_notice(app: &tauri::AppHandle, monitor: capture::Monitor) -> Res
         WebviewUrl::App("quick-copy-notice.html".into()),
     )
     .title("Pulse Quick Copy Notice")
+    .initialization_script(if matches!(outcome, QuickCopyOutcome::Copied) {
+        "window.pulseQuickCopySucceeded = true;"
+    } else {
+        "window.pulseQuickCopySucceeded = false;"
+    })
     .theme(Some(native_theme(crate::visual_windows_theme(app)?)))
     .visible(false)
     .focused(false)
@@ -632,17 +668,22 @@ pub(super) async fn start(app: &tauri::AppHandle, mode: CaptureMode) -> Result<(
         return Ok(());
     }
     let _starting = StartingGuard(&state.starting);
-    let active_label = state
-        .session
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|session| session.label.clone());
-    if let Some(label) = active_label {
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.set_focus();
+    let active_label = state.session.lock().unwrap().as_ref().map(|session| {
+        (
+            session.label.clone(),
+            session.mode == CaptureMode::Quick && session.capturing,
+        )
+    });
+    if let Some((label, copying)) = active_label {
+        if copying {
+            // A fresh shortcut supersedes pending Quick Copy, including a slow network request.
+            close_matching(app, &label, false);
+        } else {
+            if let Some(window) = app.get_webview_window(&label) {
+                let _ = window.set_focus();
+            }
+            return Ok(());
         }
-        return Ok(());
     }
     if !state.preferences.lock().unwrap().enabled {
         return Ok(());
@@ -684,6 +725,10 @@ pub(super) async fn start(app: &tauri::AppHandle, mode: CaptureMode) -> Result<(
         *state.session.lock().unwrap() = Some(Session {
             label: prepared.label.clone(),
             mode,
+            default_mode: match mode {
+                CaptureMode::Quick => preferences.quick_mode,
+                CaptureMode::Editor => preferences.editor_mode,
+            },
             monitor,
             image: None,
             crop: None,
@@ -746,7 +791,7 @@ pub fn text_extractor_capture(
         .filter(|session| session.label == window.label())
         .ok_or("This capture has ended.")?;
     Ok(
-        json!({"width": session.monitor.width, "height": session.monitor.height, "mode": if session.mode == CaptureMode::Quick { "quick" } else { "editor" }}),
+        json!({"width": session.monitor.width, "height": session.monitor.height, "defaultMode": session.default_mode, "mode": if session.mode == CaptureMode::Quick { "quick" } else { "editor" }}),
     )
 }
 
@@ -827,7 +872,7 @@ pub async fn text_extractor_quick_copy(
     window: WebviewWindow,
     crop: Crop,
 ) -> Result<(), String> {
-    let (monitor, cancel) = {
+    let (monitor, default_mode, cancel) = {
         let state = app.state::<TextExtractor>();
         let mut active = state.session.lock().unwrap();
         let session = active
@@ -839,13 +884,23 @@ pub async fn text_extractor_quick_copy(
         }
         crop.validate(session.monitor.width, session.monitor.height)?;
         session.capturing = true;
-        (session.monitor, session.cancel.clone())
+        (
+            session.monitor,
+            session.default_mode,
+            session.cancel.clone(),
+        )
     };
     // Selection is finished. Return focus immediately; no image or result UI is sent to the webview.
     let _ = window.hide();
     let recognized = tokio::select! {
         _ = cancel.cancelled() => return Err("Capture cancelled.".into()),
-        result = tauri::async_runtime::spawn_blocking(move || ocr::recognize(capture::selection(monitor, crop)?)) => result.map_err(|_| "Windows text recognition stopped unexpectedly.".to_string()).and_then(|result| result),
+        result = async {
+            let image = tauri::async_runtime::spawn_blocking(move || capture::selection(monitor, crop))
+                .await.map_err(|_| "Screen capture stopped unexpectedly.".to_string())??;
+            // Keep credential I/O off the shortcut-to-selector path. A removed key falls back locally.
+            let mode = default_mode.with_api_key(openai_credentials::is_configured().unwrap_or(false));
+            recognize_selection(&app, image, mode, cancel.clone()).await
+        } => result,
     };
     let result = (|| {
         let state = app.state::<TextExtractor>();
@@ -867,13 +922,12 @@ pub async fn text_extractor_quick_copy(
     if close_matching(&app, window.label(), false) {
         queue_prewarm(&app);
         match &result {
-            Ok(QuickCopyOutcome::NoText) => {
-                if let Err(error) = show_no_text_notice(&app, monitor) {
+            Ok(outcome) => {
+                if let Err(error) = show_quick_copy_notice(&app, monitor, outcome) {
                     eprintln!("Quick Copy notice: {error}");
                 }
             }
             Err(error) => report_error(&app, format!("Quick copy: {error}")),
-            Ok(QuickCopyOutcome::Copied) => {}
         }
     }
     result.map(|_| ())
@@ -983,13 +1037,10 @@ pub async fn extract_screen_text(
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
         result = async {
-            if mode == "basic" {
-                tauri::async_runtime::spawn_blocking(move || {
-                    ocr::recognize(image.crop(crop)?)
-                }).await.map_err(|_| "Windows text recognition stopped unexpectedly.".to_string())?
-            } else {
-                extract(image, crop).await
-            }
+            let selection = tauri::async_runtime::spawn_blocking(move || image.crop(crop))
+                .await.map_err(|_| "Could not prepare this selection.")??;
+            let mode = if mode == "basic" { ExtractionMode::Basic } else { ExtractionMode::Advanced };
+            recognize_selection(&app, selection, mode, cancel.clone()).await
         } => result,
     };
     finish_request(&app, &window, request_id, result)
@@ -1036,11 +1087,26 @@ fn finish_request(
     result
 }
 
-async fn extract(image: Arc<DesktopFrame>, crop: Crop) -> Result<String, String> {
-    let image_url = tauri::async_runtime::spawn_blocking(move || png_url(&image.crop(crop)?))
-        .await
-        .map_err(|_| "Could not prepare this selection.")??;
-    request_text(protocol::request_body(&image_url)).await
+async fn recognize_selection(
+    app: &tauri::AppHandle,
+    image: RgbaImage,
+    mode: ExtractionMode,
+    cancel: CancellationToken,
+) -> Result<String, String> {
+    match mode {
+        ExtractionMode::Basic => {
+            let engine = app.state::<TextExtractor>().local_ocr.clone();
+            tauri::async_runtime::spawn_blocking(move || engine.recognize(image, &cancel))
+                .await
+                .map_err(|_| "Offline text recognition stopped unexpectedly.".to_string())?
+        }
+        ExtractionMode::Advanced => {
+            let image_url = tauri::async_runtime::spawn_blocking(move || png_url(&image))
+                .await
+                .map_err(|_| "Could not prepare this selection.")??;
+            request_text(protocol::request_body(&image_url)).await
+        }
+    }
 }
 
 async fn request_text(body: Value) -> Result<String, String> {
@@ -1187,6 +1253,7 @@ mod tests {
         Session {
             label: "text-extractor-test".into(),
             mode: CaptureMode::Editor,
+            default_mode: ExtractionMode::Basic,
             monitor: capture::Monitor {
                 x: 0,
                 y: 0,
@@ -1216,6 +1283,7 @@ mod tests {
             enabled: true,
             shortcut: protocol::QUICK_SHORTCUT.into(),
             quick_shortcut: "Control+Alt+Q".into(),
+            ..Preferences::default()
         };
         let restored = load_preferences(&serde_json::to_vec(&prefs).unwrap()).unwrap();
         assert_eq!(restored.shortcut, prefs.shortcut);
@@ -1232,6 +1300,7 @@ mod tests {
             enabled: true,
             shortcut: "Shift+Super+KeyT".into(),
             quick_shortcut: "Super+Shift+T".into(),
+            ..Preferences::default()
         };
         assert!(shortcut_pair(&prefs).is_err());
     }

@@ -786,22 +786,62 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
             .primary_monitor()?
             .map(|monitor| {
                 (f64::from(monitor.size().height) / monitor.scale_factor() - 120.0)
-                    .clamp(360.0, 500.0)
+                    .clamp(360.0, 608.0)
             })
-            .unwrap_or(500.0);
+            .unwrap_or(608.0);
         #[cfg(target_os = "macos")]
         let window_height = 288.0;
 
-        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-            .title("Settings")
-            .inner_size(460.0, window_height)
-            .resizable(false)
-            .maximizable(false)
-            .minimizable(false)
-            .build()?
+        let builder =
+            WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+                .title("Settings")
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false);
+        #[cfg(target_os = "windows")]
+        let builder = builder
+            .inner_size(580.0, window_height)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .visible(false)
+            .initialization_script("window.__PULSE_FLOATING_SETTINGS__ = true;");
+        #[cfg(target_os = "macos")]
+        let builder = builder.inner_size(460.0, window_height);
+        builder.build()?
     };
 
-    window.set_focus()
+    #[cfg(target_os = "windows")]
+    if let Ok(theme) = visual_windows_theme(app) {
+        let _ = window.set_theme(Some(match theme {
+            WindowsTheme::Light => tauri::Theme::Light,
+            WindowsTheme::Dark => tauri::Theme::Dark,
+        }));
+    }
+    let _ = window.eval("window.dispatchEvent(new Event('pulse-settings-open'))");
+    if window.is_visible()? {
+        window.set_focus()
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn settings_window_action(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
+    if window.label() != "settings" {
+        return Err("Open Settings to do this.".into());
+    }
+    match action.as_str() {
+        "done" => {
+            text_extractor::settings_blurred(window.app_handle());
+            window.hide()
+        }
+        "ready" => window.show().and_then(|_| window.set_focus()),
+        "drag" => window.start_dragging(),
+        _ => return Err("Unknown Settings action.".into()),
+    }
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1573,10 +1613,13 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
+        settings_window_action,
         set_start_at_login,
         set_tray_icon_mode,
         set_auto_schedule,
         text_extractor::text_extractor_state,
+        text_extractor::local_ocr_state,
+        text_extractor::retry_local_ocr_setup,
         text_extractor::save_openai_api_key,
         text_extractor::clear_openai_api_key,
         text_extractor::set_text_extractor,

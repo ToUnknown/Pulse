@@ -11,6 +11,13 @@ const keyMask = $("#openai-key-mask");
 const keyStatus = $("#extractor-key-status");
 const keyError = $("#openai-key-error");
 const settingsError = $("#extractor-settings-error");
+const shortcutRows = $("#extractor-shortcuts");
+const modeControls = [...document.querySelectorAll(".shortcut-mode")];
+const ocrSetup = $("#ocr-setup");
+const ocrLabel = $("#ocr-setup-label");
+const ocrProgress = $("#ocr-setup-progress");
+const ocrRetry = $("#ocr-setup-retry");
+let ocrPoll;
 let state;
 let recording = null;
 let busy = false;
@@ -29,11 +36,31 @@ function lock(value) {
   for (const button of Object.values(shortcutButtons)) button.disabled = value;
   keyInput.disabled = value;
   keyRemove.disabled = value;
+  for (const group of modeControls) for (const button of group.querySelectorAll("button")) button.disabled = value;
   renderKeyControls();
+}
+function setExpanded(value) {
+  shortcutRows.dataset.expanded = String(value);
+  shortcutRows.inert = !value;
+}
+function renderModes() {
+  for (const group of modeControls) {
+    group.hidden = !state.apiKeyConfigured;
+    const mode = state[group.dataset.field] || "basic";
+    group.style.setProperty("--mode-index", mode === "advanced" ? 1 : 0);
+    for (const button of group.querySelectorAll("button")) {
+      const selected = button.dataset.mode === mode;
+      button.setAttribute("aria-checked", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    }
+  }
 }
 function render() {
   enabled.checked = state.enabled;
-  for (const [field, button] of Object.entries(shortcutButtons)) button.textContent = displayShortcut(state[field]);
+  setExpanded(state.enabled);
+  renderOcrStatus(state.localOcr);
+  renderModes();
+  for (const [field, button] of Object.entries(shortcutButtons)) { button.textContent = displayShortcut(state[field]); button.title = button.textContent; }
   keyStatus.textContent = state.apiKeyConfigured
     ? "Key saved."
     : "Optional. Unlocks Advanced and Translate.";
@@ -47,14 +74,73 @@ function render() {
   else settingsError.hidden = true;
 }
 async function load() { state = await invoke("text_extractor_state"); render(); }
-async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcut = state.quickShortcut) {
+function renderOcrStatus(status) {
+  if (state) state.localOcr = status;
+  const phase = status?.phase || "idle";
+  ocrSetup.hidden = !state?.enabled || ["idle", "ready"].includes(phase);
+  ocrRetry.hidden = phase !== "error";
+  ocrSetup.dataset.error = String(phase === "error");
+  ocrLabel.textContent = phase === "downloading"
+    ? `Downloading offline OCR · ${status.modelIndex}/2`
+    : phase === "error" ? status.error
+    : "Preparing offline OCR…";
+  ocrProgress.hidden = phase !== "downloading";
+  if (status?.totalBytes) {
+    ocrProgress.value = Math.min(1, status.downloadedBytes / status.totalBytes);
+  } else { ocrProgress.removeAttribute("value"); }
+}
+async function pollOcrStatus() {
+  try {
+    if (state?.enabled && !document.hidden) renderOcrStatus(await invoke("local_ocr_state"));
+  } catch { /* The window may be closing; the next visible poll can refresh it. */ }
+  const pending = ["preparing", "downloading", "loading"].includes(state?.localOcr?.phase);
+  ocrPoll = window.setTimeout(pollOcrStatus, pending ? 500 : 2500);
+}
+ocrRetry.addEventListener("click", async () => {
+  ocrRetry.disabled = true;
+  try {
+    await invoke("retry_local_ocr_setup");
+    renderOcrStatus(await invoke("local_ocr_state"));
+  } catch (reason) { ocrLabel.textContent = String(reason); }
+  finally { ocrRetry.disabled = false; }
+});
+window.addEventListener("pagehide", () => window.clearTimeout(ocrPoll));
+async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcut = state.quickShortcut, nextModes = {}) {
   lock(true);
   settingsError.hidden = true;
-  try { await invoke("set_text_extractor", { enabled: nextEnabled, shortcutValue: nextShortcut, quickShortcutValue: nextQuickShortcut }); await load(); }
+  setExpanded(nextEnabled);
+  try { await invoke("set_text_extractor", { enabled: nextEnabled, shortcutValue: nextShortcut, quickShortcutValue: nextQuickShortcut, editorMode: nextModes.editorMode || state.editorMode || "basic", quickMode: nextModes.quickMode || state.quickMode || "basic" }); await load(); }
   catch (reason) { render(); error(reason); }
   finally { lock(false); }
 }
 enabled.addEventListener("change", () => save(enabled.checked));
+for (const group of modeControls) {
+  async function selectMode(button) {
+    if (busy || !state.enabled || !state.apiKeyConfigured) return;
+    const field = group.dataset.field;
+    const previous = state[field] || "basic";
+    if (previous === button.dataset.mode) return;
+    state[field] = button.dataset.mode;
+    renderModes();
+    // Keep the previous saved value for rollback if saving fails.
+    state[field] = previous;
+    await save(state.enabled, state.shortcut, state.quickShortcut, { [field]: button.dataset.mode });
+  }
+  group.addEventListener("click", event => {
+    const button = event.target.closest("button");
+    if (button) selectMode(button);
+  });
+  group.addEventListener("keydown", event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    if (busy) return;
+    const current = state[group.dataset.field] || "basic";
+    const next = event.key === "Home" ? "basic" : event.key === "End" ? "advanced" : current === "basic" ? "advanced" : "basic";
+    const button = group.querySelector(`[data-mode="${next}"]`);
+    button.focus();
+    selectMode(button);
+  });
+}
 function renderKeyControls() {
   keySave.disabled = busy || !keyInput.value.trim();
   keySave.textContent = checkingKey ? "Checking…" : "Save";
@@ -146,5 +232,6 @@ try {
     keySection.hidden = false;
     await load();
     lock(false);
+    pollOcrStatus();
   } else { $("#advanced-unavailable").hidden = false; }
 } catch (reason) { if (!section.hidden) error(reason); }

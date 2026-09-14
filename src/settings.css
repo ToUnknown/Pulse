@@ -2,6 +2,7 @@
   color-scheme: light dark;
   color: #1d1d1f;
   background: #f5f5f7;
+  --settings-background: #f5f5f7;
   --surface: #ffffff;
   --settings-pill: #000000;
   --settings-pill-text: #ffffff;
@@ -30,6 +31,7 @@
   :root {
     color: #f5f5f7;
     background: #1c1c1e;
+    --settings-background: #1c1c1e;
     --surface: #2c2c2e;
     --settings-pill: #ffffff;
     --settings-pill-text: #000000;
@@ -528,9 +530,10 @@ input:focus-visible,
 }
 
 /* Windows Text Extractor */
-body { overflow-y: auto; }
+body { overflow-y: auto; scrollbar-width: none; }
+body::-webkit-scrollbar { display: none; }
 [hidden] { display: none !important; }
-.extractor-settings-card { border: 1px solid var(--border); border-radius: var(--card-radius); background: var(--surface); overflow: hidden; padding-bottom: 6px; }
+.extractor-settings-card { border: 1px solid var(--border); border-radius: var(--card-radius); background: var(--surface); overflow: hidden; }
 .extractor-toggle-row { border: 0; border-radius: 0; }
 .extractor-icon { color: #637cf1; }
 .extractor-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 11px 0; border-top: 1px solid var(--border); font-size: 12px; }
@@ -543,6 +546,13 @@ body { overflow-y: auto; }
 .shortcut-button[aria-pressed="true"] { border-color: var(--focus); color: var(--focus); }
 .extractor-error { color: var(--error); font-size: 12px; line-height: 1.4; }
 #extractor-settings-error { margin: 0; padding: 0 16px 14px; }
+.ocr-setup { display: flex; align-items: center; gap: 12px; padding: 0 16px 14px; color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
+.ocr-setup-copy { display: grid; flex: 1; min-width: 0; gap: 7px; }
+.ocr-setup[data-error="true"] { color: var(--error); }
+.ocr-setup progress { width: 100%; height: 3px; border: 0; border-radius: 999px; overflow: hidden; accent-color: var(--settings-pill); }
+.ocr-setup progress::-webkit-progress-bar { background: var(--control-hover); border-radius: 999px; }
+.ocr-setup progress::-webkit-progress-value { background: currentColor; border-radius: 999px; transition: width 200ms ease; }
+.ocr-setup .settings-button { flex: none; color: var(--settings-pill); }
 /* Settings pages share the same controls and saved state. */
 main { max-width: 720px; margin: 0 auto; }
 .settings-tabs { isolation: isolate; position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; margin-bottom: 28px; background: var(--control-hover); border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 550; --tab-motion: 280ms cubic-bezier(.2,.8,.2,1); }
@@ -602,3 +612,45 @@ select,
 
 #extractor-key-status[data-tone="error"] { color: var(--error); }
 #openai-api-key[aria-invalid="true"] { border-color: var(--error); box-shadow: inset 0 0 0 1px var(--error); }
+
+/* The Windows panel owns its chrome; transparent margins leave room for its shadow. */
+.settings-header, .settings-footer { display: none; }
+:root[data-floating="true"], :root[data-floating="true"] body { background: transparent; overflow: hidden; }
+:root[data-floating="true"] body { padding: 12px; }
+:root[data-floating="true"] .settings-shell {
+  display: flex; flex-direction: column; height: calc(100vh - 24px); padding: 24px;
+  border: 1px solid var(--border); border-radius: 36px; corner-shape: var(--corner-style);
+  background: var(--settings-background); box-shadow: 0 4px 12px #00000024;
+  animation: settings-panel-in 240ms cubic-bezier(.2,.8,.2,1);
+}
+:root[data-floating="true"] .settings-header { display: flex; flex: none; align-items: center; justify-content: center; margin: -24px -24px 0; padding: 24px 24px 20px; cursor: default; user-select: none; }
+.settings-header h1 { margin: 0; font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.02em; }
+:root[data-floating="true"] .settings-tabs { flex: none; margin-bottom: 20px; }
+:root[data-floating="true"] .settings-content { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+/* Page entrance transforms may briefly overflow. Keep scrolling available without
+   a scrollbar taking width away from the controls during that transition. */
+:root[data-floating="true"] .settings-content::-webkit-scrollbar { display: none; }
+:root[data-floating="true"] .settings-footer { display: flex; flex: none; justify-content: center; padding-top: 20px; }
+#settings-done { min-width: 112px; border-color: transparent; background: var(--settings-pill); color: var(--settings-pill-text); }
+#settings-done:hover { opacity: .85; }
+:root[data-closing="true"] .settings-shell { opacity: 0; transform: translateY(8px) scale(.985); transition: opacity 160ms ease, transform 160ms ease; pointer-events: none; }
+.extractor-shortcuts { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 280ms cubic-bezier(.2,.8,.2,1), opacity 200ms ease; }
+.extractor-shortcuts[data-expanded="true"] { grid-template-rows: 1fr; opacity: 1; }
+.extractor-shortcuts-inner { min-height: 0; overflow: hidden; }
+.extractor-detail-row { border-top: 0; gap: 10px; }
+.shortcut-controls { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.shortcut-button { width: 174px; max-width: 174px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shortcut-mode { isolation: isolate; position: relative; display: grid; grid-template-columns: 1fr 1fr; flex: none; width: 144px; height: 34px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; corner-shape: var(--pill-corner-style); background: var(--control-hover); font-size: 10px; font-weight: 550; --mode-motion: 240ms cubic-bezier(.2,.8,.2,1); }
+.shortcut-mode button { border: 0; padding: 0 4px; background: transparent; color: var(--secondary-text); font: inherit; border-radius: 999px; cursor: pointer; }
+.shortcut-mode button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.shortcut-mode button:disabled { cursor: default; }
+.shortcut-mode-pill { position: absolute; z-index: 1; inset: 3px auto 3px 3px; width: calc((100% - 6px) / 2); pointer-events: none; overflow: hidden; border-radius: 999px; corner-shape: var(--pill-corner-style); background: var(--settings-pill); transform: translateX(calc(var(--mode-index) * 100%)); transition: transform var(--mode-motion); }
+.shortcut-mode-highlight { display: grid; grid-template-columns: 1fr 1fr; align-items: center; width: 200%; height: 100%; text-align: center; color: var(--settings-pill-text); transform: translateX(calc(var(--mode-index) * -50%)); transition: transform var(--mode-motion); }
+@keyframes settings-panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  :root[data-floating="true"] .settings-shell, .extractor-shortcuts, .shortcut-mode-pill, .shortcut-mode-highlight { animation: none !important; transition: none !important; }
+}
+@media (forced-colors: active) {
+  .shortcut-mode-pill { background: Highlight; }
+  .shortcut-mode-highlight { color: HighlightText; }
+}
