@@ -780,9 +780,9 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
             .primary_monitor()?
             .map(|monitor| {
                 (f64::from(monitor.size().height) / monitor.scale_factor() - 120.0)
-                    .clamp(360.0, 608.0)
+                    .clamp(360.0, 660.0)
             })
-            .unwrap_or(608.0);
+            .unwrap_or(660.0);
 
         let builder =
             WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
