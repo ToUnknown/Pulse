@@ -6,7 +6,7 @@
   let settings = { enabled: query.has('enabled'), editorMode: query.get('editorMode') || 'basic', quickMode: query.get('quickMode') || 'basic', shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null, localOcr: { phase: 'ready' } };
   settings.advancedProvider = query.get('provider') || 'codex';
   settings.codex = { installed: query.has('codex'), available: query.has('codex') && scenario !== 'codex-signed-out', checking: false,
-    message: scenario === 'codex-signed-out' ? 'Sign in to Codex with ChatGPT, then Retry.' : 'Uses your Codex plan for Advanced and Translate.' };
+    message: scenario === 'codex-signed-out' ? 'Sign in to Codex with ChatGPT, then Retry.' : 'Uses your Codex plan for Advanced extraction.' };
   function access() {
     const activeAdvancedProvider = settings.codex.installed && settings.advancedProvider === 'codex' ? 'codex' : 'api';
     return { advancedProvider: settings.advancedProvider, activeAdvancedProvider, codex: { ...settings.codex },
@@ -59,7 +59,7 @@
       case 'text_extractor_state': return { ...settings, ...access() };
       case 'text_extractor_advanced_access': return access();
       case 'set_text_extractor_provider': settings.advancedProvider = args.provider; return;
-      case 'refresh_text_extractor_codex': settings.codex.available = true; settings.codex.message = 'Uses your Codex plan for Advanced and Translate.'; return;
+      case 'refresh_text_extractor_codex': settings.codex.available = true; settings.codex.message = 'Uses your Codex plan for Advanced extraction.'; return;
       case 'request_text_extractor_access': settings.captureAccess.granted = true; return;
       case 'local_ocr_state': return settings.localOcr;
       case 'retry_local_ocr_setup': settings.localOcr = { phase: 'ready' }; return;
@@ -117,9 +117,9 @@
         return scenario === 'empty' ? '' : text;
       }
       case 'translate_extracted_text': {
-        if (!access().advancedAvailable) throw 'Choose an available Advanced provider in Settings.';
+        if (args.useAdvanced && !access().advancedAvailable) throw 'Choose an available Advanced provider in Settings.';
         await new Promise(resolve => setTimeout(resolve, scenario === 'translation-pending' ? 30000 : 1600));
-        if (scenario === 'translation-error') throw 'Could not reach OpenAI. Your text is unchanged.';
+        if (scenario === 'translation-error' || (scenario === 'translation-fallback' && !args.useAdvanced)) throw 'Could not reach Google Translate. Check your connection and try again.';
         if (scenario === 'translation-empty') return '';
         const samples = {
           de: 'Ein wenig Raum zum Nachdenken.\n\nGute Ideen beginnen oft mit etwas Kleinem: einer Zeile in einem Buch, einem flüchtigen Gedanken, ein paar Worten, die es wert sind, bewahrt zu werden.\n\nSchaffe Raum für das, was zählt.',

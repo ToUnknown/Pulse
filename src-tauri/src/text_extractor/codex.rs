@@ -98,7 +98,7 @@ impl Codex {
                 }
             }
             let mut selected = None;
-            let mut message = "Update Codex to use Advanced and Translate.".to_string();
+            let mut message = "Update Codex to use Advanced extraction.".to_string();
             // A desktop-bundled CLI may be newer than the one on PATH.
             for path in paths.into_iter().take(8) {
                 let result = tokio::time::timeout(SETUP_TIMEOUT, async {
@@ -118,7 +118,7 @@ impl Codex {
                         eprintln!("Codex candidate {}: {error}", path.display());
                         // Preserve the desktop/CLI diagnosis instead of hiding it
                         // behind a later broken PATH alias.
-                        if message == "Update Codex to use Advanced and Translate."
+                        if message == "Update Codex to use Advanced extraction."
                             || message.starts_with("Could not start Codex")
                             || message.starts_with("This Codex desktop installation")
                         {
@@ -132,7 +132,7 @@ impl Codex {
             current.status.available = selected.is_some();
             current.status.checking = false;
             current.status.message = if selected.is_some() {
-                "Uses your Codex plan for Advanced and Translate.".into()
+                "Uses your Codex plan for Advanced extraction.".into()
             } else {
                 message
             };

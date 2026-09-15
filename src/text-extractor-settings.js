@@ -145,7 +145,7 @@ function render() {
   for (const [field, button] of Object.entries(shortcutButtons)) { button.textContent = displayShortcut(state[field]); button.title = button.textContent; }
   keyStatus.textContent = state.apiKeyConfigured
     ? "Key saved."
-    : "Optional. Unlocks Advanced and Translate.";
+    : "Optional. Unlocks Advanced extraction.";
   delete keyStatus.dataset.tone;
   keyInput.removeAttribute("aria-invalid");
   keyInput.dataset.configured = String(state.apiKeyConfigured);
