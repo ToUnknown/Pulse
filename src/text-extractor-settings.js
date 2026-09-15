@@ -13,6 +13,12 @@ const keyError = $("#openai-key-error");
 const settingsError = $("#extractor-settings-error");
 const shortcutRows = $("#extractor-shortcuts");
 const modeControls = [...document.querySelectorAll(".shortcut-mode[data-field]")];
+const providerControl = $("#advanced-provider");
+const providerCard = $("#codex-access");
+const providerStatus = $("#codex-access-status");
+const providerRetry = $("#codex-access-retry");
+let providerPoll;
+let disposed = false;
 const ocrSetup = $("#ocr-setup");
 const ocrLabel = $("#ocr-setup-label");
 const ocrProgress = $("#ocr-setup-progress");
@@ -37,6 +43,8 @@ function lock(value) {
   keyInput.disabled = value;
   keyRemove.disabled = value;
   for (const group of modeControls) for (const button of group.querySelectorAll("button")) button.disabled = value;
+  for (const button of providerControl.querySelectorAll("button")) button.disabled = value;
+  providerRetry.disabled = value || !!state?.codex?.checking;
   renderKeyControls();
 }
 function setExpanded(value) {
@@ -45,7 +53,7 @@ function setExpanded(value) {
 }
 function renderModes() {
   for (const group of modeControls) {
-    group.hidden = !state.apiKeyConfigured;
+    group.hidden = !state.advancedAvailable;
     const mode = state[group.dataset.field] || "basic";
     group.style.setProperty("--mode-index", mode === "advanced" ? 1 : 0);
     for (const button of group.querySelectorAll("button")) {
@@ -55,6 +63,74 @@ function renderModes() {
     }
   }
 }
+function renderProvider() {
+  const installed = !!state.codex?.installed;
+  const selected = state.activeAdvancedProvider || "api";
+  providerControl.hidden = !installed;
+  providerControl.style.setProperty("--mode-index", selected === "api" ? 1 : 0);
+  for (const button of providerControl.querySelectorAll("button")) {
+    const checked = button.dataset.provider === selected;
+    button.setAttribute("aria-checked", String(checked));
+    button.tabIndex = checked ? 0 : -1;
+  }
+  $("#openai-key-title").textContent = installed ? "Advanced access" : "API key";
+  providerCard.hidden = !installed || selected !== "codex";
+  $("#openai-key-form").hidden = installed && selected === "codex";
+  const message = state.codex?.checking && !state.codex?.available ? "Checking Codex…" : state.codex?.message || "";
+  if (providerStatus.textContent !== message) providerStatus.textContent = message;
+  providerStatus.dataset.tone = !state.codex?.checking && !state.codex?.available ? "error" : "";
+  providerRetry.hidden = !!state.codex?.available;
+  providerRetry.disabled = busy || !!state.codex?.checking;
+}
+function updateAccess(access) {
+  Object.assign(state, access);
+  state.advancedAvailable = state.activeAdvancedProvider === "codex" ? !!state.codex?.available : state.apiKeyConfigured;
+}
+async function pollProvider() {
+  if (disposed) return;
+  try {
+    if (state && !document.hidden && !busy) {
+      const previous = state;
+      const access = await invoke("text_extractor_advanced_access");
+      if (disposed) return;
+      if (!busy && previous === state) {
+        updateAccess(access);
+        renderProvider();
+        renderModes();
+      }
+    }
+  } catch { /* Discovery can resume when Settings is visible again. */ }
+  if (!disposed) providerPoll = window.setTimeout(pollProvider, state?.codex?.checking ? 750 : 4000);
+}
+async function selectProvider(button) {
+  if (busy || !button || button.dataset.provider === state?.activeAdvancedProvider) return;
+  lock(true);
+  try {
+    await invoke("set_text_extractor_provider", { provider: button.dataset.provider });
+    await load();
+  } catch (reason) { error(reason); }
+  finally { lock(false); }
+}
+providerControl.addEventListener("click", event => selectProvider(event.target.closest("button")));
+providerControl.addEventListener("keydown", event => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || busy) return;
+  event.preventDefault();
+  const next = event.key === "Home" ? "codex" : event.key === "End" ? "api" : state.activeAdvancedProvider === "codex" ? "api" : "codex";
+  const button = providerControl.querySelector(`[data-provider="${next}"]`);
+  button.focus();
+  selectProvider(button);
+});
+providerRetry.addEventListener("click", async () => {
+  if (busy) return;
+  lock(true);
+  try {
+    await invoke("refresh_text_extractor_codex");
+    updateAccess(await invoke("text_extractor_advanced_access"));
+    renderProvider();
+    renderModes();
+  } catch (reason) { error(reason); }
+  finally { lock(false); }
+});
 function render() {
   enabled.checked = state.enabled;
   const access = state.captureAccess;
@@ -65,6 +141,7 @@ function render() {
   setExpanded(state.enabled);
   renderOcrStatus(state.localOcr);
   renderModes();
+  renderProvider();
   for (const [field, button] of Object.entries(shortcutButtons)) { button.textContent = displayShortcut(state[field]); button.title = button.textContent; }
   keyStatus.textContent = state.apiKeyConfigured
     ? "Key saved."
@@ -111,7 +188,11 @@ ocrRetry.addEventListener("click", async () => {
   } catch (reason) { ocrLabel.textContent = String(reason); }
   finally { ocrRetry.disabled = false; }
 });
-window.addEventListener("pagehide", () => window.clearTimeout(ocrPoll));
+window.addEventListener("pagehide", () => {
+  disposed = true;
+  window.clearTimeout(ocrPoll);
+  window.clearTimeout(providerPoll);
+});
 async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcut = state.quickShortcut, nextModes = {}) {
   lock(true);
   settingsError.hidden = true;
@@ -123,7 +204,7 @@ async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcu
 enabled.addEventListener("change", () => save(enabled.checked));
 for (const group of modeControls) {
   async function selectMode(button) {
-    if (busy || !state.enabled || !state.apiKeyConfigured) return;
+    if (busy || !state.enabled || !state.advancedAvailable) return;
     const field = group.dataset.field;
     const previous = state[field] || "basic";
     if (previous === button.dataset.mode) return;
@@ -241,6 +322,7 @@ try {
     await load();
     lock(false);
     pollOcrStatus();
+    pollProvider();
   } else { $("#advanced-unavailable").hidden = false; }
 } catch (reason) { if (!section.hidden) error(reason); }
 
