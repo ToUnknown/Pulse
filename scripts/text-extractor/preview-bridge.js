@@ -1,20 +1,12 @@
 (() => {
   const query = new URLSearchParams(location.search);
-  const liveToken = window.__PULSE_LIVE_PREVIEW__;
-  async function liveRequest(input) {
-    const response = await fetch('/live', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Preview-Token': liveToken }, body: JSON.stringify(input) });
-    const result = await response.json();
-    if (!response.ok || result.error) throw result.error || 'The live preview failed.';
-    window.__preview.liveResults.push({ command: input.command, ...result });
-    return result.text;
-  }
   const scenario = query.get('scenario') || 'success';
   const text = 'A little space to think.\n\nGood ideas often begin with something small: a line in a book, a passing thought, a few words worth keeping.\n\nMake room for what matters.';
   const platform = query.get('platform') || 'windows';
   let settings = { enabled: query.has('enabled'), editorMode: query.get('editorMode') || 'basic', quickMode: query.get('quickMode') || 'basic', shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null, localOcr: { phase: 'ready' } };
   settings.advancedProvider = query.get('provider') || 'codex';
   settings.codex = { installed: query.has('codex'), available: query.has('codex') && scenario !== 'codex-signed-out', checking: false,
-    message: scenario === 'codex-signed-out' ? 'Sign in to Codex with ChatGPT, then Retry.' : 'Uses your Codex plan for Advanced extraction.' };
+    message: scenario === 'codex-signed-out' ? 'Sign in to Codex with ChatGPT, then Retry.' : 'Uses your Codex plan for Advanced and Translate.' };
   function access() {
     const activeAdvancedProvider = settings.codex.installed && settings.advancedProvider === 'codex' ? 'codex' : 'api';
     return { advancedProvider: settings.advancedProvider, activeAdvancedProvider, codex: { ...settings.codex },
@@ -29,7 +21,7 @@
   }
   window.__PULSE_FLOATING_SETTINGS__ = true;
   const calls = [];
-  window.__preview = { calls, copied: null, closed: false, liveResults: [] };
+  window.__preview = { calls, copied: null, closed: false };
   const screenshot = () => {
     const width = 1440, height = 900;
     const canvas = document.createElement('canvas');
@@ -47,8 +39,7 @@
     ctx.font = '19px Georgia';
     for (const [i, line] of ['Good ideas often begin with something small: a line in a book,', 'a passing thought, a few words worth keeping.', '', 'Make room for what matters.'].entries()) ctx.fillText(line, 475, 372 + i * 35);
     ctx.fillStyle = '#35445cbb'; ctx.fillRect(0, 851, width, 49);
-    ctx.fillStyle = '#e2e8f2'; ctx.font = '14px system-ui'; ctx.fillText(platform === 'macos' ? 'Finder     Notes     Pulse' : '⊞     ⌕     ▣     ◉     ✉', 610, 882);
-    if (!liveToken) ctx.fillText(new Date().toLocaleTimeString('en-GB'), 1340, 876);
+    ctx.fillStyle = '#e2e8f2'; ctx.font = '14px system-ui'; ctx.fillText('⊞     ⌕     ▣     ◉     ✉', 610, 882); ctx.fillText(new Date().toLocaleTimeString('en-GB'), 1340, 876);
     ctx.fillStyle = '#818da044'; ctx.fillRect(475, 650, 220, 4);
     ctx.fillStyle = '#818da0'; ctx.fillRect(475, 650, (Date.now() / 60) % 220, 4);
     return canvas;
@@ -59,12 +50,6 @@
     desktop.id = 'preview-desktop';
     Object.assign(desktop.style, { position: 'fixed', inset: '0', width: '100%', height: '100%', zIndex: '-1', pointerEvents: 'none' });
     if (location.pathname !== '/settings.html') document.body.prepend(desktop);
-    if (liveToken) {
-      const label = document.createElement('div');
-      label.textContent = 'SIMULATED DESKTOP · LIVE APPLE VISION OCR + GOOGLE TRANSLATE';
-      Object.assign(label.style, { position: 'fixed', top: '18px', left: '0', width: '100%', textAlign: 'center', zIndex: '20', pointerEvents: 'none', color: '#fff', font: '11px system-ui', letterSpacing: '1.5px', textShadow: '0 1px 6px #000' });
-      document.body.append(label);
-    }
     setInterval(() => desktop.getContext('2d').drawImage(screenshot(), 0, 0), 100);
   });
   window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
@@ -74,7 +59,7 @@
       case 'text_extractor_state': return { ...settings, ...access() };
       case 'text_extractor_advanced_access': return access();
       case 'set_text_extractor_provider': settings.advancedProvider = args.provider; return;
-      case 'refresh_text_extractor_codex': settings.codex.available = true; settings.codex.message = 'Uses your Codex plan for Advanced extraction.'; return;
+      case 'refresh_text_extractor_codex': settings.codex.available = true; settings.codex.message = 'Uses your Codex plan for Advanced and Translate.'; return;
       case 'request_text_extractor_access': settings.captureAccess.granted = true; return;
       case 'local_ocr_state': return settings.localOcr;
       case 'retry_local_ocr_setup': settings.localOcr = { phase: 'ready' }; return;
@@ -120,12 +105,6 @@
       case 'text_extractor_show': return;
       case 'record_text_extractor_shortcut': return;
       case 'extract_screen_text': {
-        if (liveToken) {
-          if (args.mode !== 'basic') throw 'This live preview uses Basic OCR only.';
-          const canvas = document.createElement('canvas'); canvas.width = args.crop.width; canvas.height = args.crop.height;
-          canvas.getContext('2d').drawImage(desktop, args.crop.x, args.crop.y, args.crop.width, args.crop.height, 0, 0, args.crop.width, args.crop.height);
-          return liveRequest({ command: 'ocr', image: canvas.toDataURL('image/png').split(',')[1] });
-        }
         if (args.mode === 'basic') {
           await new Promise(resolve => setTimeout(resolve, scenario === 'basic-pending' ? 10000 : 100));
           if (scenario === 'basic-error') throw 'Offline text recognition is getting ready. Check Settings → Advanced.';
@@ -138,13 +117,9 @@
         return scenario === 'empty' ? '' : text;
       }
       case 'translate_extracted_text': {
-        if (liveToken) {
-          if (args.useAdvanced) throw 'This live preview uses Google Translate only.';
-          return liveRequest({ command: 'translate', text: args.text, language: args.language });
-        }
-        if (args.useAdvanced && !access().advancedAvailable) throw 'Choose an available Advanced provider in Settings.';
+        if (!access().advancedAvailable) throw 'Choose an available Advanced provider in Settings.';
         await new Promise(resolve => setTimeout(resolve, scenario === 'translation-pending' ? 30000 : 1600));
-        if (scenario === 'translation-error' || (scenario === 'translation-fallback' && !args.useAdvanced)) throw 'Could not reach Google Translate. Check your connection and try again.';
+        if (scenario === 'translation-error') throw 'Could not reach OpenAI. Your text is unchanged.';
         if (scenario === 'translation-empty') return '';
         const samples = {
           de: 'Ein wenig Raum zum Nachdenken.\n\nGute Ideen beginnen oft mit etwas Kleinem: einer Zeile in einem Buch, einem flüchtigen Gedanken, ein paar Worten, die es wert sind, bewahrt zu werden.\n\nSchaffe Raum für das, was zählt.',
