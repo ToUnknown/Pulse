@@ -18,3 +18,6 @@ use macos as platform;
 use windows as platform;
 #[cfg(target_os = "windows")]
 pub(crate) use windows::run_shortcut_worker_if_requested;
+
+#[cfg(all(test, target_os = "macos"))]
+mod live_preview;
