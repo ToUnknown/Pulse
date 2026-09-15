@@ -120,10 +120,14 @@ modeControl.addEventListener("keydown", (event) => {
   switchMode(next);
 });
 
+function exceedsTranslationLimit() { return [...editor.value].length > 5000; }
 function updateActions() {
   const disabled = busy || closing || !editor.value.trim();
   copy.disabled = disabled;
-  translate.disabled = disabled;
+  const tooLong = exceedsTranslationLimit();
+  translate.disabled = disabled || tooLong;
+  translate.title = tooLong ? "Translate supports up to 5,000 characters." : "";
+  if (tooLong) hideLanguages();
 }
 function hideLanguages() { languages.hidden = true; translate.setAttribute("aria-expanded", "false"); }
 function clearError() {
@@ -326,7 +330,7 @@ async function runExtraction(initial = false, force = false) {
 }
 
 async function translateText(language, useAdvanced = false) {
-  if (busy || closing || (useAdvanced && !advancedAvailable) || !editor.value.trim()) return;
+  if (busy || closing || (useAdvanced && !advancedAvailable) || (!useAdvanced && exceedsTranslationLimit()) || !editor.value.trim()) return;
   const current = ++generation;
   busy = true;
   hideLanguages();
