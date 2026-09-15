@@ -89,6 +89,7 @@ textarea:disabled { opacity: 0; }
 #languages { position: absolute; z-index: 2; width: 184px; max-height: min(360px, 60vh); overflow-y: auto; scrollbar-width: thin; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); padding: 6px; background: var(--menu); border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 18px 55px var(--frame-shadow); animation: menu-in 180ms ease-out; }
 #languages button { display: block; width: 100%; border: 0; border-radius: 12px; padding: 10px 12px; background: transparent; color: var(--ink); text-align: start; font-size: 13px; }
 #languages button:hover, #languages button:focus-visible { background: var(--menu-hover); outline: none; }
+.translation-notice { margin: 4px 10px 8px; color: var(--ink); opacity: .7; font-size: 11px; line-height: 1.4; }
 [data-phase="translating"] .text-panel::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(90deg, transparent 20%, var(--editor-shine) 50%, transparent 80%); animation: screenshot-shimmer 2.4s cubic-bezier(.4, 0, .2, 1) infinite; }
 [data-phase="translating"] .translate-icon { animation: pulse 1.2s ease-in-out infinite; }
 .error-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 14px; margin-top: 14px; }
