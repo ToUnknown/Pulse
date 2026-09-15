@@ -780,9 +780,9 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
             .primary_monitor()?
             .map(|monitor| {
                 (f64::from(monitor.size().height) / monitor.scale_factor() - 120.0)
-                    .clamp(360.0, 608.0)
+                    .clamp(360.0, 660.0)
             })
-            .unwrap_or(608.0);
+            .unwrap_or(660.0);
 
         let builder =
             WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
@@ -1630,6 +1630,9 @@ pub fn run() {
         #[cfg(target_os = "windows")]
         set_auto_schedule,
         text_extractor::text_extractor_state,
+        text_extractor::text_extractor_advanced_access,
+        text_extractor::set_text_extractor_provider,
+        text_extractor::refresh_text_extractor_codex,
         text_extractor::request_text_extractor_access,
         text_extractor::local_ocr_state,
         text_extractor::retry_local_ocr_setup,

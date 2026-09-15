@@ -576,6 +576,12 @@ main { max-width: 720px; margin: 0 auto; }
 .api-key-mask { position: absolute; top: 50%; left: 16px; font-weight: 600; line-height: 1; pointer-events: none; transform: translateY(calc(-50% + 2px)); }
 .api-key-buttons { display: flex; flex: none; gap: 6px; }
 .api-key-card .extractor-error { margin: 0; }
+.advanced-access-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.advanced-access-heading h2 { margin: 0; }
+.codex-access { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 94px; }
+.codex-access strong { font-size: 13px; font-weight: 600; }
+.codex-access .settings-button { flex: none; }
+#codex-access-status[data-tone="error"] { color: var(--error); }
 .page-note { color: var(--secondary-text); font-size: 13px; line-height: 1.6; }
 @keyframes settings-page-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {

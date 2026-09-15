@@ -4,6 +4,14 @@
   const text = 'A little space to think.\n\nGood ideas often begin with something small: a line in a book, a passing thought, a few words worth keeping.\n\nMake room for what matters.';
   const platform = query.get('platform') || 'windows';
   let settings = { enabled: query.has('enabled'), editorMode: query.get('editorMode') || 'basic', quickMode: query.get('quickMode') || 'basic', shortcut: 'Super+Shift+KeyT', quickShortcut: 'Control+Super+Shift+KeyT', apiKeyConfigured: query.has('key'), error: null, localOcr: { phase: 'ready' } };
+  settings.advancedProvider = query.get('provider') || 'codex';
+  settings.codex = { installed: query.has('codex'), available: query.has('codex') && scenario !== 'codex-signed-out', checking: false,
+    message: scenario === 'codex-signed-out' ? 'Sign in to Codex with ChatGPT, then Retry.' : 'Uses your Codex plan for Advanced and Translate.' };
+  function access() {
+    const activeAdvancedProvider = settings.codex.installed && settings.advancedProvider === 'codex' ? 'codex' : 'api';
+    return { advancedProvider: settings.advancedProvider, activeAdvancedProvider, codex: { ...settings.codex },
+      advancedAvailable: activeAdvancedProvider === 'codex' ? settings.codex.available : settings.apiKeyConfigured };
+  }
   settings.captureAccess = { supported: true, granted: scenario !== 'capture-denied' };
   if (scenario === 'ocr-preparing') settings.localOcr = { phase: 'preparing' };
   if (scenario === 'ocr-error') settings.localOcr = { phase: 'error', error: 'Could not prepare on-device OCR. Try again.' };
@@ -48,7 +56,10 @@
     calls.push({ command, args: command === 'save_openai_api_key' ? '[redacted fixture]' : args });
     switch (command) {
       case 'settings_state': return { platform, startAtLogin: false, trayIcon: 'default', autoSchedule: platform === 'macos' ? null : { lightStart: 7, darkStart: 19 } };
-      case 'text_extractor_state': return { ...settings };
+      case 'text_extractor_state': return { ...settings, ...access() };
+      case 'text_extractor_advanced_access': return access();
+      case 'set_text_extractor_provider': settings.advancedProvider = args.provider; return;
+      case 'refresh_text_extractor_codex': settings.codex.available = true; settings.codex.message = 'Uses your Codex plan for Advanced and Translate.'; return;
       case 'request_text_extractor_access': settings.captureAccess.granted = true; return;
       case 'local_ocr_state': return settings.localOcr;
       case 'retry_local_ocr_setup': settings.localOcr = { phase: 'ready' }; return;
@@ -89,7 +100,7 @@
         if (scenario === 'basic-error' || scenario === 'clipboard-error') { window.__preview.error = 'Quick copy failed'; throw 'Quick copy failed'; }
         window.__preview.copied = text.replaceAll('\n\n', '\n'); return;
       }
-      case 'text_extractor_capabilities': return settings.apiKeyConfigured;
+      case 'text_extractor_capabilities': return access().advancedAvailable;
       case 'cancel_text_extraction': return;
       case 'text_extractor_show': return;
       case 'record_text_extractor_shortcut': return;
@@ -99,14 +110,14 @@
           if (scenario === 'basic-error') throw 'Offline text recognition is getting ready. Check Settings → Advanced.';
           return scenario === 'basic-empty' ? '' : text.replaceAll('\n\n', '\n');
         }
-        if (!settings.apiKeyConfigured) throw 'Add your OpenAI API key in Settings to use Advanced and Translate.';
+        if (!access().advancedAvailable) throw 'Choose an available Advanced provider in Settings.';
         await new Promise(resolve => setTimeout(resolve, scenario === 'pending' ? 30000 : scenario === 'demo' ? 6500 : 1600));
         window.__preview.extractionReadyAt = performance.now();
         if (scenario === 'error') throw 'Could not reach OpenAI. Check your connection and try again.';
         return scenario === 'empty' ? '' : text;
       }
       case 'translate_extracted_text': {
-        if (!settings.apiKeyConfigured) throw 'Add your OpenAI API key in Settings to use Advanced and Translate.';
+        if (!access().advancedAvailable) throw 'Choose an available Advanced provider in Settings.';
         await new Promise(resolve => setTimeout(resolve, scenario === 'translation-pending' ? 30000 : 1600));
         if (scenario === 'translation-error') throw 'Could not reach OpenAI. Your text is unchanged.';
         if (scenario === 'translation-empty') return '';

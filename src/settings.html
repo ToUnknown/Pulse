@@ -94,7 +94,21 @@
           </div>
         </section>
         <section id="openai-key-section" class="settings-group" aria-labelledby="openai-key-title" hidden>
-          <h2 id="openai-key-title">API key</h2>
+          <div class="advanced-access-heading">
+            <h2 id="openai-key-title">API key</h2>
+            <div id="advanced-provider" class="shortcut-mode" role="radiogroup" aria-label="Advanced provider" style="--mode-index: 0" hidden>
+              <span class="shortcut-mode-pill" aria-hidden="true"><span class="shortcut-mode-highlight"><span>Codex</span><span>API key</span></span></span>
+              <button type="button" role="radio" data-provider="codex" aria-checked="true">Codex</button>
+              <button type="button" role="radio" data-provider="api" aria-checked="false" tabindex="-1">API key</button>
+            </div>
+          </div>
+          <div id="codex-access" class="api-key-card codex-access" hidden>
+            <div class="api-key-copy">
+              <strong>Codex subscription</strong>
+              <small id="codex-access-status" role="status" aria-live="polite"></small>
+            </div>
+            <button id="codex-access-retry" class="settings-button" type="button" hidden>Retry</button>
+          </div>
           <form id="openai-key-form" class="api-key-card">
             <div class="api-key-heading">
               <img class="api-key-icon" src="translation-icons/key-icon-yellow.svg" alt="" aria-hidden="true" />

@@ -13,7 +13,7 @@ Text Extractor requires macOS 14 or later. Other menu-bar features remain availa
 - Default and Red menu-bar icons
 - In-app update checks and restart
 
-- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Enabling Text Extractor prepares OCR in the background; Settings shows its status until it is ready. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized. Adding the optional shared OpenAI API key unlocks Advanced extraction with GPT-5.6 Luna (no reasoning) and Translate, using the same key validation and controls as Windows.
+- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Enabling Text Extractor prepares OCR in the background; Settings shows its status until it is ready. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized. A locally installed Codex signed in with ChatGPT is the preferred provider for GPT-5.6 Luna Advanced extraction and Translate. The shared OpenAI API key remains an alternative; the Codex option is hidden when Codex is not installed.
 
 ### Windows
 
@@ -22,7 +22,7 @@ Text Extractor requires macOS 14 or later. Other menu-bar features remain availa
 - Default and Red tray icons
 - In-app update checks and restart
 - Auto, Light, and Dark appearance modes with configurable start times.
-- Text Extractor prototype: use Win + Shift + T to open the animated editor, or Ctrl + Win + Shift + T to select and instantly copy local OCR text. Selection happens over the live desktop. Basic uses a small downloaded PP-OCRv5 model locally, with no API key. Enable it and customize either shortcut and its default mode in Settings → Advanced. Adding the optional shared OpenAI API key unlocks Advanced extraction with GPT-5.6 Luna (no reasoning) and Translate; the key is checked before it is saved. Escape or an outside click dismisses the overlay.
+- Text Extractor prototype: use Win + Shift + T to open the animated editor, or Ctrl + Win + Shift + T to select and instantly copy local OCR text. Selection happens over the live desktop. Basic uses a small downloaded PP-OCRv5 model locally, with no API key. Enable it and customize either shortcut and its default mode in Settings → Advanced. A locally installed Codex signed in with ChatGPT is the preferred provider for GPT-5.6 Luna Advanced extraction and Translate, with the shared OpenAI API key as an alternative. The Codex option is hidden when Codex is not installed. Escape or an outside click dismisses the overlay.
 
 See [Text Extractor setup and prototype notes](scripts/text-extractor/README.md) for architecture, setup, and manual platform verification notes.
 

@@ -1,9 +1,10 @@
 use super::{
     advanced,
+    codex::Codex,
     local_ocr::ModelStatus,
     pixels::DesktopFrame,
     platform::{self, capture, LocalOcr},
-    protocol::{self, Crop, ExtractionMode, Preferences, QuickCopyOutcome},
+    protocol::{self, AdvancedProvider, Crop, ExtractionMode, Preferences, QuickCopyOutcome},
 };
 use crate::openai_credentials;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -31,6 +32,7 @@ const NOTICE_PREFIX: &str = "quick-copy-notice-";
 pub struct TextExtractor {
     preferences: Mutex<Preferences>,
     local_ocr: Arc<LocalOcr>,
+    codex: Arc<Codex>,
     path: PathBuf,
     session: Mutex<Option<Session>>,
     warm: Mutex<Option<WarmWindow>>,
@@ -108,6 +110,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     app.manage(TextExtractor {
         preferences: Mutex::new(preferences.clone()),
         local_ocr: LocalOcr::new(app.path().app_local_data_dir()?),
+        codex: Codex::new(app.path().app_local_data_dir()?),
         path,
         session: Mutex::new(None),
         warm: Mutex::new(None),
@@ -185,6 +188,7 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         .enabled;
     platform::configure_shortcuts(enabled, shortcut_pair(&preferences)?);
     app.state::<TextExtractor>().local_ocr.set_enabled(enabled);
+    app.state::<TextExtractor>().codex.refresh(false);
     queue_prewarm(app);
     Ok(())
 }
@@ -193,21 +197,100 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
 pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Result<Value, String> {
     settings_only(&window)?;
     let state = app.state::<TextExtractor>();
+    state.codex.refresh(false);
     let credential_state = openai_credentials::is_configured();
     let configured = credential_state.as_ref().copied().unwrap_or(false);
     let preferences = state.preferences.lock().unwrap().clone();
-    let error = state
-        .error
-        .lock()
-        .unwrap()
-        .clone()
-        .or_else(|| credential_state.err());
-    Ok(
+    let provider = active_provider(preferences.advanced_provider, &state.codex.status());
+    let error = state.error.lock().unwrap().clone().or_else(|| {
+        if provider == AdvancedProvider::Api {
+            credential_state.err()
+        } else {
+            None
+        }
+    });
+    let mut result = advanced_access(&state, &preferences, configured);
+    result.as_object_mut().unwrap().extend(
         json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut, "quickShortcut": preferences.quick_shortcut,
         "editorMode": preferences.editor_mode, "quickMode": preferences.quick_mode,
         "apiKeyConfigured": configured, "error": error, "localOcr": state.local_ocr.status(),
-        "captureAccess": platform::capture_access()}),
-    )
+        "captureAccess": platform::capture_access()}).as_object().unwrap().clone(),
+    );
+    Ok(result)
+}
+
+fn active_provider(preferred: AdvancedProvider, status: &super::codex::Status) -> AdvancedProvider {
+    // Wait for discovery before falling back, so startup never sends a request
+    // to the paid API while the preferred local Codex is still being located.
+    if preferred == AdvancedProvider::Codex && (status.installed || status.checking) {
+        AdvancedProvider::Codex
+    } else {
+        AdvancedProvider::Api
+    }
+}
+
+fn advanced_access(state: &TextExtractor, preferences: &Preferences, api_key: bool) -> Value {
+    let codex = state.codex.status();
+    let provider = active_provider(preferences.advanced_provider, &codex);
+    let available = match provider {
+        AdvancedProvider::Codex => codex.available,
+        AdvancedProvider::Api => api_key,
+    };
+    json!({"advancedProvider": preferences.advanced_provider, "activeAdvancedProvider": provider,
+        "advancedAvailable": available, "codex": codex})
+}
+
+fn advanced_available(state: &TextExtractor) -> bool {
+    let preferred = state.preferences.lock().unwrap().advanced_provider;
+    let status = state.codex.status();
+    match active_provider(preferred, &status) {
+        AdvancedProvider::Codex => status.available,
+        AdvancedProvider::Api => openai_credentials::is_configured().unwrap_or(false),
+    }
+}
+
+#[tauri::command]
+pub fn text_extractor_advanced_access(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<Value, String> {
+    settings_only(&window)?;
+    let state = app.state::<TextExtractor>();
+    let preferences = state.preferences.lock().unwrap().clone();
+    // Poll only public Codex metadata; do not reopen the system key store on a timer.
+    let codex = state.codex.status();
+    Ok(json!({"advancedProvider": preferences.advanced_provider,
+        "activeAdvancedProvider": active_provider(preferences.advanced_provider, &codex),
+        "codex": codex}))
+}
+
+#[tauri::command]
+pub fn refresh_text_extractor_codex(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<(), String> {
+    settings_only(&window)?;
+    app.state::<TextExtractor>().codex.refresh(true);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_text_extractor_provider(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    provider: AdvancedProvider,
+) -> Result<(), String> {
+    settings_only(&window)?;
+    let state = app.state::<TextExtractor>();
+    if provider == AdvancedProvider::Codex && !state.codex.status().installed {
+        return Err("Codex is not installed on this device.".into());
+    }
+    let mut current = state.preferences.lock().unwrap();
+    let mut next = current.clone();
+    next.advanced_provider = provider;
+    save(&state.path, &next)?;
+    *current = next;
+    Ok(())
 }
 
 #[tauri::command]
@@ -393,23 +476,24 @@ pub async fn set_text_extractor(
     if enabled {
         platform::ensure_supported()?;
     }
+    let state = app.state::<TextExtractor>();
+    let mut current = state.preferences.lock().unwrap();
     let mut next = Preferences {
         enabled,
         shortcut: shortcut_value,
         quick_shortcut: quick_shortcut_value,
         editor_mode,
         quick_mode,
+        advanced_provider: current.advanced_provider,
     };
     let keys = shortcut_pair(&next)?;
     next.shortcut = keys[0].to_string();
     next.quick_shortcut = keys[1].to_string();
-    let state = app.state::<TextExtractor>();
     if enabled && !platform::shortcuts_available() {
         return Err(
             "Could not install Text Extractor shortcuts. Restart Pulse and try again.".into(),
         );
     }
-    let mut current = state.preferences.lock().unwrap();
     change_registered_shortcuts(
         &app,
         &registered_shortcuts(&current)?,
@@ -835,8 +919,9 @@ pub async fn text_extractor_quick_copy(
         result = async {
             let image = tauri::async_runtime::spawn_blocking(move || capture::selection(monitor, crop))
                 .await.map_err(|_| "Screen capture stopped unexpectedly.".to_string())??;
-            // Keep credential I/O off the shortcut-to-selector path. A removed key falls back locally.
-            let mode = default_mode.with_advanced_available(openai_credentials::is_configured().unwrap_or(false));
+            // Keep provider checks off the shortcut-to-selector path. Basic
+            // remains usable when the selected Advanced provider is unavailable.
+            let mode = default_mode.with_advanced_available(advanced_available(&app.state::<TextExtractor>()));
             recognize_selection(&app, image, mode, cancel.clone()).await
         } => result,
     };
@@ -916,8 +1001,7 @@ pub fn text_extractor_capabilities(
     window: WebviewWindow,
 ) -> Result<bool, String> {
     ensure_session(&app, &window)?;
-    // Credential storage failure must not prevent local OCR.
-    Ok(openai_credentials::is_configured().unwrap_or(false))
+    Ok(advanced_available(&app.state::<TextExtractor>()))
 }
 
 /// Request IDs also order cancellation IPC, so a late request can never replace a
@@ -1004,7 +1088,7 @@ pub async fn translate_extracted_text(
     };
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
-        result = advanced::request(body, cancel.clone()) => result,
+        result = request_advanced(&app, body, cancel.clone()) => result,
     };
     finish_request(&app, &window, request_id, result)
 }
@@ -1042,8 +1126,29 @@ async fn recognize_selection(
             let image_url = tauri::async_runtime::spawn_blocking(move || png_url(&image))
                 .await
                 .map_err(|_| "Could not prepare this selection.")??;
-            advanced::request(protocol::request_body(&image_url), cancel).await
+            request_advanced(app, protocol::request_body(&image_url), cancel).await
         }
+    }
+}
+
+async fn request_advanced(
+    app: &tauri::AppHandle,
+    body: Value,
+    cancel: CancellationToken,
+) -> Result<String, String> {
+    let (provider, codex) = {
+        let state = app.state::<TextExtractor>();
+        let preferred = state.preferences.lock().unwrap().advanced_provider;
+        (
+            active_provider(preferred, &state.codex.status()),
+            state.codex.clone(),
+        )
+    };
+    // Never silently switch to API billing after a Codex authentication, model,
+    // or usage-limit error. The user can explicitly select API key in Settings.
+    match provider {
+        AdvancedProvider::Codex => codex.request(body, cancel).await,
+        AdvancedProvider::Api => advanced::request(body, cancel).await,
     }
 }
 
@@ -1286,5 +1391,47 @@ mod tests {
         assert!(!advanced.is_cancelled());
         session.cancel.cancel();
         assert!(advanced.is_cancelled());
+    }
+
+    #[test]
+    fn codex_selection_never_falls_back_to_api_while_installed_or_discovering() {
+        let mut status = super::super::codex::Status {
+            installed: false,
+            available: false,
+            checking: true,
+            message: String::new(),
+        };
+        assert_eq!(
+            active_provider(AdvancedProvider::Codex, &status),
+            AdvancedProvider::Codex
+        );
+        status.checking = false;
+        assert_eq!(
+            active_provider(AdvancedProvider::Codex, &status),
+            AdvancedProvider::Api
+        );
+        status.installed = true;
+        assert_eq!(
+            active_provider(AdvancedProvider::Codex, &status),
+            AdvancedProvider::Codex
+        );
+        assert_eq!(
+            active_provider(AdvancedProvider::Api, &status),
+            AdvancedProvider::Api
+        );
+    }
+
+    #[test]
+    fn legacy_preferences_prefer_codex_without_changing_shortcut_modes() {
+        let preferences: Preferences =
+            serde_json::from_value(json!({"enabled": true, "quickMode": "advanced"})).unwrap();
+        assert_eq!(preferences.advanced_provider, AdvancedProvider::Codex);
+        assert_eq!(preferences.quick_mode, ExtractionMode::Advanced);
+        assert_eq!(preferences.editor_mode, ExtractionMode::Basic);
+        let mut explicit = preferences;
+        explicit.advanced_provider = AdvancedProvider::Api;
+        let restored: Preferences =
+            serde_json::from_slice(&serde_json::to_vec(&explicit).unwrap()).unwrap();
+        assert_eq!(restored.advanced_provider, AdvancedProvider::Api);
     }
 }
