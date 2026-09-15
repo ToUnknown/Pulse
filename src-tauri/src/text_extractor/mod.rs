@@ -1,5 +1,6 @@
 //! Shared extraction lifecycle with compile-time native platform adapters.
 mod advanced;
+mod codex;
 mod local_ocr;
 mod pixels;
 pub mod protocol;

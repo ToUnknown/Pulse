@@ -38,6 +38,15 @@ pub struct Preferences {
     pub quick_shortcut: String,
     pub editor_mode: ExtractionMode,
     pub quick_mode: ExtractionMode,
+    pub advanced_provider: AdvancedProvider,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AdvancedProvider {
+    #[default]
+    Codex,
+    Api,
 }
 
 impl Default for Preferences {
@@ -48,6 +57,7 @@ impl Default for Preferences {
             quick_shortcut: QUICK_SHORTCUT.into(),
             editor_mode: ExtractionMode::Basic,
             quick_mode: ExtractionMode::Basic,
+            advanced_provider: AdvancedProvider::Codex,
         }
     }
 }
