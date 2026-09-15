@@ -1,6 +1,7 @@
 use super::{
     advanced,
     codex::Codex,
+    google_translate,
     local_ocr::ModelStatus,
     pixels::DesktopFrame,
     platform::{self, capture, LocalOcr},
@@ -1075,8 +1076,9 @@ pub async fn translate_extracted_text(
     text: String,
     language: String,
     request_id: u32,
+    use_advanced: Option<bool>,
 ) -> Result<String, String> {
-    let body = protocol::translation_body(&text, &language)?;
+    protocol::translation_target(&text, &language)?;
     let cancel = {
         let state = app.state::<TextExtractor>();
         let mut active = state.session.lock().unwrap();
@@ -1088,7 +1090,14 @@ pub async fn translate_extracted_text(
     };
     let result = tokio::select! {
         _ = cancel.cancelled() => Err("Capture cancelled.".into()),
-        result = request_advanced(&app, body, cancel.clone()) => result,
+        result = async {
+            if use_advanced.unwrap_or(false) {
+                // Switching providers is an explicit user action, never an automatic paid retry.
+                request_advanced(&app, protocol::translation_body(&text, &language)?, cancel.clone()).await
+            } else {
+                google_translate::request(&text, &language, cancel.clone()).await
+            }
+        } => result,
     };
     finish_request(&app, &window, request_id, result)
 }
