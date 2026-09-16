@@ -21,6 +21,7 @@ const copy = $("#copy");
 const translate = $("#translate");
 const languages = $("#languages");
 const retry = $("#retry");
+const translationFallback = $("#translation-fallback");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const motions = new Set();
 let capture;
@@ -34,6 +35,7 @@ let closing = false;
 let shown = false;
 let busy = false;
 let retryAction;
+let fallbackAction;
 let mode = "basic";
 let advancedAvailable = false;
 let capabilitiesReady = Promise.resolve();
@@ -95,8 +97,10 @@ function renderMode() {
 function setCapabilities(available) {
   advancedAvailable = available;
   modeControl.hidden = !available;
-  translateControl.hidden = !available;
+  translateControl.hidden = false;
   if (!available) {
+    translationFallback.hidden = true;
+    fallbackAction = null;
     hideLanguages();
     if (mode === "advanced") switchMode("basic");
   }
@@ -116,15 +120,28 @@ modeControl.addEventListener("keydown", (event) => {
   switchMode(next);
 });
 
+function exceedsTranslationLimit() { return [...editor.value].length > 5000; }
 function updateActions() {
   const disabled = busy || closing || !editor.value.trim();
   copy.disabled = disabled;
-  translate.disabled = disabled || !advancedAvailable;
+  const tooLong = exceedsTranslationLimit();
+  translate.disabled = disabled || tooLong;
+  translationFallback.disabled = disabled || tooLong;
+  translate.title = tooLong ? "Translate supports up to 5,000 characters." : "";
+  if (tooLong) hideLanguages();
 }
 function hideLanguages() { languages.hidden = true; translate.setAttribute("aria-expanded", "false"); }
-function clearError() { errorRow.hidden = true; retry.hidden = true; retryAction = null; }
+function clearError() {
+  errorRow.hidden = true;
+  retry.hidden = true;
+  translationFallback.hidden = true;
+  retryAction = null;
+  fallbackAction = null;
+}
 async function setError(error, action) {
   const current = generation;
+  translationFallback.hidden = true;
+  fallbackAction = null;
   busy = false;
   editor.disabled = false;
   editor.readOnly = false;
@@ -313,8 +330,8 @@ async function runExtraction(initial = false, force = false) {
   else await revealText(response.text, current);
 }
 
-async function translateText(language) {
-  if (busy || closing || !advancedAvailable || !editor.value.trim()) return;
+async function translateText(language, useAdvanced = false) {
+  if (busy || closing || (useAdvanced && !advancedAvailable) || exceedsTranslationLimit() || !editor.value.trim()) return;
   const current = ++generation;
   busy = true;
   hideLanguages();
@@ -326,11 +343,17 @@ async function translateText(language) {
   updateActions();
   editor.focus({ preventScroll: true });
   try {
-    const text = await invoke("translate_extracted_text", { text: editor.value, language, requestId: current });
+    const text = await invoke("translate_extracted_text", { text: editor.value, language, requestId: current, useAdvanced });
     if (current !== generation || closing) return;
-    if (!text.trim()) throw "No translation was returned. Your text is unchanged.";
+    if (!text.trim()) throw "No translation was returned.";
     await revealText(text, current);
-  } catch (error) { if (current === generation && !closing) await setError(error, () => translateText(language)); }
+  } catch (error) {
+    if (current !== generation || closing) return;
+    await setError(`${error} Your text is unchanged.`, () => translateText(language, useAdvanced));
+    if (current !== generation || closing) return;
+    translationFallback.hidden = useAdvanced || !advancedAvailable;
+    fallbackAction = () => translateText(language, true);
+  }
 }
 
 copy.addEventListener("click", async () => {
@@ -343,6 +366,7 @@ copy.addEventListener("click", async () => {
 });
 editor.addEventListener("input", () => { drafts[mode] = editor.value; updateActions(); });
 retry.addEventListener("click", () => retryAction?.());
+translationFallback.addEventListener("click", () => fallbackAction?.());
 translate.addEventListener("click", () => {
   if (!languages.hidden) { hideLanguages(); return; }
   languages.hidden = false;

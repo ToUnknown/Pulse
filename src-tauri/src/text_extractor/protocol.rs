@@ -120,11 +120,11 @@ pub fn request_body(image_url: &str) -> Value {
     })
 }
 
-pub fn translation_body(text: &str, language: &str) -> Result<Value, String> {
+pub fn translation_target(text: &str, language: &str) -> Result<&'static str, String> {
     if text.trim().is_empty() || text.len() > 100_000 {
         return Err("The text is empty or too long to translate. Use a shorter passage.".into());
     }
-    let target = match language {
+    Ok(match language {
         "en" => "English",
         "uk" => "Ukrainian",
         "de" => "German",
@@ -138,7 +138,11 @@ pub fn translation_body(text: &str, language: &str) -> Result<Value, String> {
         "zh" => "Simplified Chinese",
         "ar" => "Arabic",
         _ => return Err("Choose a supported translation language.".into()),
-    };
+    })
+}
+
+pub fn translation_body(text: &str, language: &str) -> Result<Value, String> {
+    let target = translation_target(text, language)?;
     Ok(json!({
         "model": MODEL,
         "reasoning": {"effort": "none"},
