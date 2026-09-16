@@ -126,6 +126,7 @@ function updateActions() {
   copy.disabled = disabled;
   const tooLong = exceedsTranslationLimit();
   translate.disabled = disabled || tooLong;
+  translationFallback.disabled = disabled || tooLong;
   translate.title = tooLong ? "Translate supports up to 5,000 characters." : "";
   if (tooLong) hideLanguages();
 }
@@ -330,7 +331,7 @@ async function runExtraction(initial = false, force = false) {
 }
 
 async function translateText(language, useAdvanced = false) {
-  if (busy || closing || (useAdvanced && !advancedAvailable) || (!useAdvanced && exceedsTranslationLimit()) || !editor.value.trim()) return;
+  if (busy || closing || (useAdvanced && !advancedAvailable) || exceedsTranslationLimit() || !editor.value.trim()) return;
   const current = ++generation;
   busy = true;
   hideLanguages();

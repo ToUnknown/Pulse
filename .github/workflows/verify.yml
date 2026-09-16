@@ -40,7 +40,7 @@ jobs:
           node --check src/text-extractor-settings.js
           node --check scripts/text-extractor/preview.mjs
           node --check scripts/text-extractor/preview-bridge.js
-          node --test tests/extraction-geometry.test.mjs tests/settings-dismissal.test.mjs
+          node --test tests/extraction-geometry.test.mjs tests/settings-dismissal.test.mjs tests/translation-limit.test.mjs
       - name: Check Rust formatting
         working-directory: src-tauri
         run: cargo fmt -- --check
