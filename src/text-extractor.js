@@ -77,7 +77,7 @@ async function showDetails(current, finalPhase, origin = stage.getBoundingClient
       motion(details, [
         { opacity: 0, transform: "translateY(24px)" },
         { opacity: 1, transform: "none" },
-      ], { duration: 440, delay: 140, easing: "cubic-bezier(.2,.8,.2,1)", fill: "backwards" }),
+      ], { duration: 440, easing: "cubic-bezier(.2,.8,.2,1)", fill: "backwards" }),
     ]);
   }
   if (closing || current !== generation) return;
@@ -255,18 +255,6 @@ async function revealText(text, current) {
   await showDetails(current, "ready");
 }
 
-async function finishShimmerCycle() {
-  if (reducedMotion.matches) return;
-  const animation = frame.getAnimations({ subtree: true })
-    .find((animation) => animation.animationName === "screenshot-shimmer");
-  if (!animation?.effect) return;
-  const { currentIteration } = animation.effect.getComputedTiming();
-  // End at the right edge of this pass, even if the API returns halfway through.
-  // Keeping the same animation avoids a jump or an extra pass on a quick response.
-  animation.effect.updateTiming({ iterations: (currentIteration ?? 0) + 1 });
-  await animation.finished.catch(() => {});
-}
-
 async function runExtraction(initial = false, force = false) {
   if (closing) return;
   const current = ++generation;
@@ -323,8 +311,6 @@ async function runExtraction(initial = false, force = false) {
   }
   if (current !== generation || closing) return;
   const response = await request;
-  if (current !== generation || closing) return;
-  if (mode === "advanced" && !cached) await finishShimmerCycle();
   if (current !== generation || closing) return;
   if ("error" in response) await setError(response.error, () => runExtraction(false, true));
   else await revealText(response.text, current);
