@@ -7,7 +7,7 @@ use std::{sync::OnceLock, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 const ENDPOINT: &str = "https://translate.googleapis.com/translate_a/single";
-// A conservative prototype limit, not a promised Google quota. Long passages can use Advanced.
+// A conservative prototype limit, not a promised Google quota. The editor applies it too.
 const MAX_CHARACTERS: usize = 5_000;
 const MAX_RESPONSE_BYTES: usize = 1_000_000;
 static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
@@ -35,7 +35,10 @@ pub async fn request(
 ) -> Result<String, String> {
     protocol::translation_target(text, language)?;
     if text.chars().count() > MAX_CHARACTERS {
-        return Err("Google translation supports up to 5,000 characters here. Shorten the text or use Advanced.".into());
+        return Err(
+            "Translation supports up to 5,000 characters here. Shorten the text to translate."
+                .into(),
+        );
     }
     let client = client()?;
     tokio::select! {
