@@ -38,9 +38,13 @@ jobs:
           node --check src/settings.js
           node --check src/text-extractor.js
           node --check src/text-extractor-settings.js
+          node --check src/audio-assistant-settings.js
+          node --check src/audio-assistant.js
+          node --check src/shortcut-recorder.js
+          node --check src/feature-disclosure.js
           node --check scripts/text-extractor/preview.mjs
           node --check scripts/text-extractor/preview-bridge.js
-          node --test tests/extraction-geometry.test.mjs tests/extraction-reveal.test.mjs tests/settings-dismissal.test.mjs tests/translation-limit.test.mjs
+          node --test tests/extraction-geometry.test.mjs tests/extraction-reveal.test.mjs tests/settings-dismissal.test.mjs tests/translation-limit.test.mjs tests/shortcut-recorder.test.mjs tests/feature-disclosure.test.mjs
       - name: Check Rust formatting
         working-directory: src-tauri
         run: cargo fmt -- --check

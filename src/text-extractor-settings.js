@@ -1,3 +1,5 @@
+import { featureDisclosure } from "./feature-disclosure.js";
+import { attachShortcutRecorder, displayShortcut as formatShortcut } from "./shortcut-recorder.js";
 const invoke = window.__TAURI__.core.invoke;
 const $ = (selector) => document.querySelector(selector);
 const section = $("#text-extractor-section");
@@ -29,12 +31,7 @@ let platform = "windows";
 let recording = null;
 let busy = false;
 let checkingKey = false;
-function displayShortcut(value) {
-  return value.split("+").map((part) => {
-    const labels = { control: "Ctrl", ctrl: "Ctrl", super: platform === "macos" ? "⌘" : "Win", meta: platform === "macos" ? "⌘" : "Win", shift: "Shift", alt: platform === "macos" ? "Option" : "Alt" };
-    return labels[part.toLowerCase()] || part.replace(/^Key(?=[A-Z]$)/, "").replace(/^Digit(?=\d$)/, "");
-  }).join(" + ");
-}
+function displayShortcut(value) { return formatShortcut(value, platform); }
 function error(reason) { settingsError.textContent = String(reason); settingsError.hidden = false; $("#tab-advanced").click(); }
 function lock(value) {
   busy = value;
@@ -47,10 +44,8 @@ function lock(value) {
   providerRetry.disabled = value || !!state?.codex?.checking;
   renderKeyControls();
 }
-function setExpanded(value) {
-  shortcutRows.dataset.expanded = String(value);
-  shortcutRows.inert = !value;
-}
+const disclosure = featureDisclosure(shortcutRows, $("#extractor-disclosure"), "Text Extractor");
+function setExpanded(value) { disclosure.enabled(value); }
 function renderModes() {
   for (const group of modeControls) {
     group.hidden = !state.advancedAvailable;
@@ -75,7 +70,8 @@ function renderProvider() {
   }
   $("#openai-key-title").textContent = installed ? "Advanced access" : "API key";
   providerCard.hidden = !installed || selected !== "codex";
-  $("#openai-key-form").hidden = installed && selected === "codex";
+  $("#openai-key-form").hidden = platform !== "windows" && installed && selected === "codex";
+  window.dispatchEvent(new Event("pulse-answer-provider-changed"));
   const message = state.codex?.checking && !state.codex?.available ? "Checking Codex…" : state.codex?.message || "";
   if (providerStatus.textContent !== message) providerStatus.textContent = message;
   providerStatus.dataset.tone = !state.codex?.checking && !state.codex?.available ? "error" : "";
@@ -145,7 +141,7 @@ function render() {
   for (const [field, button] of Object.entries(shortcutButtons)) { button.textContent = displayShortcut(state[field]); button.title = button.textContent; }
   keyStatus.textContent = state.apiKeyConfigured
     ? "Key saved."
-    : "Optional. Unlocks Advanced extraction.";
+    : platform === "windows" ? "Required for audio listening. Also unlocks Advanced extraction." : "Optional. Unlocks Advanced extraction.";
   delete keyStatus.dataset.tone;
   keyInput.removeAttribute("aria-invalid");
   keyInput.dataset.configured = String(state.apiKeyConfigured);
@@ -270,45 +266,11 @@ keyRemove.addEventListener("click", async () => {
   } catch (reason) { keyError.textContent = String(reason); keyError.hidden = false; }
   finally { lock(false); }
 });
-function stopRecording() {
-  if (recording) invoke("record_text_extractor_shortcut", { recording: false }).catch(error);
-  recording = null;
-  for (const [field, button] of Object.entries(shortcutButtons)) {
-    button.setAttribute("aria-pressed", "false");
-    if (state) button.textContent = displayShortcut(state[field]);
-  }
-}
-function acceptShortcut(combination) {
-  const field = recording;
-  if (!field) return;
-  stopRecording();
-  save(state.enabled, field === "shortcut" ? combination : state.shortcut,
-    field === "quickShortcut" ? combination : state.quickShortcut);
-}
-for (const [field, button] of Object.entries(shortcutButtons)) {
-  button.addEventListener("click", () => {
-    button.focus();
-    recording = field;
-    button.textContent = "Press a combination…";
-    button.setAttribute("aria-pressed", "true");
-    invoke("record_text_extractor_shortcut", { recording: true }).catch((reason) => { stopRecording(); error(reason); });
-  });
-  button.addEventListener("blur", stopRecording);
-  button.addEventListener("keydown", (event) => {
-    if (recording !== field) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.key === "Escape") { stopRecording(); return; }
-    if (/^(Control|Shift|Alt|Meta)/.test(event.code)) return;
-    if (!event.ctrlKey && !event.altKey && !event.metaKey) { error(platform === "macos" ? "Include Control, Option, or Command in your shortcut." : "Include Ctrl, Alt, or Windows in your shortcut."); return; }
-    if (!/^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-9]|2[0-4])|Space|Arrow(Up|Down|Left|Right))$/.test(event.code)) {
-      error("Use a letter, number, function key, arrow, or Space."); return;
-    }
-    acceptShortcut([event.ctrlKey && "Control", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super", event.code].filter(Boolean).join("+"));
-  });
-}
-window.addEventListener("pulse-extractor-shortcut", (event) => {
-  if (typeof event.detail === "string") acceptShortcut(event.detail);
+attachShortcutRecorder({
+  buttons: shortcutButtons, value: field => state?.[field], platform: () => platform,
+  changed: value => { recording = value; }, error,
+  accept: (field, combination) => save(state.enabled, field === "shortcut" ? combination : state.shortcut,
+    field === "quickShortcut" ? combination : state.quickShortcut)
 });
 window.addEventListener("focus", () => {
   if (!section.hidden && !busy && !recording) load().catch(error);

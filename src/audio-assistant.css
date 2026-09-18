@@ -1,0 +1,7 @@
+:root { background: transparent; }
+body { min-height: 0; padding: 12px; background: transparent; overflow: hidden; }
+#answer { margin: 0; padding: 20px 22px; border: 1px solid var(--border); border-radius: var(--card-radius); corner-shape: var(--corner-style); background: var(--surface); box-shadow: 0 4px 10px #00000020; font-size: 16px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 476px; overflow-y: auto; }
+#answer:empty { visibility: hidden; }
+#answer.reveal { animation: answer-in 180ms cubic-bezier(.2,.8,.2,1) both; }
+@keyframes answer-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { #answer.reveal { animation: none; } }

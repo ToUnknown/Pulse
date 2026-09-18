@@ -744,6 +744,32 @@ fn friendly_error(error: &Value) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[ignore = "explicit opt-in: one synthetic audio-assistant answer through the local Codex subscription"]
+    async fn installed_codex_answers_recent_question() {
+        let data =
+            std::env::temp_dir().join(format!("pulse-audio-codex-check-{}", std::process::id()));
+        let codex = Codex::new(data.clone());
+        codex.refresh(true);
+        tokio::time::timeout(Duration::from_secs(180), async {
+            while codex.status().checking {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("Codex discovery timed out");
+        assert!(codex.status().available, "{}", codex.status().message);
+        let answer = codex.request(crate::audio_assistant::answer_body(
+            "[1s ago] Could you introduce yourself and explain your role on this project?",
+            "My name is Alex. I am the software engineer responsible for the desktop application."), CancellationToken::new()).await.unwrap();
+        assert!(
+            answer.contains("Alex"),
+            "Expected a spoken answer using the supplied context: {answer}"
+        );
+        assert!(!answer.starts_with("{"));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
     /// Deliberately excluded from normal tests: requires a locally installed,
     /// signed-in Codex and consumes its plan allowance. Uses a synthetic card,
     /// never captures the desktop, reads the clipboard, or uses an API key.

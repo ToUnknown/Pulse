@@ -136,6 +136,10 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
                         report_recorded_shortcut(&app, &key.to_string());
                         return;
                     }
+                    #[cfg(target_os = "windows")]
+                    if crate::audio_assistant::dispatch(&app, key).await {
+                        return;
+                    }
                     let mode = {
                         let prefs = state.preferences.lock().unwrap();
                         if !prefs.enabled {
@@ -325,8 +329,10 @@ pub async fn save_openai_api_key(window: WebviewWindow, api_key: String) -> Resu
 }
 
 #[tauri::command]
-pub fn clear_openai_api_key(window: WebviewWindow) -> Result<(), String> {
+pub async fn clear_openai_api_key(window: WebviewWindow) -> Result<(), String> {
     settings_only(&window)?;
+    #[cfg(target_os = "windows")]
+    crate::audio_assistant::credentials_cleared(window.app_handle()).await?;
     openai_credentials::clear()
 }
 
@@ -396,7 +402,7 @@ fn registered_shortcuts(preferences: &Preferences) -> Result<Vec<Shortcut>, Stri
         .collect())
 }
 
-fn change_registered_shortcuts(
+pub(crate) fn change_registered_shortcuts(
     app: &tauri::AppHandle,
     old: &[Shortcut],
     next: &[Shortcut],
@@ -477,6 +483,12 @@ pub async fn set_text_extractor(
     if enabled {
         platform::ensure_supported()?;
     }
+    #[cfg(target_os = "windows")]
+    for value in [&shortcut_value, &quick_shortcut_value] {
+        if crate::audio_assistant::shortcut_reserved(&app, shortcut(value)?) {
+            return Err("This shortcut is used by the audio assistant.".into());
+        }
+    }
     let state = app.state::<TextExtractor>();
     let mut current = state.preferences.lock().unwrap();
     let mut next = Preferences {
@@ -526,6 +538,8 @@ impl Drop for StartingGuard<'_> {
 }
 
 pub fn appearance_changed(app: &tauri::AppHandle, theme: tauri::Theme) {
+    #[cfg(target_os = "windows")]
+    crate::audio_assistant::appearance_changed(app, theme);
     let state = app.state::<TextExtractor>();
     let label = state
         .session
@@ -1248,6 +1262,40 @@ pub fn window_destroyed(app: &tauri::AppHandle, label: &str) {
     };
     if was_active || removed_warm {
         queue_prewarm(app);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn shortcut_reserved(app: &tauri::AppHandle, key: Shortcut) -> bool {
+    let state = app.state::<TextExtractor>();
+    platform::owns_shortcut(&key)
+        || shortcut_pair(&state.preferences.lock().unwrap()).is_ok_and(|keys| keys.contains(&key))
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn audio_answer_provider(app: &tauri::AppHandle) -> &'static str {
+    let state = app.state::<TextExtractor>();
+    let status = state.codex.status();
+    if state.preferences.lock().unwrap().advanced_provider == AdvancedProvider::Codex
+        && status.available
+    {
+        "Codex"
+    } else {
+        "OpenAI"
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) async fn request_audio_answer(
+    app: &tauri::AppHandle,
+    body: Value,
+    cancel: CancellationToken,
+) -> Result<String, String> {
+    let codex = app.state::<TextExtractor>().codex.clone();
+    if audio_answer_provider(app) == "Codex" {
+        codex.request(body, cancel).await
+    } else {
+        advanced::request(body, cancel).await
     }
 }
 

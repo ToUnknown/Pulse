@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "windows", test))]
+mod audio_assistant;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod openai_credentials;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -779,8 +781,8 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         let window_height = app
             .primary_monitor()?
             .map(|monitor| {
-                (f64::from(monitor.size().height) / monitor.scale_factor() - 120.0)
-                    .clamp(360.0, 660.0)
+                (f64::from(monitor.work_area().size.height) / monitor.scale_factor() - 48.0)
+                    .clamp(320.0, 820.0)
             })
             .unwrap_or(660.0);
 
@@ -792,6 +794,7 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
                 .minimizable(false);
         let builder = builder
             .inner_size(580.0, window_height)
+            .center()
             .decorations(false)
             .transparent(true)
             .shadow(false)
@@ -1629,6 +1632,20 @@ pub fn run() {
         set_tray_icon_mode,
         #[cfg(target_os = "windows")]
         set_auto_schedule,
+        #[cfg(target_os = "windows")]
+        audio_assistant::audio_assistant_state,
+        #[cfg(target_os = "windows")]
+        audio_assistant::set_audio_listening,
+        #[cfg(target_os = "windows")]
+        audio_assistant::set_audio_shortcuts,
+        #[cfg(target_os = "windows")]
+        audio_assistant::audio_context_file,
+        #[cfg(target_os = "windows")]
+        audio_assistant::audio_answer_ready,
+        #[cfg(target_os = "windows")]
+        audio_assistant::show_audio_answer,
+        #[cfg(target_os = "windows")]
+        audio_assistant::dismiss_audio_answer,
         text_extractor::text_extractor_state,
         text_extractor::text_extractor_advanced_access,
         text_extractor::set_text_extractor_provider,
@@ -1934,6 +1951,8 @@ pub fn run() {
 
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             text_extractor::install(app.handle())?;
+            #[cfg(target_os = "windows")]
+            audio_assistant::install(app.handle())?;
 
             #[cfg(target_os = "macos")]
             start_macos_appearance_watcher(app.handle().clone());
@@ -1963,6 +1982,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Pulse")
         .run(|_app, _event| {
+            #[cfg(target_os = "windows")]
+            if matches!(
+                _event,
+                tauri::RunEvent::ExitRequested { code: Some(_), .. } | tauri::RunEvent::Exit
+            ) {
+                audio_assistant::shutdown(_app);
+            }
             // The selector may be the only Tauri window. Keep the tray app and
             // shortcut hook alive while its replacement is prepared. Explicit
             // Quit and updater restarts have an exit code and still go through.

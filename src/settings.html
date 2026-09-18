@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="settings.css" />
     <script src="settings.js" defer></script>
     <script type="module" src="text-extractor-settings.js"></script>
+    <script type="module" src="audio-assistant-settings.js"></script>
   </head>
   <body>
     <main class="settings-shell">
@@ -91,6 +92,27 @@
               <button id="ocr-setup-retry" class="settings-button" type="button" hidden>Retry</button>
             </div>
             <p id="extractor-settings-error" class="extractor-error" role="alert" hidden></p>
+            <button id="extractor-disclosure" class="feature-disclosure" type="button" aria-controls="extractor-shortcuts" aria-expanded="false" aria-label="Expand Text Extractor settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7 5 5 5-5" /></svg></button>
+          </div>
+        </section>
+        <section id="audio-assistant-section" class="settings-group" aria-labelledby="audio-assistant-heading" hidden>
+          <h2 id="audio-assistant-heading">Audio assistant</h2>
+          <div class="extractor-settings-card">
+            <label class="setting-row extractor-toggle-row">
+              <span class="setting-copy">
+                <span class="setting-feature-icon assistant-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><path d="M12.5 12a3.5 3.5 0 0 1 7 0c0 2.5-3.5 2.6-3.5 5.5" fill="none" stroke="white" stroke-width="2.3" stroke-linecap="round"/><circle cx="16" cy="22" r="1.3" fill="white"/></svg></span>
+                <span class="setting-text"><strong>Listening</strong><small>Uses system audio while on. Off clears the last 30 seconds.</small></span>
+              </span>
+              <input id="audio-listening" type="checkbox" role="switch" />
+            </label>
+            <div id="audio-assistant-details" class="extractor-shortcuts" data-expanded="false" inert><div class="extractor-shortcuts-inner">
+            <div class="shortcut-row"><span>Toggle listening</span><button id="audio-listen-shortcut" class="settings-button shortcut-button" type="button" aria-pressed="false"></button></div>
+            <div class="shortcut-row"><span>Answer latest question</span><button id="audio-answer-shortcut" class="settings-button shortcut-button" type="button" aria-pressed="false"></button></div>
+            <div class="shortcut-row"><span class="setting-text"><strong>Context file</strong><small id="audio-context-name">No file selected</small></span><span class="audio-context-actions"><button id="audio-context-choose" class="settings-button" type="button">Choose</button><button id="audio-context-clear" class="settings-button" type="button" hidden>Clear</button></span></div>
+            <p id="audio-provider-status" class="page-note"></p>
+            </div></div>
+            <p id="audio-settings-error" class="extractor-error" role="alert" hidden></p>
+            <button id="audio-disclosure" class="feature-disclosure" type="button" aria-controls="audio-assistant-details" aria-expanded="false" aria-label="Expand Audio assistant settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7 5 5 5-5" /></svg></button>
           </div>
         </section>
         <section id="openai-key-section" class="settings-group" aria-labelledby="openai-key-title" hidden>

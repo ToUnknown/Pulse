@@ -633,10 +633,10 @@ select,
 :root[data-floating="true"] .settings-header { display: flex; flex: none; align-items: center; justify-content: center; margin: -24px -24px 0; padding: 24px 24px 20px; cursor: default; user-select: none; }
 .settings-header h1 { margin: 0; font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.02em; }
 :root[data-floating="true"] .settings-tabs { flex: none; margin-bottom: 20px; }
-:root[data-floating="true"] .settings-content { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
-/* Page entrance transforms may briefly overflow. Keep scrolling available without
-   a scrollbar taking width away from the controls during that transition. */
-:root[data-floating="true"] .settings-content::-webkit-scrollbar { display: none; }
+:root[data-floating="true"] .settings-content { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--control-border) transparent; padding-right: 6px; padding-bottom: 8px; scroll-padding-block: 12px; }
+/* Keep overflow discoverable and all controls reachable above the footer. */
+:root[data-floating="true"] .settings-content::-webkit-scrollbar { width: 5px; }
+:root[data-floating="true"] .settings-content::-webkit-scrollbar-thumb { background: var(--control-border); border-radius: 5px; }
 :root[data-floating="true"] .settings-footer { display: flex; flex: none; justify-content: center; padding-top: 20px; }
 #settings-done { min-width: 112px; border-color: transparent; background: var(--settings-pill); color: var(--settings-pill-text); }
 #settings-done:hover { opacity: .85; }
@@ -661,3 +661,16 @@ select,
   .shortcut-mode-pill { background: Highlight; }
   .shortcut-mode-highlight { color: HighlightText; }
 }
+
+#audio-assistant-section .shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; }
+#audio-context-name { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--secondary-text); }
+.audio-context-actions { display: flex; gap: 6px; }
+#audio-assistant-section .page-note, #audio-settings-error { margin: 8px 16px 12px; }
+
+.assistant-icon { color: #9970d7; }
+.feature-disclosure { display: flex; align-items: center; justify-content: center; width: 100%; height: 26px; padding: 0; border: 0; border-top: 1px solid var(--border); color: var(--secondary-text); background: transparent; cursor: pointer; }
+.feature-disclosure:hover { background: var(--control-hover); color: inherit; }
+.feature-disclosure:focus-visible { outline: 2px solid var(--focus); outline-offset: -3px; }
+.feature-disclosure svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: transform 220ms ease; }
+.feature-disclosure[aria-expanded="true"] svg { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .feature-disclosure svg { transition: none; } }
