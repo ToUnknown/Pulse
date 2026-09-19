@@ -329,6 +329,61 @@ static bool typeUnicode(NSString *text) {
     if (source) CFRelease(source);
     return sent;
 }
+// Keep unchanged text in place, including text after a corrected word. Diff a
+// bounded window of composed characters so long dictations cannot block AX.
+static NSUInteger editChunkEnd(NSString *text, NSUInteger start, NSUInteger end) {
+    NSUInteger stop=MIN(end,start+12);
+    if (stop>start && stop<end) stop=NSMaxRange([text rangeOfComposedCharacterSequenceAtIndex:stop-1]);
+    return stop;
+}
+static void nextLiveEdit(NSString *old, NSString *desired, NSRange *replace, NSString **fragment) {
+    NSUInteger common=0, limit=MIN(old.length,desired.length);
+    while (common<limit && [old characterAtIndex:common]==[desired characterAtIndex:common]) common++;
+    if (common<old.length) common=MIN(common,[old rangeOfComposedCharacterSequenceAtIndex:common].location);
+    if (common<desired.length) common=MIN(common,[desired rangeOfComposedCharacterSequenceAtIndex:common].location);
+    NSUInteger oldEnd=old.length, newEnd=desired.length;
+    while (oldEnd>common && newEnd>common) {
+        NSRange a=[old rangeOfComposedCharacterSequenceAtIndex:oldEnd-1];
+        NSRange b=[desired rangeOfComposedCharacterSequenceAtIndex:newEnd-1];
+        if (a.location<common || b.location<common || ![[old substringWithRange:a] isEqualToString:[desired substringWithRange:b]]) break;
+        oldEnd=a.location; newEnd=b.location;
+    }
+    if (oldEnd>common && newEnd>common) {
+        // Find the first changed run, preserving common words between edits
+        // (for example capitalization at the start and punctuation at the end).
+        enum { Window=48 };
+        NSMutableArray<NSString *> *a=[NSMutableArray new], *b=[NSMutableArray new];
+        NSUInteger aOffsets[Window+1]={common}, bOffsets[Window+1]={common};
+        while (a.count<Window && aOffsets[a.count]<oldEnd) {
+            NSRange r=[old rangeOfComposedCharacterSequenceAtIndex:aOffsets[a.count]];
+            [a addObject:[old substringWithRange:r]]; aOffsets[a.count]=NSMaxRange(r);
+        }
+        while (b.count<Window && bOffsets[b.count]<newEnd) {
+            NSRange r=[desired rangeOfComposedCharacterSequenceAtIndex:bOffsets[b.count]];
+            [b addObject:[desired substringWithRange:r]]; bOffsets[b.count]=NSMaxRange(r);
+        }
+        unsigned char matches[Window+1][Window+1]={0};
+        for (NSInteger i=a.count-1;i>=0;i--) for (NSInteger j=b.count-1;j>=0;j--)
+            matches[i][j]=[a[i] isEqualToString:b[j]] ? 1+matches[i+1][j+1] : MAX(matches[i+1][j],matches[i][j+1]);
+        if (matches[0][0]) {
+            NSUInteger i=0,j=0;
+            while (i<a.count && j<b.count && ![a[i] isEqualToString:b[j]]) {
+                if (matches[i+1][j]>=matches[i][j+1]) i++; else j++;
+            }
+            oldEnd=aOffsets[i]; newEnd=bOffsets[j];
+        }
+        // Large rewrites progress locally without first clearing the sentence.
+        oldEnd=editChunkEnd(old,common,oldEnd);
+    }
+    newEnd=editChunkEnd(desired,common,newEnd);
+    *replace=NSMakeRange(common,oldEnd-common);
+    *fragment=[desired substringWithRange:NSMakeRange(common,newEnd-common)];
+}
+static bool requestLiveSelection(NSRange selection) {
+    if (!selectOwnedRange(selection)) return false;
+    requestedSelection=selection; selectionSince=CFAbsoluteTimeGetCurrent(); liveSelecting=true;
+    return true;
+}
 // -1 = unsafe to continue, 0 = pending, 1 = synced, 2 = original input unfocused.
 int pulse_dictation_live_step(const char *utf8) {
     if (!liveUsable || liveInterrupted) { liveUsable=false; return -1; }
@@ -362,30 +417,29 @@ int pulse_dictation_live_step(const char *utf8) {
     if (![actual isEqualToString:liveExpected] || !NSEqualRanges(selection,liveSelection)) { liveUsable=false; return -1; }
     NSString *desired = [NSString stringWithUTF8String:utf8];
     if (!desired) { liveUsable=false; return -1; }
-    if ([desired isEqualToString:liveApplied]) return 1;
-    NSUInteger common = 0, limit = MIN(desired.length,liveApplied.length);
-    while (common < limit && [desired characterAtIndex:common] == [liveApplied characterAtIndex:common]) common++;
-    // Do not split a surrogate pair, combining sequence, or emoji family.
-    if (common < liveApplied.length) common = MIN(common,[liveApplied rangeOfComposedCharacterSequenceAtIndex:common].location);
-    if (common < desired.length) common = MIN(common,[desired rangeOfComposedCharacterSequenceAtIndex:common].location);
-    NSUInteger end = MIN(desired.length,common+12);
-    if (end < desired.length) end = NSMaxRange([desired rangeOfComposedCharacterSequenceAtIndex:end-1]);
-    NSString *next = [desired substringToIndex:end];
-    NSRange replace = liveStarted ? NSMakeRange(liveOriginal.location+common,liveApplied.length-common) : liveOriginal;
+    if ([desired isEqualToString:liveApplied]) {
+        NSRange end=NSMakeRange(liveOriginal.location+liveApplied.length,0);
+        if (!liveStarted || NSEqualRanges(selection,end)) return 1;
+        if (!requestLiveSelection(end)) { liveUsable=false; return -1; }
+        return 0;
+    }
+    NSRange change;
+    NSString *fragment;
+    nextLiveEdit(liveApplied,desired,&change,&fragment);
+    NSString *next=[liveApplied stringByReplacingCharactersInRange:change withString:fragment];
+    NSRange replace=liveStarted ? NSMakeRange(liveOriginal.location+change.location,change.length) : liveOriginal;
     if (!NSEqualRanges(replace,selection)) {
-        if (!selectOwnedRange(replace)) { liveUsable=false; return -1; }
-        requestedSelection=replace; selectionSince=CFAbsoluteTimeGetCurrent(); liveSelecting=true;
+        if (!requestLiveSelection(replace)) { liveUsable=false; return -1; }
         // AX writes may be acknowledged before the editor updates its range.
         // Read it back on the next tick; never type into an unconfirmed range.
         return 0;
     }
     // Revalidate content and focus after selecting, before posting input.
     if (liveInterrupted || !sameInput() || ![readText(deliveryElement) isEqualToString:liveExpected]) { liveUsable=false; return -1; }
-    NSString *fragment = [next substringFromIndex:common];
     if (!typeUnicode(fragment)) { liveUsable=false; return -1; }
     pendingText=next;
     pendingValue=[liveBase stringByReplacingCharactersInRange:liveOriginal withString:next];
-    pendingSelection=NSMakeRange(liveOriginal.location+next.length,0);
+    pendingSelection=NSMakeRange(replace.location+fragment.length,0);
     pendingSince=CFAbsoluteTimeGetCurrent();
     return 0;
 }

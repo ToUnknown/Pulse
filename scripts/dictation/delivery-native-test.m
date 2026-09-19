@@ -7,6 +7,7 @@ static AXUIElementRef fakeElement, selectedElement;
 static void (*observePosted)(CGEventRef);
 static unsigned shortcutActions;
 static NSString *editor;
+static NSMutableArray<NSString *> *editFrames;
 static bool exposesPlaceholder, phantomPlaceholderCaret, emptyParagraph;
 static NSRange caret;
 static bool focused=true, supportsRange=true, acceptTyping=true, acceptSelection=true;
@@ -52,6 +53,7 @@ static void post(CGEventTapLocation tap,CGEventRef event) {
     NSString *insert=length?[[NSString alloc] initWithCharacters:buffer length:length]:@"";
     editor=[editor stringByReplacingCharactersInRange:caret withString:insert];
     caret=NSMakeRange(caret.location+insert.length,0);
+    [editFrames addObject:editor];
 }
 #define AXIsProcessTrusted trusted
 #define AXUIElementGetPid getPid
@@ -86,6 +88,24 @@ int main(void) {
         expect([editor isEqualToString:@"Before hello wonderful world after"],"replace selection, preserve surrounding text");
         syncText("hello corrected 🌍 café 👨‍👩‍👧‍👦 中文");
         expect([editor isEqualToString:@"Before hello corrected 🌍 café 👨‍👩‍👧‍👦 中文 after"],"correct only owned text and preserve Unicode");
+        syncText("this sentence is already written in the field");
+        editFrames=[NSMutableArray new];
+        syncText("This sentence is already written in the field.");
+        for (NSString *frame in editFrames) expect([frame containsString:@" sentence is already written in the field"],"final capitalization and punctuation must never erase and replay unchanged text");
+        expect([editor isEqualToString:@"Before This sentence is already written in the field. after"],"final corrections preserve surrounding content");
+        expect(NSEqualRanges(caret,NSMakeRange(7+[@"This sentence is already written in the field." length],0)),"caret returns to the end of dictation after corrections");
+        unsigned unchangedEvents=keyboardEvents;
+        syncText("This sentence is already written in the field.");
+        expect(keyboardEvents==unchangedEvents,"identical final transcript never retypes text");
+        editFrames=nil;
+        syncText("the cat is resting beside the window");
+        editFrames=[NSMutableArray new];
+        syncText("The dog is resting beside the window.");
+        for (NSString *frame in editFrames) expect([frame containsString:@" is resting beside the window"],"separate corrections preserve unchanged trailing words");
+        editFrames=nil;
+        syncText("🌍 é 👨‍👩‍👧‍👦 suffix");
+        syncText("🌎 é 👨‍👩‍👦 suffix!");
+        expect([editor isEqualToString:@"Before 🌎 é 👨‍👩‍👦 suffix! after"],"corrections never split composed Unicode characters");
         syncText(""); syncText("new");
         expect([editor isEqualToString:@"Before new after"],"empty correction must not restore original replacement range");
         unsigned posted=keyboardEvents;
@@ -133,11 +153,33 @@ int main(void) {
         expect(pulse_dictation_live_begin()==1,"label-like real text is a candidate only");
         syncText("prefix ");
         expect([editor isEqualToString:@"prefix \nType here"] && !livePlaceholderConfirmed,"never discard real text matching an input label");
+        // Exercise the actual edit planner on deterministic, varied Unicode
+        // sequences, including insertions longer than its alignment window.
+        NSArray<NSString *> *tokens=@[@"a",@"b",@" ",@".",@"🌍",@"é",@"👨‍👩‍👧‍👦",@"中文"];
+        uint32_t seed=42;
+        for (unsigned trial=0;trial<500;trial++) {
+            NSMutableString *from=[NSMutableString new], *to=[NSMutableString new];
+            for (unsigned k=0;k<80;k++) {
+                seed=seed*1664525u+1013904223u;
+                if (seed&1) [from appendString:tokens[(seed>>16)%tokens.count]];
+                seed=seed*1664525u+1013904223u;
+                if (seed&4) [to appendString:tokens[(seed>>16)%tokens.count]];
+            }
+            NSString *value=from;
+            for (unsigned step=0;step<250 && ![value isEqualToString:to];step++) {
+                NSRange change; NSString *fragment;
+                nextLiveEdit(value,to,&change,&fragment);
+                expect(change.length || fragment.length,"each correction makes progress");
+                expect(!change.length || NSEqualRanges(change,[value rangeOfComposedCharacterSequencesForRange:change]),"replacement stays on composed-character boundaries");
+                value=[value stringByReplacingCharactersInRange:change withString:fragment];
+            }
+            expect([value isEqualToString:to],"bounded corrections converge to the authoritative transcript");
+        }
         expect(clipboardWrites==0,"ALL input paths preserve clipboard");
         focused=false;
         expect(pulse_dictation_live_begin()==0,"no selected input uses bottom preview");
         expect(pulse_dictation_copy("clipboard result") && clipboardWrites==2,"clipboard only written by explicit no-input path");
         pulse_dictation_clear_target(); CFRelease(fakeElement);
-        puts("PASS: live Unicode, corrections, selection ownership, focus/edit guards, read-back failures, clipboard preservation");
+        puts("PASS: final corrections without replay, Unicode edit convergence, selection ownership, focus/edit guards, read-back failures, clipboard preservation");
     }
 }
