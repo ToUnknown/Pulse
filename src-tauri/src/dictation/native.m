@@ -220,7 +220,9 @@ bool pulse_dictation_target(double *x, double *y, double *width, double *height)
     if (hasBounds) { *x = rect.origin.x; *y = rect.origin.y; *width = MAX(2, rect.size.width); *height = MAX(18, rect.size.height); }
     return hasBounds;
 }
-// 1 = AX insertion, 2 = clipboard, 3 = paste dispatched with clipboard backup.
+// 2 = clipboard, 3 = standard paste dispatched with clipboard backup.
+// Web editors can acknowledge AXSelectedText writes without updating their
+// document. Use the normal paste pipeline so their input handlers run.
 int pulse_dictation_deliver(const char *utf8) {
     NSString *text = [NSString stringWithUTF8String:utf8];
     if (!text.length) return 0;
@@ -231,22 +233,21 @@ int pulse_dictation_deliver(const char *utf8) {
         && (!deliveryRange || (range && CFEqual(range, deliveryRange))) && editable(focused);
     if (range) CFRelease(range);
     if (focused) CFRelease(focused);
-    if (same && AXUIElementSetAttributeValue(deliveryElement, kAXSelectedTextAttribute, (__bridge CFStringRef)text) == kAXErrorSuccess) {
-        pulse_dictation_clear_target(); return 1;
-    }
     NSPasteboard *board = NSPasteboard.generalPasteboard;
     [board clearContents];
     if (![board setString:text forType:NSPasteboardTypeString]) { pulse_dictation_clear_target(); return 0; }
     if (same) {
-        CGEventRef down = CGEventCreateKeyboardEvent(NULL, 9, true);
-        CGEventRef up = CGEventCreateKeyboardEvent(NULL, 9, false);
+        CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStatePrivate);
+        CGEventRef down = source ? CGEventCreateKeyboardEvent(source, 9, true) : NULL;
+        CGEventRef up = source ? CGEventCreateKeyboardEvent(source, 9, false) : NULL;
         bool sent = down && up;
         if (sent) {
             CGEventSetFlags(down, kCGEventFlagMaskCommand); CGEventSetFlags(up, kCGEventFlagMaskCommand);
-            CGEventPostToPid(deliveryPID, down); CGEventPostToPid(deliveryPID, up);
+            CGEventPost(kCGHIDEventTap, down); CGEventPost(kCGHIDEventTap, up);
         }
         if (down) CFRelease(down);
         if (up) CFRelease(up);
+        if (source) CFRelease(source);
         pulse_dictation_clear_target(); return sent ? 3 : 2;
     }
     pulse_dictation_clear_target(); return 2;

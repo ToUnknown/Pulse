@@ -1636,6 +1636,8 @@ pub fn run() {
         dictation::request_dictation_access,
         #[cfg(target_os = "macos")]
         dictation::dictation_snapshot,
+        #[cfg(target_os = "macos")]
+        dictation::dictation_overlay_ready,
         settings_window_action,
         set_start_at_login,
         set_tray_icon_mode,

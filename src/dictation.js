@@ -1,46 +1,24 @@
 const invoke = window.__TAURI__?.core.invoke;
 const body = document.body;
 const words = document.querySelector("#words");
-const transcript = document.querySelector("#transcript");
 const canvas = document.querySelector("#waveform");
 const context = canvas.getContext("2d");
 const status = document.querySelector("#status");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
-let shown = "", desired = "", id, phase, lastTyping = 0, lastSamples = 0, waveTime = 0;
-let flightAnimation;
-function clearFlight() { flightAnimation?.cancel(); flightAnimation = null; document.querySelector("#flight")?.remove(); transcript.style.opacity = ""; }
+let shown = "", desired = "", id, lastTyping = 0, lastSamples = 0, waveTime = 0;
+let generation = 0, shownSession;
 function setText(value, instant = false) {
   desired = value;
   // Final text is authoritative: corrected prefixes replace partials immediately.
   if (instant || !desired.startsWith(shown) || reducedMotion.matches) { shown = desired; words.textContent = shown; words.scrollTop = words.scrollHeight; }
 }
-function fly(target) {
-  clearFlight();
-  if (!shown || reducedMotion.matches) { transcript.style.opacity = "0"; return; }
-  const rect = transcript.getBoundingClientRect();
-  const flight = document.createElement("div");
-  flight.id = "flight";
-  flight.textContent = shown;
-  Object.assign(flight.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
-  document.body.append(flight);
-  transcript.style.opacity = "0";
-  // A destination on another screen has no honest position in this canvas.
-  const visible = target && target.x >= 0 && target.x < innerWidth && target.y >= 0 && target.y < innerHeight;
-  const x = visible ? target.x - rect.left : 0;
-  const y = visible ? target.y - rect.top : -22;
-  const scale = visible ? Math.max(.07, Math.min(.4, target.height / rect.height)) : .97;
-  flightAnimation = flight.animate([
-    { transform: "translate(0,0) scale(1)", opacity: 1 },
-    { transform: `translate(${x * .78}px,${y * .78}px) scale(${Math.max(scale,.45)})`, opacity: .8, offset: .7 },
-    { transform: `translate(${x}px,${y}px) scale(${scale})`, opacity: 0 }
-  ], { duration: 580, easing: "cubic-bezier(.32,.02,.22,1)", fill: "forwards" });
-  flightAnimation.finished.then(() => flight.remove(), () => flight.remove());
-}
 export function render(next) {
-  if (next.id !== id) {
-    id = next.id; shown = desired = ""; words.textContent = ""; phase = "idle"; lastSamples = 0;
-    clearFlight(); body.dataset.expanded = "false";
+  if (next.id !== undefined && id !== undefined && next.id < id) return;
+  if (next.id !== undefined && next.id !== id) {
+    generation++;
+    id = next.id; shown = desired = ""; words.textContent = ""; lastSamples = 0;
+    body.dataset.expanded = "false";
   }
   snapshot = next;
   body.style.setProperty("--bottom", `${next.bottom || 28}px`);
@@ -49,10 +27,13 @@ export function render(next) {
   setText(next.text || "", final);
   if (next.text) body.dataset.expanded = "true";
   body.dataset.phase = next.phase;
-  status.textContent = next.message || "";
-  if (next.phase === "sending" && phase !== "sending") fly(next.target);
-  if (next.phase === "idle") clearFlight();
-  phase = next.phase;
+  status.textContent = next.phase === "error" ? next.message || "" : "";
+  if (invoke && next.id !== undefined && shownSession !== next.id && ["listening", "finalizing", "error"].includes(next.phase)) {
+    shownSession = next.id;
+    // Reset the DOM before showing a reused webview. Do not wait for an
+    // animation frame: hidden native webviews may suspend frame callbacks.
+    invoke("dictation_overlay_ready", { sessionId: next.id }).catch(() => {});
+  }
 }
 function frame(now) {
   if (desired !== shown && now - lastTyping > 24) {
@@ -73,20 +54,24 @@ function drawWave(now) {
   const dpr = devicePixelRatio || 1;
   if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) { canvas.width = Math.round(width*dpr); canvas.height = Math.round(height*dpr); }
   context.setTransform(dpr,0,0,dpr,0,0); context.clearRect(0,0,width,height);
-  context.strokeStyle = getComputedStyle(body).getPropertyValue("--wave"); context.lineWidth = 4.5; context.lineCap = "round";
-  const levels = snapshot.levels || [], step = 10;
+  context.strokeStyle = getComputedStyle(body).getPropertyValue("--wave"); context.lineWidth = 3; context.lineCap = "round";
+  const levels = snapshot.levels || [], step = 7;
   const drift = reducedMotion.matches ? 0 : Math.min(1,(now-waveTime)/85)*step;
   const count = Math.ceil(width/step);
   for (let i=0;i<count;i++) {
     const level = levels[levels.length - 1 - i] || 0;
-    const amplitude = Math.max(1, Math.min(1, Math.sqrt(level)*2.8)*(height-24));
+    const amplitude = Math.max(1, Math.min(1, Math.sqrt(level)*2.8)*(height-12));
     const x = width - 10 - i*step - drift;
     if (x < 8) continue;
     context.beginPath(); context.moveTo(x,height/2-amplitude/2); context.lineTo(x,height/2+amplitude/2); context.stroke();
   }
 }
 async function poll() {
-  try { render(await invoke("dictation_snapshot")); } catch { /* A hidden/recreated overlay can reconnect without interrupting capture. */ }
+  const startedGeneration = generation;
+  try {
+    const next = await invoke("dictation_snapshot");
+    if (startedGeneration === generation) render(next);
+  } catch { /* A hidden/recreated overlay can reconnect without interrupting capture. */ }
   setTimeout(poll, snapshot.phase === "idle" ? 100 : 33);
 }
 requestAnimationFrame(frame);

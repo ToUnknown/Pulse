@@ -247,6 +247,27 @@ pub async fn set_dictation_enabled(
     })
     .await
 }
+// The webview acknowledges its reset DOM before a reused overlay is shown.
+#[tauri::command]
+pub fn dictation_overlay_ready(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    session_id: u64,
+) -> Result<(), String> {
+    if window.label() != WINDOW {
+        return Err("This is only available to the dictation overlay.".into());
+    }
+    let state = app.state::<Dictation>();
+    let guard = state.session.lock().unwrap();
+    if guard.as_ref().is_some_and(|s| {
+        s.id == session_id && matches!(s.phase, "listening" | "finalizing" | "error")
+    }) {
+        window
+            .show()
+            .map_err(|_| "Could not show the dictation overlay.")?;
+    }
+    Ok(())
+}
 #[tauri::command]
 pub fn dictation_snapshot(app: tauri::AppHandle, window: WebviewWindow) -> Result<Value, String> {
     if window.label() != WINDOW {
@@ -354,7 +375,6 @@ fn start(app: &tauri::AppHandle) {
     });
     let _ = window.eval(format!("window.pulseDictationStart?.({id}, {bottom});"));
     let _ = window.set_ignore_cursor_events(true);
-    let _ = window.show();
     let mic = unsafe { pulse_dictation_mic_allowed() };
     let started = mic && unsafe { pulse_dictation_start(id, audio_callback) };
     let escape_registered = app
@@ -584,7 +604,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                 Ok(Some((s.text.clone(), true)))
             }
             Ok(_) => {
-                s.phase = "done";
+                s.phase = "error";
                 s.message = "No speech detected".into();
                 Ok(None)
             }
@@ -610,13 +630,10 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         }
     })
     .await;
-    if let Ok(Some((text, animate))) = prepared {
-        if animate {
-            tokio::time::sleep(Duration::from_millis(620)).await;
-        }
+    if let Ok(Some((text, completed))) = prepared {
         let handle = app.clone();
         let _ = on_main(&app, move || {
-            // Disabling Dictation during the animation cancels delivery too.
+            // Disabling Dictation before delivery cancels it too.
             let state = handle.state::<Dictation>();
             let mut guard = state.session.lock().unwrap();
             let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
@@ -634,11 +651,9 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                 s.message =
                     "Could not copy the transcript. Use Copy last transcript in Settings to retry."
                         .into();
-            } else if animate {
+            } else if completed {
                 s.phase = "done";
-                s.message = if outcome == 1 {
-                    "Inserted"
-                } else if outcome == 3 {
+                s.message = if outcome == 3 {
                     "Sent to input · copied as backup"
                 } else {
                     "Copied to clipboard"
@@ -655,7 +670,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         .lock()
         .unwrap()
         .as_ref()
-        .map(|s| if s.phase == "error" { 6000 } else { 1100 })
+        .map(|s| if s.phase == "error" { 6000 } else { 220 })
         .unwrap_or(0);
     tokio::time::sleep(Duration::from_millis(wait)).await;
     let handle = app.clone();
