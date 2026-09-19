@@ -526,7 +526,9 @@ bool pulse_dictation_glass(void *pointer, double x, double y, double width, doub
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
         if (@available(macOS 26.0, *)) {
             NSGlassEffectView *effect=[[NSGlassEffectView alloc] initWithFrame:NSZeroRect];
-            effect.style=NSGlassEffectViewStyleRegular;
+            // Clear is the optical Liquid Glass material: AppKit refracts the
+            // real backdrop at the capsule rim rather than frosting its center.
+            effect.style=NSGlassEffectViewStyleClear;
             glass=effect;
         }
 #endif
@@ -547,6 +549,11 @@ bool pulse_dictation_glass(void *pointer, double x, double y, double width, doub
     glass.hidden=opacity<=0 || width<=0 || height<=0;
     if (glass.hidden) return true;
     CGFloat nativeY=host.isFlipped ? y : NSHeight(host.bounds)-y-height;
+    // The webview supplies the presentation bounds on each animation frame.
+    // Resize the actual glass lens (including its rim), never scale a snapshot
+    // of it or add a second implicit animation that trails the waveform.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     glass.frame=NSMakeRect(x,nativeY,width,height);
     glass.alphaValue=opacity;
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
@@ -555,5 +562,6 @@ bool pulse_dictation_glass(void *pointer, double x, double y, double width, doub
     }
 #endif
     if ([glass isKindOfClass:NSVisualEffectView.class]) glass.layer.cornerRadius=height/2;
+    [CATransaction commit];
     return true;
 }

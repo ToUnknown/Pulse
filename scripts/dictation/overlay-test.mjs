@@ -11,10 +11,11 @@ nodes['#waveform'].getContext = () => drawing;
 Object.assign(nodes['#waveform'],{clientWidth:88,clientHeight:28});
 let resolveSnapshot;
 const calls = [];
-let holdGlass = false;
+let holdGlass = false, failGlass = false, overlayOpacity = "1";
 const glassReplies = [];
 const invoke = (name,args) => {
   calls.push({name,args});
+  if (name === 'dictation_glass' && failGlass) return Promise.reject(new Error('temporarily unavailable'));
   if (name === 'dictation_glass' && holdGlass) return new Promise(resolve => glassReplies.push(resolve));
   return name === 'dictation_snapshot' ? new Promise(resolve=>{resolveSnapshot=resolve;}) : Promise.resolve(name === 'dictation_glass');
 };
@@ -22,7 +23,7 @@ const sandbox = vm.createContext({
   window:{__TAURI__:{core:{invoke}}},
   document:{body,querySelector:id=>nodes[id]},
   matchMedia:()=>({matches:false}),
-  requestAnimationFrame(){},setTimeout(){},performance:{now:()=>0},innerWidth:1440,innerHeight:900,devicePixelRatio:1, getComputedStyle:()=>({opacity:"1",getPropertyValue:()=>"#303237"}),
+  requestAnimationFrame(){},setTimeout(){},performance:{now:()=>0},innerWidth:1440,innerHeight:900,devicePixelRatio:1, getComputedStyle:element=>({opacity:element===nodes["#dictation"]?overlayOpacity:"1",getPropertyValue:()=>"#303237"}),
 });
 vm.runInContext(readFileSync(new URL('../../src/dictation.js',import.meta.url),'utf8').replace('export function render','function render'),sandbox);
 sandbox.window.pulseDictationStart(2,28);
@@ -76,3 +77,20 @@ glassReplies[0](false);
 await Promise.resolve();
 assert.equal(body.dataset.nativeGlass,'true','stale glass response cannot replace a new session material');
 console.log('PASS: stale native-glass response rejected');
+
+holdGlass = false;
+sandbox.render({id:9,phase:'done'});
+overlayOpacity = '.45';
+await sandbox.syncGlass();
+assert.equal(calls.filter(c=>c.name==='dictation_glass').at(-1).args.frame.opacity,.45,'native lens follows the completion fade instead of disappearing immediately');
+overlayOpacity = '0';
+await sandbox.syncGlass();
+assert.equal(calls.filter(c=>c.name==='dictation_glass').at(-1).args.frame.opacity,0,'native lens is hidden when the fade finishes');
+failGlass = true;
+overlayOpacity = '.6';
+await sandbox.syncGlass();
+const failedCalls = calls.length;
+failGlass = false;
+await sandbox.syncGlass();
+assert.equal(calls.length,failedCalls+1,'an unsuccessful geometry update is retried even when the frame has stopped moving');
+console.log('PASS: native glass completion fade and failed-update recovery');

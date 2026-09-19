@@ -832,13 +832,14 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             Ok(())
         }).await;
     }
+    // Allow the lens contraction/fade plus one overlay polling interval.
     let wait = app
         .state::<Dictation>()
         .session
         .lock()
         .unwrap()
         .as_ref()
-        .map(|s| if s.phase == "error" { 6000 } else { 220 })
+        .map(|s| if s.phase == "error" { 6000 } else { 400 })
         .unwrap_or(0);
     tokio::time::sleep(Duration::from_millis(wait)).await;
     let handle = app.clone();

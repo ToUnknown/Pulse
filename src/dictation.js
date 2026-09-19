@@ -15,15 +15,19 @@ async function syncGlass() {
   if (!invoke || id === undefined) return;
   const sessionId = id;
   const rect = shell.getBoundingClientRect();
-  const visible = ["listening", "finalizing", "sending"].includes(snapshot.phase);
+  // Keep the native lens through the DOM's completion fade; removing it on
+  // the first "done" snapshot makes the glass pop away under the fading bars.
+  const visible = ["listening", "finalizing", "sending", "done"].includes(snapshot.phase);
   const frame = { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
     opacity: visible ? Number(getComputedStyle(shell).opacity) * Number(getComputedStyle(overlay).opacity) : 0 };
   const signature = JSON.stringify([sessionId, ...Object.values(frame).map(value => Math.round(value * 100) / 100)]);
   if (signature === lastGlass) return;
-  lastGlass = signature;
   try {
     const available = await invoke("dictation_glass", { sessionId, frame });
-    if (id === sessionId) body.dataset.nativeGlass = String(!!available);
+    if (id === sessionId) {
+      lastGlass = signature;
+      body.dataset.nativeGlass = String(!!available);
+    }
   } catch { /* Keep the CSS material if the native effect is unavailable. */ }
 }
 function setText(value, instant = false) {
@@ -139,14 +143,24 @@ else if (new URLSearchParams(location.search).has("preview")) {
     {phase:"listening",text:"",levels:levels.slice(-14)},
     {phase:"listening",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
     {phase:"finalizing",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
-    {phase:"sending",text:"A little thought becomes a sentence. Every word appears while I speak.",target:{x:innerWidth*.65,y:innerHeight*.35,height:24},levels},
+    {phase:"sending",text:"A little thought becomes a sentence. Every word appears while I speak.",target:{x:innerWidth*.35,y:innerHeight*.65,width:innerWidth*.3,height:60},levels},
     {phase:"done",text:"A little thought becomes a sentence. Every word appears while I speak.",message:"Inserted",levels}
   ];
   window.previewDictation = render;
   const advance=()=>{render({id:1,bottom:32,samples:step+1,level:.09,...demo[Math.min(step++,demo.length-1)]});};
   const fixture = new URLSearchParams(location.search).get("preview");
   const index = { pill: 0, expanded: 1, finalizing: 2, sending: 3, done: 4 }[fixture];
-  if (index !== undefined) { step = index; advance(); }
+  if (fixture === "motion") {
+    let session = 0;
+    const cycle = () => {
+      const base = {id:++session,inline:true,target:{x:innerWidth*.2,y:innerHeight*.65,width:innerWidth*.6,height:90},level:.12,samples:1};
+      render({...base,phase:"listening"});
+      setTimeout(()=>render({...base,phase:"finalizing"}),1800);
+      setTimeout(()=>render({...base,phase:"done"}),2450);
+    };
+    cycle(); setInterval(cycle,3200);
+  }
+  else if (index !== undefined) { step = index; advance(); }
   else if (fixture === "inline") render({id:1,phase:"listening",inline:true,target:{x:innerWidth*.2,y:innerHeight*.65,width:innerWidth*.6,height:90},level:.12,samples:1});
   else { advance(); setInterval(advance,3000); }
   setInterval(() => { if (snapshot.phase === "listening") render({...snapshot, samples:(snapshot.samples || 0)+1, level:.025 + .07 * (1+Math.sin(performance.now()/450))/2}); }, 70);
