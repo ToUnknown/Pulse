@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 pub fn configuration() -> Value {
     json!({"type":"session.update","session":{"type":"transcription","audio":{"input":{
         "format":{"type":"audio/pcm","rate":24000},
-        "transcription":{"model":"gpt-live-transcribe","delay":"low"},
+        "transcription":{"model":"gpt-live-transcribe","delay":"high"},
         "turn_detection":null
     }}}})
 }
@@ -52,8 +52,12 @@ impl Transcript {
         let content = event[if done { "transcript" } else { "delta" }]
             .as_str()
             .ok_or("OpenAI returned an incomplete transcript event.")?;
+        // Some initial deltas contain only whitespace. Ignore it until the
+        // first spoken text, without trimming later word separators or lines.
         if done {
-            self.text = content.to_owned();
+            self.text = content.trim_start().to_owned();
+        } else if self.text.is_empty() {
+            self.text.push_str(content.trim_start());
         } else {
             self.text.push_str(content);
         }
@@ -78,11 +82,29 @@ mod tests {
         assert!(transcript.accept(&json!({"type":"conversation.item.input_audio_transcription.delta","item_id":"two","delta":"bad"})).is_err());
     }
     #[test]
+    fn leading_whitespace_is_removed_before_live_and_final_output() {
+        let mut transcript = Transcript::default();
+        for (delta, expected) in [
+            (" ", ""),
+            ("\t\u{2003}", ""),
+            (" Hello", "Hello"),
+            (" ", "Hello "),
+            ("world", "Hello world"),
+            ("!\nNext line", "Hello world!\nNext line"),
+        ] {
+            transcript.accept(&json!({"type":"conversation.item.input_audio_transcription.delta","item_id":"one","delta":delta})).unwrap();
+            assert_eq!(transcript.text, expected);
+        }
+        transcript.accept(&json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"one","transcript":"  Hello world!\nNext line"})).unwrap();
+        assert_eq!(transcript.text, "Hello world!\nNext line");
+    }
+    #[test]
     fn uses_single_manual_turn_and_current_live_transcribe_schema() {
         let config = configuration();
         let input = &config["session"]["audio"]["input"];
         assert_eq!(input["format"]["rate"], 24000);
         assert_eq!(input["transcription"]["model"], "gpt-live-transcribe");
+        assert_eq!(input["transcription"]["delay"], "high");
         assert!(input["turn_detection"].is_null());
         assert!(input["transcription"].get("language").is_none());
     }
