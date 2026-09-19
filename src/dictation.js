@@ -46,7 +46,7 @@ function setText(value) {
   const addedWidth = Math.max(0, words.getBoundingClientRect().width - previousWidth);
   if (appended && lastArrival) {
     const rate = addedWidth / Math.max(.12, Math.min(2, (now - lastArrival) / 1000));
-    arrivalSpeed += (Math.min(500, rate) - arrivalSpeed) * .3;
+    arrivalSpeed += (Math.min(500, rate) - arrivalSpeed) * .15;
   }
   lastArrival = now;
 }
@@ -58,10 +58,15 @@ function moveSlider(now) {
   if (reducedMotion.matches) {
     sliderOffset = target; sliderSpeed = 0;
   } else {
-    // Backlog increases the pace; fresh text informs it, and pauses ease it down.
-    arrivalSpeed *= Math.exp(-elapsed / 1.2);
-    const desiredSpeed = Math.sign(distance) * Math.min(420, Math.abs(distance) * 3.5 + arrivalSpeed * .25);
-    sliderSpeed += (desiredSpeed - sliderSpeed) * (1 - Math.exp(-elapsed / .18));
+    // Average incoming bursts, then limit acceleration in both directions.
+    // A braking curve eases toward the newest text instead of stopping sharply.
+    arrivalSpeed *= Math.exp(-elapsed / 2);
+    const acceleration = 120;
+    const pace = Math.min(280, Math.abs(distance) * 1.8 + arrivalSpeed * .12,
+      Math.sqrt(2 * acceleration * Math.abs(distance)));
+    const desiredSpeed = Math.sign(distance) * pace;
+    const change = (desiredSpeed - sliderSpeed) * (1 - Math.exp(-elapsed / .55));
+    sliderSpeed += Math.max(-acceleration * elapsed, Math.min(acceleration * elapsed, change));
     const movement = sliderSpeed * elapsed;
     if (Math.abs(distance) < .15) { sliderOffset = target; sliderSpeed = 0; }
     else if (Math.sign(movement) === Math.sign(distance)) sliderOffset += Math.sign(distance) * Math.min(Math.abs(distance), Math.abs(movement));

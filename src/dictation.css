@@ -1,20 +1,19 @@
-:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #101012; --paper: rgba(253,253,253,.42); --line: rgba(0,0,0,.07); --rail: rgba(0,0,0,.48); --wave: #303237; --bottom: 28px; }
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #101012; --paper: rgba(253,253,253,.42); --line: rgba(0,0,0,.07); --wave: #303237; --bottom: 28px; }
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; pointer-events: none; }
-#dictation { position: absolute; bottom: var(--bottom); left: 50%; width: min(128px, calc(100vw - 32px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; transition: opacity .22s ease, transform .28s cubic-bezier(.22,.8,.25,1); }
+#dictation { position: absolute; bottom: var(--bottom); left: 50%; width: min(256px, calc(100vw - 32px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; transition: opacity .22s ease, transform .28s cubic-bezier(.22,.8,.25,1); }
 body:is([data-phase="idle"],[data-phase="done"],[data-phase="error"]) #dictation { opacity: 0; transform: translateX(-50%) translateY(5px); }
 /* Finish the lens contraction before the last soft fade. */
 body[data-phase="done"] #dictation { transition: opacity .22s ease .1s, transform .28s ease .1s; }
 #transcript { position: relative; width: 100%; max-height: 0; margin-bottom: 0; color: var(--ink); opacity: 0; overflow: hidden; transform: translateY(5px) scale(.96); transition: opacity .22s ease, transform .32s cubic-bezier(.22,.8,.25,1), max-height .28s ease, margin .28s ease; }
-/* Crisp horizontal rails dissolve into the soft, open sides of the ribbon. */
+/* A borderless ribbon dissolves into softly blurred side edges. */
 #transcript::before { content: ""; position: absolute; inset: 0; background: var(--paper); -webkit-backdrop-filter: blur(24px) saturate(1.15); backdrop-filter: blur(24px) saturate(1.15); mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); }
-#transcript::after { content: ""; position: absolute; inset: 0; background: linear-gradient(var(--rail), var(--rail)) top / 100% 1px no-repeat, linear-gradient(var(--rail), var(--rail)) bottom / 100% 1px no-repeat; mask-image: linear-gradient(90deg, transparent, #000 20%, #000 80%, transparent); }
 body[data-native-glass="true"] #transcript::before { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
 body[data-expanded="true"]:is([data-phase="listening"],[data-phase="finalizing"],[data-phase="sending"]) #transcript { max-height: 34px; margin-bottom: 8px; opacity: 1; transform: none; }
 #text-viewport { position: relative; height: 34px; overflow: hidden; mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); }
-#words { position: relative; display: block; width: max-content; min-width: 100%; margin: 0; padding: 0 20px; font-size: 13px; line-height: 34px; font-weight: 550; letter-spacing: -.15px; white-space: pre; will-change: transform; }
+#words { position: relative; display: block; width: max-content; min-width: 100%; margin: 0; padding: 0 40px; font-size: 13px; line-height: 34px; font-weight: 550; letter-spacing: -.15px; white-space: pre; will-change: transform; }
 /* Blur the moving glyphs at both edges, leaving the middle completely sharp. */
-#text-viewport::before, #text-viewport::after { content: ""; position: absolute; top: 0; bottom: 0; width: 23px; z-index: 1; -webkit-backdrop-filter: blur(2.5px); backdrop-filter: blur(2.5px); }
+#text-viewport::before, #text-viewport::after { content: ""; position: absolute; top: 0; bottom: 0; width: 46px; z-index: 1; -webkit-backdrop-filter: blur(2.5px); backdrop-filter: blur(2.5px); }
 #text-viewport::before { left: 0; mask-image: linear-gradient(90deg, #000, transparent); }
 #text-viewport::after { right: 0; mask-image: linear-gradient(270deg, #000, transparent); }
 #waveform-shell { position: relative; flex: none; width: 64px; height: 28px; border-radius: 16px; border: 1px solid rgba(255,255,255,.72); background: linear-gradient(165deg,rgba(255,255,255,.78),rgba(239,243,249,.46) 55%,rgba(255,255,255,.64)); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: inset 0 1px 0 rgba(255,255,255,.92), inset 0 -1px 0 rgba(96,111,131,.16), 0 2px 6px rgba(30,40,55,.10); overflow: hidden; transition: width .32s cubic-bezier(.22,.8,.25,1), height .32s ease, border-radius .32s ease; }
@@ -29,7 +28,7 @@ body:is([data-phase="finalizing"],[data-phase="sending"],[data-phase="done"]) #w
 body:not([data-phase="listening"]) #waveform { opacity: 0; }
 body:is([data-phase="finalizing"],[data-phase="sending"]) #spinner { opacity: 1; }
 body[data-phase="error"] #waveform-shell { display: none; }
-@media (prefers-color-scheme: dark) { :root { --ink: #ffffff; --paper: rgba(24,24,27,.46); --line: rgba(255,255,255,.1); --rail: rgba(255,255,255,.65); --wave: #303237; } }
+@media (prefers-color-scheme: dark) { :root { --ink: #ffffff; --paper: rgba(24,24,27,.46); --line: rgba(255,255,255,.1); --wave: #303237; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; transition-delay: 0ms !important; } }
 
 body[data-placing="true"] #dictation { transition: none; }
