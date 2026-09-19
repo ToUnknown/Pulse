@@ -88,8 +88,11 @@ static void post(pid_t pid,CGEventRef event) {
     keyboardEvents++;
     if (observePosted) observePosted(event);
     if (!acceptTyping || CGEventGetType(event)!=kCGEventKeyDown) return;
-    UniChar buffer[128]; UniCharCount length=0;
-    CGEventKeyboardGetUnicodeString(event,128,&length,buffer);
+    UniCharCount length=0;
+    CGEventKeyboardGetUnicodeString(event,0,&length,NULL);
+    NSMutableData *storage=[NSMutableData dataWithLength:length*sizeof(UniChar)];
+    UniChar *buffer=storage.mutableBytes;
+    CGEventKeyboardGetUnicodeString(event,length,&length,buffer);
     if (CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==0x33) length=0;
     NSString *insert=length?[[NSString alloc] initWithCharacters:buffer length:length]:@"";
     if(selectedElement==secondElement){secondEditor=[secondEditor stringByReplacingCharactersInRange:secondCaret withString:insert];secondCaret=NSMakeRange(secondCaret.location+insert.length,0);return;}
@@ -152,9 +155,16 @@ int main(void) {
         expect([editor isEqualToString:@"Before SELECT after"] && !before,"capturing input never types");
         insert("Final words 🌍 café 👨‍👩‍👧‍👦 中文.");
         expect([editor isEqualToString:@"Before Final words 🌍 café 👨‍👩‍👧‍👦 中文. after"],"replace only current selection and preserve Unicode and surroundings");
+        expect(keyboardEvents==before+2,"the entire transcript is sent in one keyboard event pair");
         expect(!shortcutActions && !deliveryInterrupted,"own insertion events never activate shortcuts");
         before=keyboardEvents; insert("Final words 🌍 café 👨‍👩‍👧‍👦 中文.");
         expect(keyboardEvents==before,"verified delivery never inserts twice");
+        begin();
+        NSMutableString *longText=[NSMutableString new];
+        for(int i=0;i<100;i++)[longText appendString:@"A longer transcript 🌍 café 中文. "];
+        before=keyboardEvents;
+        insert(longText.UTF8String);
+        expect(keyboardEvents==before+2 && [editor isEqualToString:[NSString stringWithFormat:@"Before %@ after",longText]],"long Unicode transcripts are delivered whole without truncation or animation");
         // A field selected at completion receives the result, regardless of
         // which field was selected while the microphone was recording.
         begin(); pulse_dictation_clear_target();

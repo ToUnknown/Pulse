@@ -307,17 +307,17 @@ static bool sameInput(void) {
     return same;
 }
 static bool typeUnicode(NSString *text) {
+    if (!text.length) return false;
     CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStatePrivate);
-    // Empty replacement deletes only our explicitly selected suffix.
-    CGKeyCode key = text.length ? 0 : 0x33;
+    CGKeyCode key = 0;
     CGEventRef down = source ? CGEventCreateKeyboardEvent(source,key,true) : NULL;
     CGEventRef up = source ? CGEventCreateKeyboardEvent(source,key,false) : NULL;
     if (down && up) {
         if (text.length) {
-            UniChar characters[text.length];
-            [text getCharacters:characters range:NSMakeRange(0,text.length)];
-            CGEventKeyboardSetUnicodeString(down,text.length,characters);
-            CGEventKeyboardSetUnicodeString(up,text.length,characters);
+            NSMutableData *characters=[NSMutableData dataWithLength:text.length*sizeof(UniChar)];
+            [text getCharacters:characters.mutableBytes range:NSMakeRange(0,text.length)];
+            CGEventKeyboardSetUnicodeString(down,text.length,characters.bytes);
+            CGEventKeyboardSetUnicodeString(up,text.length,characters.bytes);
         }
         CGEventSetFlags(down,0); CGEventSetFlags(up,0);
         CGEventSetIntegerValueField(down,kCGEventSourceUserData,PulseDictationEventTag);
@@ -331,13 +331,6 @@ static bool typeUnicode(NSString *text) {
     if (up) CFRelease(up);
     if (source) CFRelease(source);
     return sent;
-}
-// Small Unicode batches keep delivery compatible with web editors; only final
-// text is sent, with no diffing or live corrections while the user dictates.
-static NSUInteger insertionEnd(NSString *text, NSUInteger start) {
-    NSUInteger end=MIN(text.length,start+12);
-    if (end<text.length) end=NSMaxRange([text rangeOfComposedCharacterSequenceAtIndex:end-1]);
-    return end;
 }
 // AX value and selection are independent, asynchronous observations. A Unicode
 // event can also be applied in several input events by the receiving editor.
@@ -375,19 +368,17 @@ int pulse_dictation_final_step(const char *utf8) {
     NSString *desired = [NSString stringWithUTF8String:utf8];
     if (!desired) { insertionUsable=false; return -1; }
     if ([desired isEqualToString:insertedText]) { unreadableSince=0; return 1; }
-    if (insertedText.length && ![desired hasPrefix:insertedText]) { insertionUsable=false; return -1; }
-    NSUInteger end=insertionEnd(desired,insertedText.length);
-    NSString *fragment=[desired substringWithRange:NSMakeRange(insertedText.length,end-insertedText.length)];
-    NSString *next=[desired substringToIndex:end];
+    if (insertionStarted) { insertionUsable=false; return -1; }
     if (!editable(deliveryElement)) return awaitInsertionReadback();
     // Revalidate content and focus immediately before posting input.
     if (deliveryInterrupted) { insertionUsable=false; return -1; }
     if (!sameInput()) { insertionUsable=false; return -1; }
     if (![readText(deliveryElement) isEqualToString:expectedValue]) return awaitInsertionReadback();
-    if (!typeUnicode(fragment)) { insertionUsable=false; return -1; }
-    pendingText=next;
-    pendingValue=[insertionBase stringByReplacingCharactersInRange:originalSelection withString:next];
-    pendingSelection=NSMakeRange(selection.location+fragment.length,0);
+    // Send the complete final transcript once, without paced typing batches.
+    if (!typeUnicode(desired)) { insertionUsable=false; return -1; }
+    pendingText=desired;
+    pendingValue=[insertionBase stringByReplacingCharactersInRange:originalSelection withString:desired];
+    pendingSelection=NSMakeRange(selection.location+desired.length,0);
     pendingSince=CFAbsoluteTimeGetCurrent();
     unreadableSince=0;
     return 0;
@@ -431,11 +422,13 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
         blur.blendingMode=NSVisualEffectBlendingModeBehindWindow;
         blur.state=NSVisualEffectStateActive;
         blur.wantsLayer=YES;
+        blur.layer.cornerCurve=kCACornerCurveContinuous;
+        blur.layer.masksToBounds=YES;
         CAGradientLayer *vertical=[CAGradientLayer layer];
         vertical.colors=@[(id)NSColor.clearColor.CGColor,(id)NSColor.blackColor.CGColor,(id)NSColor.blackColor.CGColor,(id)NSColor.clearColor.CGColor];
-        vertical.locations=@[@0,@0.18,@0.82,@1];
+        vertical.locations=@[@0,@0.12,@0.88,@1];
         CAGradientLayer *horizontal=[CAGradientLayer layer];
-        horizontal.colors=vertical.colors; horizontal.locations=@[@0,@0.08,@0.92,@1];
+        horizontal.colors=vertical.colors; horizontal.locations=@[@0,@0.06,@0.94,@1];
         horizontal.startPoint=CGPointMake(0,0.5); horizontal.endPoint=CGPointMake(1,0.5);
         vertical.mask=horizontal; blur.layer.mask=vertical;
         [host addSubview:blur positioned:NSWindowBelow relativeTo:nil];
@@ -446,6 +439,7 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     blur.frame=NSMakeRect(x,host.isFlipped ? y : NSHeight(host.bounds)-y-height,width,height);
     blur.alphaValue=opacity;
+    blur.layer.cornerRadius=MIN(32,height/2);
     blur.layer.mask.frame=blur.bounds;
     blur.layer.mask.mask.frame=blur.bounds;
     [CATransaction commit];

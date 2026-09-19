@@ -1,17 +1,17 @@
-:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #303033; --paper: rgba(253,253,253,.24); --line: rgba(0,0,0,.07); --wave: #303237; --bottom: 28px; }
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #151518; --paper: rgba(253,253,253,.42); --line: rgba(0,0,0,.07); --wave: #303237; --bottom: 28px; }
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; pointer-events: none; }
-#dictation { position: absolute; bottom: var(--bottom); left: 50%; width: min(320px, calc(100vw - 32px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; transition: opacity .18s ease; }
+#dictation { position: absolute; bottom: var(--bottom); left: 50%; width: min(384px, calc(100vw - 32px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; transition: opacity .18s ease; }
 body:is([data-phase="idle"],[data-phase="done"],[data-phase="error"]) #dictation { opacity: 0; }
 /* Finish the lens contraction before the last soft fade. */
 body[data-phase="done"] #dictation { transition: opacity .18s ease .14s; }
-#transcript { position: relative; width: 100%; max-height: 0; padding: 0 16px; margin-bottom: 0; color: var(--ink); opacity: 0; overflow: hidden; transform: translateY(4px); transition: opacity .18s ease, transform .24s ease, max-height .28s ease, padding .28s ease, margin .28s ease; }
+#transcript { position: relative; width: 100%; max-height: 0; padding: 0 40px; margin-bottom: 0; color: var(--ink); opacity: 0; overflow: hidden; transform: translateY(4px); transition: opacity .18s ease, transform .24s ease, max-height .28s ease, padding .28s ease, margin .28s ease; }
 /* A feathered patch of backdrop, without a card edge, border or shadow. */
-#transcript::before { content: ""; position: absolute; inset: 0; background: var(--paper); -webkit-backdrop-filter: blur(20px) saturate(1.15); backdrop-filter: blur(20px) saturate(1.15); mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent); border-radius: 22px; }
+#transcript::before { content: ""; position: absolute; inset: 0; background: var(--paper); -webkit-backdrop-filter: blur(28px) saturate(1.15); backdrop-filter: blur(28px) saturate(1.15); mask-image: linear-gradient(transparent, #000 12%, #000 88%, transparent); border-radius: 32px; }
 body[data-native-glass="true"] #transcript::before { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
-body[data-expanded="true"]:is([data-phase="listening"],[data-phase="finalizing"],[data-phase="sending"]) #transcript { max-height: 104px; padding: 12px 16px; margin-bottom: 6px; opacity: 1; transform: none; }
+body[data-expanded="true"]:is([data-phase="listening"],[data-phase="finalizing"],[data-phase="sending"]) #transcript { max-height: 116px; padding: 18px 40px; margin-bottom: 6px; opacity: 1; transform: none; }
 #text-viewport { position: relative; }
-#words { position: relative; margin: 0; max-height: 80px; overflow: hidden; font-size: 13px; line-height: 20px; font-weight: 450; letter-spacing: -.15px; overflow-wrap: anywhere; white-space: pre-wrap; mask-image: linear-gradient(to top, #000 0, #000 20px, rgba(0,0,0,.7) 40px, rgba(0,0,0,.35) 60px, transparent 80px); }
+#words { position: relative; margin: 0; max-height: 80px; overflow: hidden; font-size: 13px; line-height: 20px; font-weight: 550; letter-spacing: -.15px; overflow-wrap: anywhere; white-space: pre-wrap; mask-image: linear-gradient(to top, #000 0, #000 20px, rgba(0,0,0,.88) 40px, rgba(0,0,0,.6) 60px, transparent 80px); }
 /* Soften the oldest line as it leaves the four-line viewport. */
 #text-viewport::after { content: ""; position: absolute; inset: 0 0 auto; height: max(0px, calc(100% - 60px)); -webkit-backdrop-filter: blur(1.5px); backdrop-filter: blur(1.5px); mask-image: linear-gradient(#000, transparent); }
 #words .fresh { animation: arrive .16s ease both; }
@@ -28,7 +28,7 @@ body:is([data-phase="finalizing"],[data-phase="sending"],[data-phase="done"]) #w
 body:not([data-phase="listening"]) #waveform { opacity: 0; }
 body:is([data-phase="finalizing"],[data-phase="sending"]) #spinner { opacity: 1; }
 body[data-phase="error"] #waveform-shell { display: none; }
-@media (prefers-color-scheme: dark) { :root { --ink: #f1f1f3; --paper: rgba(37,37,40,.24); --line: rgba(255,255,255,.1); --wave: #303237; } }
+@media (prefers-color-scheme: dark) { :root { --ink: #ffffff; --paper: rgba(24,24,27,.46); --line: rgba(255,255,255,.1); --wave: #303237; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; transition-delay: 0ms !important; } }
 
 body[data-placing="true"] #dictation { transition: none; }
