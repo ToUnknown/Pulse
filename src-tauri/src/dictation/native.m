@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
+#include <IOKit/hidsystem/IOLLEvent.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -12,6 +13,79 @@ static CFTypeRef deliveryRange;
 static pid_t deliveryPID;
 static bool tapInstalled;
 typedef void (*PulseAudio)(uint64_t, const uint8_t *, size_t, float);
+
+// Modifier-only shortcuts cannot use Carbon's global-shortcut registrar.
+// NSEvent's two monitors cover both other apps and Pulse without consuming keys.
+typedef void (*PulseShortcut)(bool, bool, bool);
+static id shortcutGlobalMonitor;
+static id shortcutLocalMonitor;
+static id shortcutSleepObserver;
+static NSTimer *shortcutReleaseTimer;
+static PulseShortcut shortcutCallback;
+static bool shortcutRightDown;
+
+bool pulse_dictation_right_option_down(void) {
+    return CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, 0x3D);
+}
+static void PulseDictationShortcutEvent(NSEvent *event) {
+    if (!shortcutCallback) return;
+    NSEventModifierFlags flags = event.modifierFlags;
+    // Device-specific bits distinguish the two Option keys, including when
+    // both are held. The ordinary Option flag merges them and is insufficient.
+    bool right = (flags & NX_DEVICERALTKEYMASK) != 0;
+    bool chord = event.type == NSEventTypeKeyDown ||
+        (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
+                  NSEventModifierFlagShift | NSEventModifierFlagFunction |
+                  NX_DEVICELALTKEYMASK)) != 0;
+    shortcutRightDown = right;
+    shortcutCallback(right, chord, false);
+}
+void pulse_dictation_unregister_shortcut(void) {
+    shortcutCallback = NULL;
+    if (shortcutGlobalMonitor) [NSEvent removeMonitor:shortcutGlobalMonitor];
+    if (shortcutLocalMonitor) [NSEvent removeMonitor:shortcutLocalMonitor];
+    if (shortcutSleepObserver) [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:shortcutSleepObserver];
+    [shortcutReleaseTimer invalidate];
+    shortcutGlobalMonitor = nil; shortcutLocalMonitor = nil;
+    shortcutSleepObserver = nil; shortcutReleaseTimer = nil; shortcutRightDown = false;
+}
+bool pulse_dictation_register_shortcut(PulseShortcut callback) {
+    pulse_dictation_unregister_shortcut();
+    if (!AXIsProcessTrusted()) return false;
+    shortcutCallback = callback;
+    shortcutRightDown = pulse_dictation_right_option_down();
+    NSEventMask mask = NSEventMaskFlagsChanged | NSEventMaskKeyDown;
+    shortcutGlobalMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:mask handler:^(NSEvent *event) {
+        PulseDictationShortcutEvent(event);
+    }];
+    shortcutLocalMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent *(NSEvent *event) {
+        PulseDictationShortcutEvent(event);
+        return event;
+    }];
+    if (!shortcutGlobalMonitor || !shortcutLocalMonitor) {
+        pulse_dictation_unregister_shortcut(); return false;
+    }
+    shortcutSleepObserver = [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserverForName:NSWorkspaceWillSleepNotification object:nil queue:NSOperationQueue.mainQueue
+        usingBlock:^(NSNotification *notification) {
+            (void)notification;
+            shortcutRightDown = false;
+            if (shortcutCallback) shortcutCallback(false, false, true);
+        }];
+    // Recover a missed release (for example across an app switch), and stop
+    // recording if Accessibility is revoked while the key is held.
+    shortcutReleaseTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
+        (void)timer;
+        if (!shortcutCallback || !shortcutRightDown) return;
+        if (!AXIsProcessTrusted()) {
+            shortcutRightDown = false; shortcutCallback(false, false, true);
+        } else if (!pulse_dictation_right_option_down()) {
+            shortcutRightDown = false; shortcutCallback(false, false, false);
+        }
+    }];
+    [NSRunLoop.mainRunLoop addTimer:shortcutReleaseTimer forMode:NSRunLoopCommonModes];
+    return true;
+}
 
 bool pulse_dictation_mic_allowed(void) {
     if (@available(macOS 10.14, *)) return [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusAuthorized;

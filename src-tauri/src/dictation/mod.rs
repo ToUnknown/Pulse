@@ -1,5 +1,6 @@
 //! Mac hold-to-dictate. Credentials and microphone bytes never enter the webview.
 mod protocol;
+mod shortcut;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -24,10 +25,12 @@ use tokio_tungstenite::{
 };
 use tokio_util::sync::CancellationToken;
 
-const SHORTCUT: &str = "Alt+Shift+Space";
 const WINDOW: &str = "dictation";
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 extern "C" {
+    fn pulse_dictation_register_shortcut(callback: extern "C" fn(bool, bool, bool)) -> bool;
+    fn pulse_dictation_unregister_shortcut();
+    fn pulse_dictation_right_option_down() -> bool;
     fn pulse_dictation_mic_allowed() -> bool;
     fn pulse_dictation_ax_allowed() -> bool;
     fn pulse_dictation_request_access(microphone: bool);
@@ -53,6 +56,7 @@ struct Session {
     message: String,
 }
 struct Dictation {
+    hold_shortcut: Mutex<shortcut::HoldShortcut>,
     enabled: AtomicBool,
     next_id: AtomicU64,
     session: Mutex<Option<Session>>,
@@ -80,19 +84,46 @@ fn settings_only(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 fn register(app: &tauri::AppHandle) -> Result<(), String> {
-    app.global_shortcut().on_shortcut(SHORTCUT, |app, _, event| {
-        let app = app.clone();
-        let handle = app.clone();
-        let _ = handle.run_on_main_thread(move || {
-            if event.state() == ShortcutState::Pressed { start(&app); } else { release(&app); }
-        });
-    }).map_err(|_| "Option + Shift + Space is already in use. Free that shortcut and enable Dictation again.".into())
+    if !unsafe { pulse_dictation_ax_allowed() } {
+        return Err("Allow Accessibility in Dictation settings to use Right Option, then enable Dictation again.".into());
+    }
+    *app.state::<Dictation>().hold_shortcut.lock().unwrap() =
+        shortcut::HoldShortcut::new(unsafe { pulse_dictation_right_option_down() });
+    if unsafe { pulse_dictation_register_shortcut(shortcut_event) } {
+        Ok(())
+    } else {
+        Err("Could not listen for Right Option. Check Accessibility access and try again.".into())
+    }
+}
+
+// AppKit invokes both local and global event monitors on its main thread.
+// Only physical key state is forwarded; no typed text is read or retained.
+extern "C" fn shortcut_event(down: bool, chord: bool, interrupted: bool) {
+    let Some(app) = APP.get() else {
+        return;
+    };
+    let state = app.state::<Dictation>();
+    let action = {
+        let mut key = state.hold_shortcut.lock().unwrap();
+        if interrupted {
+            key.interrupt()
+        } else {
+            key.update(down, chord)
+        }
+    };
+    match action {
+        Some(shortcut::Action::Start) => start(app),
+        Some(shortcut::Action::Release) => release(app),
+        Some(shortcut::Action::Cancel) => cancel(app),
+        None => {}
+    }
 }
 pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let enabled = std::fs::read_to_string(app.path().app_config_dir()?.join("dictation-enabled"))
         .is_ok_and(|value| value == "true");
     let _ = APP.set(app.clone());
     app.manage(Dictation {
+        hold_shortcut: Mutex::new(shortcut::HoldShortcut::default()),
         enabled: AtomicBool::new(enabled),
         next_id: AtomicU64::new(1),
         session: Mutex::new(None),
@@ -140,7 +171,7 @@ pub fn dictation_settings(app: tauri::AppHandle, window: WebviewWindow) -> Resul
     settings_only(&window)?;
     let state = app.state::<Dictation>();
     Ok(
-        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":"Option + Shift + Space", "microphone":unsafe { pulse_dictation_mic_allowed() }, "accessibility":unsafe { pulse_dictation_ax_allowed() }, "apiKeyConfigured":crate::openai_credentials::is_configured().unwrap_or(false), "error":*state.startup_error.lock().unwrap(), "hasLastTranscript":!state.last_transcript.lock().unwrap().is_empty()}),
+        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":"Right Option", "microphone":unsafe { pulse_dictation_mic_allowed() }, "accessibility":unsafe { pulse_dictation_ax_allowed() }, "apiKeyConfigured":crate::openai_credentials::is_configured().unwrap_or(false), "error":*state.startup_error.lock().unwrap(), "hasLastTranscript":!state.last_transcript.lock().unwrap().is_empty()}),
     )
 }
 #[tauri::command]
@@ -192,10 +223,9 @@ pub async fn set_dictation_enabled(
         if enabled {
             register(&handle)?;
         } else {
-            handle
-                .global_shortcut()
-                .unregister(SHORTCUT)
-                .map_err(|_| "Could not release the dictation shortcut.")?;
+            unsafe {
+                pulse_dictation_unregister_shortcut();
+            }
             cancel(&handle);
         }
         let path = handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -203,7 +233,9 @@ pub async fn set_dictation_enabled(
             .and_then(|_| std::fs::write(path.join("dictation-enabled"), enabled.to_string()));
         if saved.is_err() {
             if enabled {
-                let _ = handle.global_shortcut().unregister(SHORTCUT);
+                unsafe {
+                    pulse_dictation_unregister_shortcut();
+                }
             } else {
                 let _ = register(&handle);
             }
