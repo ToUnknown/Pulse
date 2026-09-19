@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 const WINDOW: &str = "dictation";
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 extern "C" {
-    fn pulse_dictation_register_shortcut(callback: extern "C" fn(bool, bool, bool)) -> bool;
+    fn pulse_dictation_register_shortcut(callback: extern "C" fn(bool, bool, bool, f64)) -> bool;
     fn pulse_dictation_unregister_shortcut();
     fn pulse_dictation_right_option_down() -> bool;
     fn pulse_dictation_mic_allowed() -> bool;
@@ -98,7 +98,7 @@ fn register(app: &tauri::AppHandle) -> Result<(), String> {
 
 // AppKit invokes both local and global event monitors on its main thread.
 // Only physical key state is forwarded; no typed text is read or retained.
-extern "C" fn shortcut_event(down: bool, chord: bool, interrupted: bool) {
+extern "C" fn shortcut_event(down: bool, chord: bool, interrupted: bool, timestamp: f64) {
     let Some(app) = APP.get() else {
         return;
     };
@@ -108,7 +108,7 @@ extern "C" fn shortcut_event(down: bool, chord: bool, interrupted: bool) {
         if interrupted {
             key.interrupt()
         } else {
-            key.update(down, chord)
+            key.update(down, chord, timestamp)
         }
     };
     match action {
@@ -296,6 +296,7 @@ extern "C" fn audio_callback(id: u64, bytes: *const u8, length: usize, level: f3
 fn start(app: &tauri::AppHandle) {
     let state = app.state::<Dictation>();
     if !state.enabled.load(Ordering::Acquire) {
+        state.hold_shortcut.lock().unwrap().interrupt();
         return;
     }
     {
@@ -304,6 +305,7 @@ fn start(app: &tauri::AppHandle) {
             .as_ref()
             .is_some_and(|s| !matches!(s.phase, "idle" | "done" | "error"))
         {
+            state.hold_shortcut.lock().unwrap().interrupt();
             return;
         }
         if let Some(previous) = guard.take() {
@@ -320,6 +322,7 @@ fn start(app: &tauri::AppHandle) {
         Ok(window) => window,
         Err(error) => {
             *state.startup_error.lock().unwrap() = Some(error);
+            state.hold_shortcut.lock().unwrap().interrupt();
             let _ = crate::open_settings(app);
             return;
         }
@@ -411,6 +414,11 @@ fn release(app: &tauri::AppHandle) {
     };
 }
 fn cancel(app: &tauri::AppHandle) {
+    app.state::<Dictation>()
+        .hold_shortcut
+        .lock()
+        .unwrap()
+        .interrupt();
     unsafe {
         pulse_dictation_stop();
         pulse_dictation_clear_target();
@@ -559,6 +567,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
             return Ok(None);
         };
+        state.hold_shortcut.lock().unwrap().interrupt();
         s.audio.take();
         let result = if let Some(error) = s.error.take() {
             Err(error)

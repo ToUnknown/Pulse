@@ -1,5 +1,6 @@
-//! Edge detection for a single physical modifier. The native adapter supplies
-//! Right Option independently of Left Option; Windows will use Right Alt.
+//! Tap to toggle or hold a single physical modifier to dictate.
+//! Timestamps come from native key events, so microphone startup cannot turn
+//! a quick tap into a hold merely by delaying main-thread event processing.
 #[derive(Debug, PartialEq)]
 pub enum Action {
     Start,
@@ -11,30 +12,41 @@ pub enum Action {
 pub struct HoldShortcut {
     down: bool,
     active: bool,
+    latched: bool,
+    pressed_at: f64,
 }
 
 impl HoldShortcut {
     pub fn new(already_down: bool) -> Self {
         Self {
             down: already_down,
-            active: false,
+            ..Self::default()
         }
     }
 
-    pub fn update(&mut self, down: bool, chord: bool) -> Option<Action> {
+    pub fn update(&mut self, down: bool, chord: bool, timestamp: f64) -> Option<Action> {
         let pressed = down && !self.down;
+        let released = !down && self.down;
         self.down = down;
-        // A chord remains cancelled until the physical modifier is released.
-        if self.active && chord {
-            self.active = false;
-            return Some(Action::Cancel);
-        }
-        if !down && self.active {
-            self.active = false;
+        if pressed && self.latched {
+            self.interrupt();
             return Some(Action::Release);
+        }
+        // Normal typing is allowed during hands-free dictation. A chord while
+        // holding the activation key cancels and remains blocked until release.
+        if self.active && !self.latched && chord {
+            return self.interrupt();
+        }
+        if released && self.active && !self.latched {
+            if timestamp - self.pressed_at >= 0.5 {
+                self.interrupt();
+                return Some(Action::Release);
+            }
+            self.latched = true;
         }
         if pressed && !chord {
             self.active = true;
+            self.pressed_at = timestamp;
             return Some(Action::Start);
         }
         None
@@ -43,7 +55,8 @@ impl HoldShortcut {
     pub fn interrupt(&mut self) -> Option<Action> {
         let active = self.active;
         self.active = false;
-        // Do not retrigger a key still held across a sleep/permission change.
+        self.latched = false;
+        // Preserve physical state so cancellation cannot retrigger a held key.
         active.then_some(Action::Cancel)
     }
 }
@@ -53,37 +66,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_hold_starts_once_and_release_finishes_once() {
+    fn short_tap_latches_and_next_press_stops_once() {
         let mut key = HoldShortcut::default();
-        assert_eq!(key.update(false, false), None); // Left Option is not Right Option.
-        assert_eq!(key.update(true, false), Some(Action::Start));
-        assert_eq!(key.update(true, false), None);
-        assert_eq!(key.update(false, false), Some(Action::Release));
-        assert_eq!(key.update(false, false), None);
+        assert_eq!(key.update(true, false, 1.0), Some(Action::Start));
+        assert_eq!(key.update(false, false, 1.499), None);
+        assert_eq!(key.update(false, true, 2.0), None); // Typing is allowed.
+        assert_eq!(key.update(true, false, 3.0), Some(Action::Release));
+        assert_eq!(key.update(true, false, 3.1), None);
+        assert_eq!(key.update(false, false, 3.2), None);
+        assert_eq!(key.update(true, false, 4.0), Some(Action::Start));
     }
 
     #[test]
-    fn chords_cancel_without_committing_or_restarting_until_release() {
-        let mut key = HoldShortcut::default();
-        assert_eq!(key.update(true, true), None); // Other modifier already held.
-        assert_eq!(key.update(true, false), None);
-        assert_eq!(key.update(false, false), None);
-        assert_eq!(key.update(true, false), Some(Action::Start));
-        assert_eq!(key.update(true, true), Some(Action::Cancel)); // Option + letter.
-        assert_eq!(key.update(true, false), None);
-        assert_eq!(key.update(false, false), None);
-        assert_eq!(key.update(true, false), Some(Action::Start));
+    fn holds_finish_at_or_above_half_a_second() {
+        for duration in [0.5, 0.501, 60.0] {
+            let mut key = HoldShortcut::default();
+            assert_eq!(key.update(true, false, 0.0), Some(Action::Start));
+            assert_eq!(key.update(true, false, 0.1), None);
+            assert_eq!(key.update(false, false, duration), Some(Action::Release));
+            assert_eq!(key.update(false, false, duration), None);
+        }
     }
 
     #[test]
-    fn enabling_while_held_or_interrupting_never_creates_a_phantom_press() {
+    fn chords_cancel_and_block_until_release() {
+        let mut key = HoldShortcut::default();
+        assert_eq!(key.update(true, true, 0.0), None);
+        assert_eq!(key.update(true, false, 0.1), None);
+        assert_eq!(key.update(false, false, 0.2), None);
+        assert_eq!(key.update(true, false, 1.0), Some(Action::Start));
+        assert_eq!(key.update(true, true, 1.1), Some(Action::Cancel));
+        assert_eq!(key.update(true, false, 1.2), None);
+        assert_eq!(key.update(false, false, 1.3), None);
+        assert_eq!(key.update(true, false, 2.0), Some(Action::Start));
+    }
+
+    #[test]
+    fn enabling_held_and_interrupting_do_not_create_phantom_presses() {
         let mut key = HoldShortcut::new(true);
-        assert_eq!(key.update(true, false), None);
-        assert_eq!(key.update(false, false), None);
-        assert_eq!(key.update(true, false), Some(Action::Start));
+        assert_eq!(key.update(true, false, 0.0), None);
+        assert_eq!(key.update(false, false, 0.1), None);
+        assert_eq!(key.update(true, false, 1.0), Some(Action::Start));
         assert_eq!(key.interrupt(), Some(Action::Cancel));
-        assert_eq!(key.update(true, false), None);
-        assert_eq!(key.update(false, false), None);
-        assert_eq!(key.update(true, false), Some(Action::Start));
+        assert_eq!(key.update(true, false, 1.1), None);
+        assert_eq!(key.update(false, false, 1.2), None);
+        assert_eq!(key.update(true, false, 2.0), Some(Action::Start));
+    }
+
+    #[test]
+    fn backend_completion_clears_hands_free_state() {
+        let mut key = HoldShortcut::default();
+        assert_eq!(key.update(true, false, 0.0), Some(Action::Start));
+        assert_eq!(key.update(false, false, 0.1), None);
+        assert_eq!(key.interrupt(), Some(Action::Cancel));
+        assert_eq!(key.interrupt(), None);
+        assert_eq!(key.update(true, false, 1.0), Some(Action::Start));
     }
 }

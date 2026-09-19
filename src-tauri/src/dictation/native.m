@@ -16,7 +16,7 @@ typedef void (*PulseAudio)(uint64_t, const uint8_t *, size_t, float);
 
 // Modifier-only shortcuts cannot use Carbon's global-shortcut registrar.
 // NSEvent's two monitors cover both other apps and Pulse without consuming keys.
-typedef void (*PulseShortcut)(bool, bool, bool);
+typedef void (*PulseShortcut)(bool, bool, bool, double);
 static id shortcutGlobalMonitor;
 static id shortcutLocalMonitor;
 static id shortcutSleepObserver;
@@ -32,13 +32,15 @@ static void PulseDictationShortcutEvent(NSEvent *event) {
     NSEventModifierFlags flags = event.modifierFlags;
     // Device-specific bits distinguish the two Option keys, including when
     // both are held. The ordinary Option flag merges them and is insufficient.
-    bool right = (flags & NX_DEVICERALTKEYMASK) != 0;
+    bool right = shortcutRightDown;
+    if (event.type == NSEventTypeFlagsChanged && event.keyCode == 0x3D)
+        right = (flags & NX_DEVICERALTKEYMASK) != 0;
     bool chord = event.type == NSEventTypeKeyDown ||
         (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
                   NSEventModifierFlagShift | NSEventModifierFlagFunction |
                   NX_DEVICELALTKEYMASK)) != 0;
     shortcutRightDown = right;
-    shortcutCallback(right, chord, false);
+    shortcutCallback(right, chord, false, event.timestamp);
 }
 void pulse_dictation_unregister_shortcut(void) {
     shortcutCallback = NULL;
@@ -48,6 +50,12 @@ void pulse_dictation_unregister_shortcut(void) {
     [shortcutReleaseTimer invalidate];
     shortcutGlobalMonitor = nil; shortcutLocalMonitor = nil;
     shortcutSleepObserver = nil; shortcutReleaseTimer = nil; shortcutRightDown = false;
+}
+static void PulseDictationShortcutWatchdog(void) {
+    if (!shortcutCallback) return;
+    if (!AXIsProcessTrusted()) {
+        shortcutRightDown = false; shortcutCallback(false, false, true, 0);
+    }
 }
 bool pulse_dictation_register_shortcut(PulseShortcut callback) {
     pulse_dictation_unregister_shortcut();
@@ -70,18 +78,15 @@ bool pulse_dictation_register_shortcut(PulseShortcut callback) {
         usingBlock:^(NSNotification *notification) {
             (void)notification;
             shortcutRightDown = false;
-            if (shortcutCallback) shortcutCallback(false, false, true);
+            if (shortcutCallback) shortcutCallback(false, false, true, 0);
         }];
-    // Recover a missed release (for example across an app switch), and stop
-    // recording if Accessibility is revoked while the key is held.
+    // Trust flagsChanged for release. A separate key-state query may return
+    // false while the physical modifier is still held and must not commit an
+    // empty recording. The timer only cancels on permission loss; sleep also
+    // cancels above, and the recording lifecycle has a maximum duration.
     shortcutReleaseTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
         (void)timer;
-        if (!shortcutCallback || !shortcutRightDown) return;
-        if (!AXIsProcessTrusted()) {
-            shortcutRightDown = false; shortcutCallback(false, false, true);
-        } else if (!pulse_dictation_right_option_down()) {
-            shortcutRightDown = false; shortcutCallback(false, false, false);
-        }
+        PulseDictationShortcutWatchdog();
     }];
     [NSRunLoop.mainRunLoop addTimer:shortcutReleaseTimer forMode:NSRunLoopCommonModes];
     return true;
