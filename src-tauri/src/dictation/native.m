@@ -7,8 +7,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// All lifecycle and AX operations run on AppKit's main thread. Only the tap
-// callback runs on the audio thread; its buffers are copied before returning.
+// AX and window operations run on AppKit's main thread. Audio lifecycle runs
+// on a dedicated serial queue; tap buffers are copied before returning.
 static AVAudioEngine *engine;
 static AXUIElementRef deliveryElement, deliveryWindow;
 static const int64_t PulseDictationEventTag = 0x50554c5345444943;
@@ -117,12 +117,18 @@ void pulse_dictation_request_access(bool microphone) {
         AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
     }
 }
-void pulse_dictation_stop(void) {
+static dispatch_queue_t PulseDictationAudioQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("app.pulse.dictation.audio", DISPATCH_QUEUE_SERIAL); });
+    return queue;
+}
+static void PulseDictationStopAudio(void) {
     if (tapInstalled) { [engine.inputNode removeTapOnBus:0]; tapInstalled = false; }
     [engine stop];
     engine = nil;
 }
-bool pulse_dictation_start(uint64_t identifier, PulseAudio callback) {
+static bool PulseDictationStartAudio(uint64_t identifier, PulseAudio callback) {
     if (!pulse_dictation_mic_allowed()) return false;
     @try {
         engine = [[AVAudioEngine alloc] init];
@@ -156,9 +162,22 @@ bool pulse_dictation_start(uint64_t identifier, PulseAudio callback) {
         tapInstalled = true;
         NSError *error = nil;
         [engine prepare];
-        if (![engine startAndReturnError:&error]) { pulse_dictation_stop(); return false; }
+        if (![engine startAndReturnError:&error]) { PulseDictationStopAudio(); return false; }
         return true;
-    } @catch (NSException *exception) { pulse_dictation_stop(); return false; }
+    } @catch (NSException *exception) { PulseDictationStopAudio(); return false; }
+}
+// Enqueue immediately from key-down, so release/cancel cannot overtake startup.
+// The completion callback owns context and is invoked exactly once.
+void pulse_dictation_start_async(uint64_t identifier, PulseAudio callback,
+                                void (*ready)(void *, bool), void *context) {
+    dispatch_async(PulseDictationAudioQueue(), ^{
+        @autoreleasepool { ready(context, PulseDictationStartAudio(identifier, callback)); }
+    });
+}
+void pulse_dictation_stop(void) {
+    // Flush startup and the tap before Rust closes its PCM sender. No audio
+    // lifecycle code may synchronously wait for AppKit from this queue.
+    dispatch_sync(PulseDictationAudioQueue(), ^{ PulseDictationStopAudio(); });
 }
 static CFTypeRef attribute(AXUIElementRef element, CFStringRef name) {
     CFTypeRef result = NULL;

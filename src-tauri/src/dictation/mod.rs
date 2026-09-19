@@ -14,7 +14,7 @@ use std::{
 };
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     time::{timeout, Instant},
 };
 use tokio_tungstenite::{
@@ -32,7 +32,12 @@ extern "C" {
     fn pulse_dictation_mic_allowed() -> bool;
     fn pulse_dictation_ax_allowed() -> bool;
     fn pulse_dictation_request_access(microphone: bool);
-    fn pulse_dictation_start(id: u64, callback: extern "C" fn(u64, *const u8, usize, f32)) -> bool;
+    fn pulse_dictation_start_async(
+        id: u64,
+        callback: extern "C" fn(u64, *const u8, usize, f32),
+        ready: extern "C" fn(*mut c_void, bool),
+        context: *mut c_void,
+    );
     fn pulse_dictation_stop();
     fn pulse_dictation_clear_target();
     fn pulse_dictation_delivery_begin() -> i32;
@@ -441,6 +446,12 @@ fn delivery_tick(app: &tauri::AppHandle, id: u64) {
     };
 }
 
+extern "C" fn capture_ready(context: *mut c_void, started: bool) {
+    // Native code returns this allocation exactly once, even on startup failure.
+    let sender = unsafe { Box::from_raw(context.cast::<oneshot::Sender<bool>>()) };
+    let _ = sender.send(started);
+}
+
 fn start(app: &tauri::AppHandle) {
     let state = app.state::<Dictation>();
     if !state.enabled.load(Ordering::Acquire) {
@@ -496,9 +507,24 @@ fn start(app: &tauri::AppHandle) {
     let _ = window.eval(format!("window.pulseDictationStart?.({id}, {bottom});"));
     let _ = window.set_ignore_cursor_events(true);
     let mic = unsafe { pulse_dictation_mic_allowed() };
-    let started = mic && unsafe { pulse_dictation_start(id, audio_callback) };
+    let (ready, capture) = oneshot::channel();
+    if mic {
+        // Return to AppKit immediately so the reset webview and native glass can
+        // appear while AVAudioEngine prepares on its serial lifecycle queue.
+        unsafe {
+            pulse_dictation_start_async(
+                id,
+                audio_callback,
+                capture_ready,
+                Box::into_raw(Box::new(ready)).cast(),
+            );
+        }
+    } else {
+        let _ = ready.send(false);
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let started = capture.await.unwrap_or(false);
         let result = if !mic {
             Err("Allow Microphone access in Pulse Settings → Advanced → Dictation.".into())
         } else if !started {

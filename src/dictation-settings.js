@@ -12,9 +12,6 @@ async function refresh() {
     document.querySelector("#dictation-copy-last").hidden = !state.hasLastTranscript;
     document.querySelector("#dictation-microphone").hidden = state.microphone;
     document.querySelector("#dictation-accessibility").hidden = state.accessibility;
-    document.querySelector("#dictation-key-note").textContent = state.apiKeyConfigured
-      ? "Uses your saved OpenAI API key. Audio is sent to OpenAI only while dictating."
-      : "Add your OpenAI API key below to use Dictation.";
     if (state.error) { error.textContent=state.error; error.hidden=false; }
     document.documentElement.dataset.dictationAvailable = "true";
     // Dictation needs an API key even when extraction uses the Codex provider.

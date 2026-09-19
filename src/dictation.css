@@ -35,7 +35,7 @@ body[data-phase="listening"][data-placing="false"] #waveform-shell { animation: 
 /* Animate the capsule's bounds so the native material recomputes refraction
    throughout the circle-to-pill morph. The center stays at the bottom of the screen. */
 @keyframes pill-arrive {
-  0% { width: 28px; opacity: 0; }
+  0% { width: 28px; opacity: .22; }
   18% { opacity: 1; }
   100% { width: 64px; opacity: 1; }
 }

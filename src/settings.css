@@ -663,4 +663,4 @@ select,
 }
 
 .dictation-access-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 16px 14px; }
-#dictation-section .page-note { padding: 0 16px; }
+.dictation-access-actions:not(:has(button:not([hidden]))) { display: none; }
