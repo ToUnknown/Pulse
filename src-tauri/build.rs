@@ -12,6 +12,7 @@ fn main() {
         println!("cargo:rerun-if-changed=src/dictation/native.m");
         for framework in [
             "AppKit",
+            "QuartzCore",
             "Vision",
             "CoreGraphics",
             "CoreText",

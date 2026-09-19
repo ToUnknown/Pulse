@@ -2,12 +2,30 @@ const invoke = window.__TAURI__?.core.invoke;
 const body = document.body;
 const words = document.querySelector("#words");
 const canvas = document.querySelector("#waveform");
+const shell = document.querySelector("#waveform-shell");
+const overlay = document.querySelector("#dictation");
 const context = canvas.getContext("2d");
 const status = document.querySelector("#status");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
 let shown = "", desired = "", id, lastTyping = 0, lastSamples = 0, waveTime = 0;
 let generation = 0, shownSession, voice = 0, lastFrame = 0;
+let glassBusy = false, lastGlass = "";
+async function syncGlass() {
+  if (!invoke || id === undefined) return;
+  const sessionId = id;
+  const rect = shell.getBoundingClientRect();
+  const visible = ["listening", "finalizing", "sending"].includes(snapshot.phase);
+  const frame = { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+    opacity: visible ? Number(getComputedStyle(shell).opacity) * Number(getComputedStyle(overlay).opacity) : 0 };
+  const signature = JSON.stringify([sessionId, ...Object.values(frame).map(value => Math.round(value * 100) / 100)]);
+  if (signature === lastGlass) return;
+  lastGlass = signature;
+  try {
+    const available = await invoke("dictation_glass", { sessionId, frame });
+    if (id === sessionId) body.dataset.nativeGlass = String(!!available);
+  } catch { /* Keep the CSS material if the native effect is unavailable. */ }
+}
 function setText(value, instant = false) {
   desired = value;
   // Final text is authoritative: corrected prefixes replace partials immediately.
@@ -53,10 +71,17 @@ export function render(next) {
     shownSession = next.id;
     // Reset the DOM before showing a reused webview. Do not wait for an
     // animation frame: hidden native webviews may suspend frame callbacks.
-    invoke("dictation_overlay_ready", { sessionId: next.id }).catch(() => {});
+    // Place native glass before revealing the window, including a reused one.
+    syncGlass().finally(() => {
+      if (id === next.id) invoke("dictation_overlay_ready", { sessionId: next.id }).catch(() => {});
+    });
   }
 }
 function frame(now) {
+  if (!glassBusy) {
+    glassBusy = true;
+    syncGlass().finally(() => { glassBusy = false; });
+  }
   if (desired !== shown && now - lastTyping > 24) {
     const remaining = Array.from(desired.slice(shown.length));
     const chunk = remaining.slice(0, Math.max(1, Math.ceil(remaining.length / 12))).join("");

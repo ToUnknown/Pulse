@@ -46,6 +46,14 @@ extern "C" {
     fn pulse_dictation_live_step(text: *const c_char) -> i32;
     fn pulse_dictation_copy(text: *const c_char) -> bool;
     fn pulse_dictation_position(window: *mut c_void, x: *mut f64, y: *mut f64, bottom: *mut f64);
+    fn pulse_dictation_glass(
+        window: *mut c_void,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        opacity: f64,
+    ) -> bool;
 }
 struct Session {
     id: u64,
@@ -254,6 +262,61 @@ pub async fn set_dictation_enabled(
         state.enabled.store(enabled, Ordering::Release);
         *state.startup_error.lock().unwrap() = None;
         Ok(())
+    })
+    .await
+}
+#[derive(serde::Deserialize)]
+pub struct GlassFrame {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    opacity: f64,
+}
+#[tauri::command]
+pub async fn dictation_glass(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    session_id: u64,
+    frame: GlassFrame,
+) -> Result<bool, String> {
+    if window.label() != WINDOW {
+        return Err("This is only available to the dictation overlay.".into());
+    }
+    if ![frame.x, frame.y, frame.width, frame.height, frame.opacity]
+        .iter()
+        .all(|v| v.is_finite())
+        || !(0.0..=100.0).contains(&frame.width)
+        || !(0.0..=40.0).contains(&frame.height)
+        || !(0.0..=1.0).contains(&frame.opacity)
+    {
+        return Err("Invalid glass frame.".into());
+    }
+    let handle = app.clone();
+    on_main(&app, move || {
+        if handle
+            .state::<Dictation>()
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|s| s.id != session_id)
+        {
+            return Ok(false);
+        }
+        let pointer = window
+            .ns_window()
+            .map_err(|_| "Could not access the dictation overlay.")?;
+        Ok(unsafe {
+            pulse_dictation_glass(
+                pointer,
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                frame.opacity,
+            )
+        })
     })
     .await
 }

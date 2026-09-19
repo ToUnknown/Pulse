@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-const element = () => ({textContent:'',dataset:{},style:{setProperty(name,value){this[name]=value;}},append(){},scrollHeight:0});
-const body = element(), nodes = Object.fromEntries(['#words','#waveform','#status'].map(id=>[id,element()]));
+const element = () => ({textContent:'',dataset:{},style:{setProperty(name,value){this[name]=value;}},append(){},scrollHeight:0,getBoundingClientRect(){return {x:400,y:600,width:88,height:28};}});
+const body = element(), nodes = Object.fromEntries(['#words','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
 const bars=[];
 let barStart;
 const drawing={setTransform(){},clearRect(){bars.length=0;},beginPath(){},moveTo(x,y){barStart=y;},lineTo(x,y){this.amplitude=y-barStart;},stroke(){bars.push({height:this.amplitude,alpha:this.globalAlpha});}};
@@ -11,23 +11,29 @@ nodes['#waveform'].getContext = () => drawing;
 Object.assign(nodes['#waveform'],{clientWidth:88,clientHeight:28});
 let resolveSnapshot;
 const calls = [];
+let holdGlass = false;
+const glassReplies = [];
 const invoke = (name,args) => {
   calls.push({name,args});
-  return name === 'dictation_snapshot' ? new Promise(resolve=>{resolveSnapshot=resolve;}) : Promise.resolve();
+  if (name === 'dictation_glass' && holdGlass) return new Promise(resolve => glassReplies.push(resolve));
+  return name === 'dictation_snapshot' ? new Promise(resolve=>{resolveSnapshot=resolve;}) : Promise.resolve(name === 'dictation_glass');
 };
 const sandbox = vm.createContext({
   window:{__TAURI__:{core:{invoke}}},
   document:{body,querySelector:id=>nodes[id]},
   matchMedia:()=>({matches:false}),
-  requestAnimationFrame(){},setTimeout(){},performance:{now:()=>0},innerWidth:1440,innerHeight:900,devicePixelRatio:1, getComputedStyle:()=>({getPropertyValue:()=>"#888"}),
+  requestAnimationFrame(){},setTimeout(){},performance:{now:()=>0},innerWidth:1440,innerHeight:900,devicePixelRatio:1, getComputedStyle:()=>({opacity:"1",getPropertyValue:()=>"#303237"}),
 });
 vm.runInContext(readFileSync(new URL('../../src/dictation.js',import.meta.url),'utf8').replace('export function render','function render'),sandbox);
 sandbox.window.pulseDictationStart(2,28);
 resolveSnapshot({id:1,phase:'done',text:'Old transcript',message:'Inserted'});
 await new Promise(resolve=>setImmediate(resolve));
+await Promise.resolve();
 assert.equal(body.dataset.phase,'listening','late old completion must not replace new recording');
 assert.equal(nodes['#words'].textContent,'');
 assert.equal(nodes['#status'].textContent,'');
+assert.equal(body.dataset.nativeGlass,'true','native glass replaces CSS only after successful acknowledgement');
+assert.ok(calls.findIndex(c=>c.name==='dictation_glass') < calls.findIndex(c=>c.name==='dictation_overlay_ready'),'native glass is positioned before revealing the window');
 assert.deepEqual(calls.filter(c=>c.name==='dictation_overlay_ready').map(c=>c.args.sessionId),[2], 'hidden overlay must reset and request show without waiting for rAF');
 sandbox.render({id:2,phase:'done',text:'Final words',message:'Inserted'});
 assert.equal(nodes['#status'].textContent,'','completion has no success tip');
@@ -59,3 +65,14 @@ sandbox.render({id:7,phase:'listening',samples:1,level:0,levels:[1,1,1]});
 sandbox.drawWave(100);
 assert.ok(bars.every(bar=>bar.height===1.5),'old loud history cannot move a silent live waveform');
 console.log('PASS: current voice level only, center peaks, fading sides');
+
+await Promise.resolve();
+holdGlass = true;
+sandbox.window.pulseDictationStart(8,28);
+sandbox.window.pulseDictationStart(9,28);
+glassReplies[1](true);
+await Promise.resolve();
+glassReplies[0](false);
+await Promise.resolve();
+assert.equal(body.dataset.nativeGlass,'true','stale glass response cannot replace a new session material');
+console.log('PASS: stale native-glass response rejected');

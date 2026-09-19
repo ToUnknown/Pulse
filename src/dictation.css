@@ -1,4 +1,4 @@
-:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #303033; --paper: rgba(253,253,253,.97); --line: rgba(0,0,0,.07); --wave: #f1f4ff; --bottom: 28px; }
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #303033; --paper: rgba(253,253,253,.97); --line: rgba(0,0,0,.07); --wave: #303237; --bottom: 28px; }
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; pointer-events: none; }
 #dictation { position: absolute; bottom: var(--bottom); left: 50%; width: min(420px, calc(100vw - 32px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; filter: drop-shadow(0 4px 12px rgba(0,0,0,.12)); transition: opacity .18s ease, left .12s ease-out, bottom .12s ease-out; }
@@ -8,7 +8,9 @@ body[data-expanded="true"]:is([data-phase="listening"],[data-phase="error"]) #tr
 #words { margin: 0; max-height: 96px; overflow: hidden; font-size: 15px; line-height: 1.45; font-weight: 450; letter-spacing: -.15px; overflow-wrap: anywhere; white-space: pre-wrap; }
 #words .fresh { animation: arrive .16s ease both; }
 @keyframes arrive { from { opacity: .25; } to { opacity: 1; } }
-#waveform-shell { position: relative; flex: none; width: 88px; height: 28px; border-radius: 16px; border: 1px solid rgba(255,255,255,.12); background: linear-gradient(180deg,#34363d,#222329); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); overflow: hidden; transition: width .32s cubic-bezier(.22,1,.36,1), height .28s ease, border-radius .28s ease; }
+#waveform-shell { position: relative; flex: none; width: 88px; height: 28px; border-radius: 16px; border: 1px solid rgba(255,255,255,.72); background: linear-gradient(165deg,rgba(255,255,255,.78),rgba(239,243,249,.46) 55%,rgba(255,255,255,.64)); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: inset 0 1px 0 rgba(255,255,255,.92), inset 0 -1px 0 rgba(96,111,131,.16), 0 2px 6px rgba(30,40,55,.10); overflow: hidden; transition: width .32s cubic-bezier(.22,1,.36,1), height .28s ease, border-radius .28s ease; }
+/* The native material samples the desktop behind the transparent window. */
+body[data-native-glass="true"] #waveform-shell { background: transparent; border-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 body[data-anchored="true"] #dictation { left: var(--anchor-x); bottom: var(--anchor-bottom); }
 body[data-inline="true"] #dictation { width: 88px; }
 body[data-inline="true"] #transcript { display: none; }
@@ -21,10 +23,12 @@ body:is([data-phase="finalizing"],[data-phase="sending"]) #spinner { opacity: 1;
 body[data-phase="error"] #waveform-shell { display: none; }
 #status { display: none; margin: 0; color: var(--ink); font-size: 12px; line-height: 1.4; text-align: center; }
 body[data-phase="error"] #status { display: block; max-width: 360px; padding: 9px 12px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
-@media (prefers-color-scheme: dark) { :root { --ink: #f1f1f3; --paper: rgba(37,37,40,.97); --line: rgba(255,255,255,.1); --wave: #f1f4ff; } }
+@media (prefers-color-scheme: dark) { :root { --ink: #f1f1f3; --paper: rgba(37,37,40,.97); --line: rgba(255,255,255,.1); --wave: #303237; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
 
 body[data-placing="true"] #dictation { transition: none; }
 body[data-placing="true"] #waveform-shell { animation: none; transition: none; }
 body[data-phase="listening"][data-placing="false"] #waveform-shell { animation: pill-arrive .18s ease-out both; }
 @keyframes pill-arrive { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: scale(1); } }
+
+@media (prefers-reduced-transparency: reduce) { #waveform-shell { background: #f1f3f6; -webkit-backdrop-filter: none; backdrop-filter: none; } }

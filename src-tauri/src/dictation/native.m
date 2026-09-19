@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
 #include <IOKit/hidsystem/IOLLEvent.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -474,4 +476,48 @@ void pulse_dictation_position(void *pointer, double *originX, double *originY, d
     [window setFrame:chosen.frame display:YES animate:NO];
     *originX = NSMinX(chosen.frame); *originY = primaryTop - NSMaxY(chosen.frame);
     *bottom = MAX(20, NSMinY(chosen.visibleFrame) - NSMinY(chosen.frame) + 16);
+}
+
+// Native material sits under the transparent WKWebView. DOM-measured geometry
+// keeps the glass aligned with the bars through placement and pill morphs.
+bool pulse_dictation_glass(void *pointer, double x, double y, double width, double height, double opacity) {
+    NSWindow *window=(__bridge NSWindow *)pointer;
+    NSView *host=window.contentView;
+    if (!host) return false;
+    static char glassKey;
+    NSView *glass=objc_getAssociatedObject(window,&glassKey);
+    if (!glass) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+        if (@available(macOS 26.0, *)) {
+            NSGlassEffectView *effect=[[NSGlassEffectView alloc] initWithFrame:NSZeroRect];
+            effect.style=NSGlassEffectViewStyleRegular;
+            glass=effect;
+        }
+#endif
+        if (!glass) {
+            NSVisualEffectView *effect=[[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+            effect.material=NSVisualEffectMaterialPopover;
+            effect.blendingMode=NSVisualEffectBlendingModeBehindWindow;
+            effect.state=NSVisualEffectStateActive;
+            effect.wantsLayer=YES;
+            effect.layer.masksToBounds=YES;
+            glass=effect;
+        }
+        // Use a light material in both appearances so charcoal bars stay legible.
+        glass.appearance=[NSAppearance appearanceNamed:NSAppearanceNameAqua];
+        [host addSubview:glass positioned:NSWindowBelow relativeTo:nil];
+        objc_setAssociatedObject(window,&glassKey,glass,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    glass.hidden=opacity<=0 || width<=0 || height<=0;
+    if (glass.hidden) return true;
+    CGFloat nativeY=host.isFlipped ? y : NSHeight(host.bounds)-y-height;
+    glass.frame=NSMakeRect(x,nativeY,width,height);
+    glass.alphaValue=opacity;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+    if (@available(macOS 26.0, *)) {
+        if ([glass isKindOfClass:NSGlassEffectView.class]) ((NSGlassEffectView *)glass).cornerRadius=height/2;
+    }
+#endif
+    if ([glass isKindOfClass:NSVisualEffectView.class]) glass.layer.cornerRadius=height/2;
+    return true;
 }
