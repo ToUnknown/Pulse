@@ -217,12 +217,16 @@ static bool editable(AXUIElementRef element) {
     return valid;
 }
 // Delivery never uses the pasteboard when an input was selected. Unicode key
-// events exercise web editors' normal input path; AX only reads and selects the
-// exact range owned by this dictation. Every asynchronous write is read back.
+// events exercise web editors' normal input path; AX restores only the owned
+// range during a handoff. Every asynchronous write is read back.
 static NSString *liveBase, *liveApplied, *liveExpected, *pendingText, *pendingValue;
 static NSRange liveOriginal, liveSelection, pendingSelection;
 static CFTimeInterval pendingSince, unreadableSince, recoverySince, lastRecoveryAttempt;
 static bool liveRecovering;
+static int withdrawal;
+static CFTimeInterval withdrawalSince;
+static NSString *withdrawalFrom;
+static NSRange withdrawalRange;
 static bool liveUsable, liveStarted;
 static NSString *livePlaceholderCandidate;
 static bool livePlaceholderConfirmed;
@@ -230,7 +234,7 @@ static bool liveSelecting;
 static NSRange requestedSelection;
 static CFTimeInterval selectionSince;
 static bool emptyDisplayValue(NSString *raw) {
-    bool expectingEmpty = pendingValue ? pendingValue.length == 0 : liveExpected.length == 0;
+    bool expectingEmpty = withdrawal ? liveBase.length == 0 : pendingValue ? pendingValue.length == 0 : liveExpected.length == 0;
     if (liveBase.length || !(liveStarted || livePlaceholderConfirmed) || !expectingEmpty) return false;
     return (livePlaceholderConfirmed && [raw isEqualToString:livePlaceholderCandidate]) ||
         [raw stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet].length == 0;
@@ -284,6 +288,7 @@ void pulse_dictation_clear_target(void) {
     if (deliveryWindow) CFRelease(deliveryWindow);
     if (deliveryParent) CFRelease(deliveryParent);
     deliveryParent=NULL; deliveryIdentity=deliveryIdentityAttribute=nil;
+    withdrawal=0; withdrawalFrom=nil; withdrawalSince=0;
     deliveryWindow=NULL; liveRecovering=false; recoverySince=lastRecoveryAttempt=0;
     deliveryElement = NULL; deliveryPID = 0;
     liveBase = liveApplied = liveExpected = pendingText = pendingValue = nil;
@@ -390,7 +395,7 @@ static bool rebindOriginal(AXUIElementRef candidate) {
     liveRecovering=true; recoverySince=lastRecoveryAttempt=0;
     return true;
 }
-// Identity is pinned for the whole session. Capability reads may temporarily
+// Identity is pinned until the next verified handoff. Capability reads may temporarily
 // fail while an editor updates; check them before mutations, not as identity.
 static bool sameInput(void) {
     AXUIElementRef focused = focusedElement();
@@ -508,12 +513,67 @@ static int awaitLiveReadback(void) {
     liveUsable=false;
     return -1;
 }
-// Focus belongs to the user. Pause into the centered preview without raising
-// windows or moving focus. Only returning to the original control may resume.
+// Withdraw only our verified edit when handing off to preview. Accessibility
+// writes address the pinned control directly; never send deletion keystrokes to
+// whichever app the user clicked. Restore any original selection we replaced.
+static int withdrawLiveText(void) {
+    if (!liveStarted && !pendingValue && !withdrawal) return 1;
+    CFTimeInterval now=CFAbsoluteTimeGetCurrent();
+    if (!withdrawalSince) withdrawalSince=now;
+    if (now-withdrawalSince>=0.8) return -1;
+    NSString *actual=readText(deliveryElement);
+    if (!actual) return 0;
+    if (!withdrawal) {
+        if (pendingValue) {
+            if (!liveStarted && livePlaceholderCandidate && [actual isEqualToString:pendingText]) {
+                livePlaceholderConfirmed=true; liveBase=@""; liveOriginal=NSMakeRange(0,0); pendingValue=pendingText;
+            }
+            if (![actual isEqualToString:pendingValue]) {
+                return 0; // Let partially applied Unicode input settle before withdrawing.
+            }
+            liveApplied=pendingText; liveExpected=pendingValue; liveStarted=true;
+            pendingText=pendingValue=nil;
+        }
+        if (![actual isEqualToString:liveExpected]) return -1;
+        withdrawalFrom=actual;
+        withdrawalRange=NSMakeRange(liveOriginal.location,liveApplied.length);
+        if (withdrawalRange.location>actual.length || withdrawalRange.length>actual.length-withdrawalRange.location) return -1;
+        withdrawal=1; liveSelecting=false;
+        if (!selectOwnedRange(withdrawalRange)) return -1;
+        return 0;
+    }
+    if (withdrawal==2) {
+        if ([actual isEqualToString:liveBase]) {
+            liveApplied=@""; liveExpected=liveBase; liveSelection=liveOriginal;
+            liveStarted=false; pendingText=pendingValue=nil; liveSelecting=false;
+            withdrawal=0; withdrawalFrom=nil; withdrawalSince=0; unreadableSince=0;
+            return 1;
+        }
+        return [actual isEqualToString:withdrawalFrom] ? 0 : -1;
+    }
+    if (![actual isEqualToString:withdrawalFrom]) return -1;
+    NSRange selected;
+    if (!readSelection(deliveryElement,&selected) || !NSEqualRanges(selected,withdrawalRange)) return 0;
+    Boolean writable=false;
+    AXUIElementIsAttributeSettable(deliveryElement,kAXSelectedTextAttribute,&writable);
+    if (!writable) return -1;
+    NSString *original=[liveBase substringWithRange:liveOriginal];
+    if (![readText(deliveryElement) isEqualToString:withdrawalFrom]) return -1;
+    AXError result=AXUIElementSetAttributeValue(deliveryElement,kAXSelectedTextAttribute,(__bridge CFStringRef)original);
+    if (result!=kAXErrorSuccess) return -1;
+    withdrawal=2;
+    return 0; // Success means read-back on a subsequent tick, never just posting.
+}
+// Focus belongs to the user. Hand off to bottom preview without raising
+// windows or moving focus. The outer transaction handles destination changes.
 static int ensureLiveTarget(void) {
-    if (!sameInput()) {
+    bool focused=sameInput();
+    if (!focused || withdrawal || withdrawalSince) {
         liveRecovering=true; recoverySince=lastRecoveryAttempt=0;
-        return 2;
+        int result=withdrawLiveText();
+        if (result<0) { liveUsable=false; return -1; }
+        if (!result) return 3; // Preview is visible while the old input is cleaned.
+        if (!focused) return 2;
     }
     if (!liveRecovering) return 1;
     CFTimeInterval now=CFAbsoluteTimeGetCurrent();
@@ -540,8 +600,8 @@ static int ensureLiveTarget(void) {
     liveRecovering=false; recoverySince=lastRecoveryAttempt=0;
     return 1;
 }
-// -1 = unsafe (clipboard fallback), 0 = pending, 1 = synced, 2 = original input unfocused.
-int pulse_dictation_live_step(const char *utf8) {
+// -1 = unsafe, 0 = pending, 1 = synced, 2 = preview, 3 = preview with withdrawal pending.
+static int writeLiveText(const char *utf8) {
     if (!liveUsable || liveInterrupted) { liveUsable=false; return -1; }
     int target=ensureLiveTarget();
     if (target!=1) return target;
@@ -590,7 +650,7 @@ int pulse_dictation_live_step(const char *utf8) {
     }
     // Revalidate content and focus after selecting, before posting input.
     if (liveInterrupted) { liveUsable=false; return -1; }
-    if (!sameInput()) { liveRecovering=true; recoverySince=lastRecoveryAttempt=0; return 2; }
+    if (!sameInput()) { liveRecovering=true; recoverySince=lastRecoveryAttempt=0; return 3; }
     if (![readText(deliveryElement) isEqualToString:liveExpected]) return awaitLiveReadback();
     if (!typeUnicode(fragment)) { liveUsable=false; return -1; }
     pendingText=next;
@@ -600,7 +660,32 @@ int pulse_dictation_live_step(const char *utf8) {
     unreadableSince=0;
     return 0;
 }
-// Final clipboard delivery when the original input is not verified and synced.
+// A handoff is a transaction: withdraw the old owned edit, then capture the
+// currently selected destination. The complete transcript remains in Rust and
+// is replayed into that destination's own original selection exactly once.
+int pulse_dictation_live_step(const char *utf8) {
+    if (deliveryElement) {
+        bool current=sameInput();
+        // A failed withdrawal must not recapture the same field and duplicate
+        // text that may still be present. Only a distinct selection can retry.
+        if (current && !liveUsable) return 2;
+        if (current && !withdrawal && !withdrawalSince) {
+            return writeLiveText(utf8);
+        }
+        if (liveUsable && !liveInterrupted) {
+            int result=withdrawLiveText();
+            if (!result) return 3;
+            if (result<0) { liveUsable=false; return -1; }
+        }
+        pulse_dictation_clear_target();
+    }
+    int mode=pulse_dictation_live_begin();
+    if (mode!=1) return 2;
+    if (!sameInput()) { pulse_dictation_clear_target(); return 2; }
+    return writeLiveText(utf8);
+}
+// Final clipboard delivery when the selected input is not verified and synced.
+
 bool pulse_dictation_copy(const char *utf8) {
     NSString *text=[NSString stringWithUTF8String:utf8];
     if (!text.length) return false;

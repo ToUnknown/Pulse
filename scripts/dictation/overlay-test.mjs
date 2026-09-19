@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+const css = readFileSync(new URL('../../src/dictation.css',import.meta.url),'utf8');
+assert.match(css, /#dictation\s*\{[^}]*bottom:\s*var\(--bottom\)/, 'unanchored preview is at the screen bottom');
 const element = () => ({textContent:'',dataset:{},style:{setProperty(name,value){this[name]=value;}},append(){},scrollHeight:0,getBoundingClientRect(){return {x:400,y:600,width:64,height:28};}});
 const body = element(), nodes = Object.fromEntries(['#words','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
 const bars=[];
@@ -56,6 +58,10 @@ assert.equal(body.style['--anchor-bottom'],'238px','pill follows the caret onto 
 sandbox.render({id:5,phase:'listening',inline:false,text:'Standalone words',target:null});
 assert.equal(body.dataset.anchored,'false','no input uses bottom-center output');
 assert.equal(body.dataset.inline,'false');
+sandbox.render({id:5,phase:'listening',inline:true,text:'Standalone words',target:{x:700,y:450,width:1,height:18}});
+assert.equal(body.dataset.anchored,'true','same recording can enter a new input from preview');
+assert.equal(body.style['--anchor-x'],'700.5px');
+assert.equal(body.dataset.placing,'false','handoff keeps smooth position transitions enabled');
 sandbox.render({id:5,phase:'error',message:'Do not show this',text:''});
 assert.equal(nodes['#status'].textContent,'','errors never appear in the overlay');
 console.log('PASS: caret anchoring, wrapped-line positioning, standalone preview, silent errors');

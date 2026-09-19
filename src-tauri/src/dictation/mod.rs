@@ -70,6 +70,7 @@ struct Session {
     inline: bool,
     inline_synced: bool,
     inline_paused: bool,
+    withdrawal_pending: bool,
     message: String,
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -83,6 +84,9 @@ impl Session {
     fn final_delivery(&self, expired: bool) -> FinalDelivery {
         if self.cancel.is_cancelled() {
             return FinalDelivery::Discard;
+        }
+        if self.withdrawal_pending && !expired {
+            return FinalDelivery::Pending;
         }
         if self.inline && !self.inline_paused {
             if self.inline_synced {
@@ -99,6 +103,7 @@ impl Session {
         self.inline = false;
         self.inline_synced = false;
         self.inline_paused = false;
+        self.withdrawal_pending = false;
         self.target = None;
         // Capture continues. Clipboard is written only once, at final delivery.
     }
@@ -106,13 +111,17 @@ impl Session {
     fn apply_live_update(&mut self, outcome: i32, target: Option<Value>, current_text: bool) {
         match outcome {
             0 | 1 => {
+                self.inline = true;
                 self.inline_synced = outcome == 1 && current_text;
                 self.inline_paused = false;
+                self.withdrawal_pending = false;
                 if target.is_some() {
                     self.target = target;
                 }
             }
-            2 => {
+            2 | 3 => {
+                self.inline = false;
+                self.withdrawal_pending = outcome == 3;
                 self.inline_synced = false;
                 self.inline_paused = true;
                 self.target = None;
@@ -440,7 +449,7 @@ fn live_bounds(origin: (f64, f64)) -> Option<Value> {
 // One main-thread writer, coalescing incoming model deltas into small edits.
 fn live_tick(app: &tauri::AppHandle, id: u64) -> bool {
     let state = app.state::<Dictation>();
-    let (origin, inline, text) = {
+    let (origin, text) = {
         let guard = state.session.lock().unwrap();
         let Some(s) = guard.as_ref().filter(|s| {
             s.id == id
@@ -449,33 +458,22 @@ fn live_tick(app: &tauri::AppHandle, id: u64) -> bool {
         }) else {
             return false;
         };
-        (s.origin, s.inline, s.text.clone())
+        (s.origin, s.text.clone())
     };
-    // One pinned native writer owns all edits. Focus loss is preview mode,
-    // not cancellation, and never authorizes a different input.
-    let outcome = if inline {
-        let text = CString::new(text.replace('\0', "")).unwrap();
-        Some(unsafe { pulse_dictation_live_step(text.as_ptr()) })
-    } else {
-        None
-    };
-    let target = if matches!(outcome, Some(0 | 1)) {
+    // The native transaction withdraws the old edit before adopting the user's
+    // current field. Poll even in preview so selecting a new field resumes live.
+    let utf8 = CString::new(text.replace('\0', "")).unwrap();
+    let outcome = unsafe { pulse_dictation_live_step(utf8.as_ptr()) };
+    let target = if matches!(outcome, 0 | 1) {
         live_bounds(origin)
     } else {
         None
     };
-    if outcome.is_some_and(|result| result < 0) {
-        unsafe {
-            pulse_dictation_clear_target();
-        }
-    }
     let mut guard = state.session.lock().unwrap();
     let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
         return false;
     };
-    if let Some(outcome) = outcome {
-        s.apply_live_update(outcome, target, s.text == text);
-    }
+    s.apply_live_update(outcome, target, s.text == text);
     true
 }
 
@@ -550,6 +548,7 @@ fn start(app: &tauri::AppHandle) {
         inline: input_mode == 1,
         inline_synced: true,
         inline_paused: false,
+        withdrawal_pending: false,
         message: String::new(),
     });
     let _ = window.eval(format!(
@@ -818,7 +817,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             let handle = app.clone();
             let complete = on_main(&app, move || {
                 // Refresh ownership and decide delivery in the same main-thread
-                // turn. Returning to the original field cannot race a separate
+                // turn. Selecting a new field cannot race a separate
                 // clipboard decision, and pending edits must be acknowledged.
                 live_tick(&handle, id);
                 let state = handle.state::<Dictation>();
@@ -903,6 +902,7 @@ mod tests {
             inline: true,
             inline_synced: false,
             inline_paused: false,
+            withdrawal_pending: false,
             message: String::new(),
         }
     }
@@ -910,6 +910,8 @@ mod tests {
     #[test]
     fn final_delivery_is_exclusive_and_waits_for_verified_input() {
         let mut session = test_session();
+        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
+        session.apply_live_update(3, None, true);
         assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
         session.apply_live_update(2, None, true);
         assert_eq!(session.final_delivery(false), FinalDelivery::Clipboard);
@@ -929,7 +931,7 @@ mod tests {
     fn focus_loss_previews_and_return_resumes_without_cancelling_capture() {
         let mut session = test_session();
         session.apply_live_update(2, None, true);
-        assert!(session.inline && session.inline_paused);
+        assert!(!session.inline && session.inline_paused);
         assert!(session.target.is_none());
         assert!(session.audio.is_some() && !session.cancel.is_cancelled());
         assert_eq!(session.phase, "listening");
