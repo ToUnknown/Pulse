@@ -242,6 +242,7 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
   try {
     await invoke("save_openai_api_key", { apiKey: keyInput.value });
     keyInput.value = "";
+    window.dispatchEvent(new Event("pulse-api-key-changed"));
     await load();
   } catch (reason) {
     keyStatus.textContent = String(reason);
@@ -256,6 +257,7 @@ keyRemove.addEventListener("click", async () => {
   try {
     await invoke("clear_openai_api_key");
     keyInput.value = "";
+    window.dispatchEvent(new Event("pulse-api-key-changed"));
     await load();
   } catch (reason) { keyError.textContent = String(reason); keyError.hidden = false; }
   finally { lock(false); }

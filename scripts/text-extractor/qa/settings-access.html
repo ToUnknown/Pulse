@@ -9,16 +9,17 @@ const frame = document.querySelector('iframe');
 const output = document.querySelector('#results');
 const source = await (await fetch('../../../src/settings.html')).text();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function openFixture(installed=true, available=true, provider='api') {
+async function openFixture(installed=true, available=true, provider='api', configured=true) {
   const setup = `
-    let provider=${JSON.stringify(provider)}, installed=${installed}, available=${available}, configured=true;
+    let provider=${JSON.stringify(provider)}, installed=${installed}, available=${available}, configured=${configured}, dictationEnabled=false;
     window.__TAURI__={core:{invoke:async(name,args)=>{
       if(name==='settings_state')return {platform:'macos',trayIcon:null,autoSchedule:null};
-      if(name==='dictation_settings')throw new Error('Not in this fixture');
+      if(name==='dictation_settings')return {enabled:dictationEnabled,apiKeyConfigured:configured,microphone:true,accessibility:true};
+      if(name==='set_dictation_enabled'){if(args.enabled&&!configured)throw new Error('API key required');dictationEnabled=args.enabled;return;}
       if(name==='set_text_extractor_provider'){provider=args.provider;return;}
       if(name==='refresh_text_extractor_codex'){available=true;return;}
       if(name==='save_openai_api_key'){configured=true;return;}
-      if(name==='clear_openai_api_key'){configured=false;return;}
+      if(name==='clear_openai_api_key'){configured=false;dictationEnabled=false;return;}
       if(name==='text_extractor_state'||name==='text_extractor_advanced_access')return {
         enabled:false,shortcut:'Alt+Shift+T',quickShortcut:'Control+Alt+Shift+T',
         apiKeyConfigured:configured,advancedProvider:provider,activeAdvancedProvider:provider,
@@ -63,7 +64,17 @@ document.querySelector('#run').onclick=async()=>{
   check(!unavailable.checked && unavailable.disabled,'turning unavailable Codex off selects API');
   doc=await openFixture(false,false);
   check(doc.querySelector('#codex-access').hidden && !doc.querySelector('#openai-key-form').hidden,'absent Codex leaves API available');
-  await openFixture();
+  doc=await openFixture(true,true,'codex',false);
+  const dictation=doc.querySelector('#dictation-enabled');
+  check(dictation.disabled && !dictation.checked,'Codex subscription cannot unlock dictation without an API key');
+  check(doc.querySelector('#dictation-description').textContent.includes('Add your OpenAI API key'),'missing-key explanation appears on dictation');
+  doc.querySelector('#openai-api-key').value='fixture-key';
+  doc.querySelector('#openai-key-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await wait(80);
+  check(!dictation.disabled && !dictation.checked,'saving a key unlocks dictation without enabling it');
+  dictation.click();await wait(80);
+  check(dictation.checked,'dictation can be enabled with a saved key');
+  doc.querySelector('#openai-key-remove').click();await wait(80);
+  check(dictation.disabled && !dictation.checked,'removing the key disables dictation immediately');
   output.textContent=checks.join('\n');
 };
 await openFixture();

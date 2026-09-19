@@ -325,9 +325,17 @@ pub async fn save_openai_api_key(window: WebviewWindow, api_key: String) -> Resu
 }
 
 #[tauri::command]
-pub fn clear_openai_api_key(window: WebviewWindow) -> Result<(), String> {
+pub async fn clear_openai_api_key(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<(), String> {
     settings_only(&window)?;
-    openai_credentials::clear()
+    openai_credentials::clear()?;
+    #[cfg(target_os = "macos")]
+    crate::dictation::set_dictation_enabled(app, window, false).await?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    Ok(())
 }
 
 #[tauri::command]

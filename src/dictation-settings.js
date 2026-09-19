@@ -7,18 +7,24 @@ async function refresh() {
   if (!invoke || busy) return;
   try {
     const state = await invoke("dictation_settings");
+    if (busy) return;
     section.hidden = false;
-    enabled.checked = state.enabled;
+    enabled.disabled = !state.apiKeyConfigured;
+    enabled.checked = state.enabled && state.apiKeyConfigured;
+    document.querySelector("#dictation-description").textContent = state.apiKeyConfigured
+      ? "Turn your voice into text. Tap Right Option to start or stop, or hold it while speaking."
+      : "Add your OpenAI API key below to enable Dictation.";
     document.querySelector("#dictation-microphone").hidden = state.microphone;
     document.querySelector("#dictation-accessibility").hidden = state.accessibility;
-    if (state.error) { error.textContent=state.error; error.hidden=false; }
+    if (state.error && state.apiKeyConfigured) { error.textContent=state.error; error.hidden=false; }
+    else if (!state.apiKeyConfigured) error.hidden=true;
   } catch { /* Dictation is currently a macOS feature. */ }
 }
 enabled.addEventListener("change", async () => {
   busy=true; enabled.disabled=true; error.hidden=true;
   try { await invoke("set_dictation_enabled",{enabled:enabled.checked}); }
   catch(reason) { error.textContent=String(reason); error.hidden=false; }
-  finally { busy=false; enabled.disabled=false; await refresh(); }
+  finally { busy=false; await refresh(); }
 });
 for (const [id,microphone] of [["dictation-microphone",true],["dictation-accessibility",false]]) {
   document.getElementById(id).addEventListener("click",async()=>{
@@ -28,3 +34,6 @@ for (const [id,microphone] of [["dictation-microphone",true],["dictation-accessi
 }
 refresh();
 setInterval(()=>{if(!document.hidden) refresh();},2000);
+
+window.addEventListener("pulse-api-key-changed", refresh);
+window.addEventListener("focus", refresh);

@@ -119,6 +119,9 @@ fn settings_only(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 fn register(app: &tauri::AppHandle) -> Result<(), String> {
+    if !crate::openai_credentials::is_configured()? {
+        return Err("Add your OpenAI API key in Settings to enable Dictation.".into());
+    }
     if !unsafe { pulse_dictation_ax_allowed() } {
         return Err("Allow Accessibility in Dictation settings to use Right Option, then enable Dictation again.".into());
     }
@@ -155,7 +158,8 @@ extern "C" fn shortcut_event(down: bool, chord: bool, interrupted: bool, timesta
 }
 pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let enabled = std::fs::read_to_string(app.path().app_config_dir()?.join("dictation-enabled"))
-        .is_ok_and(|value| value == "true");
+        .is_ok_and(|value| value == "true")
+        && crate::openai_credentials::is_configured().unwrap_or(false);
     let _ = APP.set(app.clone());
     app.manage(Dictation {
         hold_shortcut: Mutex::new(shortcut::HoldShortcut::default()),
@@ -233,6 +237,9 @@ pub async fn set_dictation_enabled(
     on_main(&app, move || {
         let state = handle.state::<Dictation>();
         let old = state.enabled.load(Ordering::Acquire);
+        if old && enabled && !crate::openai_credentials::is_configured()? {
+            return Err("Add your OpenAI API key in Settings to enable Dictation.".into());
+        }
         if old == enabled {
             return Ok(());
         }
