@@ -661,3 +661,6 @@ select,
   .shortcut-mode-pill { background: Highlight; }
   .shortcut-mode-highlight { color: HighlightText; }
 }
+
+.dictation-access-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 16px 14px; }
+#dictation-section .page-note { padding: 0 16px; }

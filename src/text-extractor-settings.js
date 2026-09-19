@@ -75,7 +75,7 @@ function renderProvider() {
   }
   $("#openai-key-title").textContent = installed ? "Advanced access" : "API key";
   providerCard.hidden = !installed || selected !== "codex";
-  $("#openai-key-form").hidden = installed && selected === "codex";
+  $("#openai-key-form").hidden = installed && selected === "codex" && document.documentElement.dataset.dictationAvailable !== "true";
   const message = state.codex?.checking && !state.codex?.available ? "Checking Codex…" : state.codex?.message || "";
   if (providerStatus.textContent !== message) providerStatus.textContent = message;
   providerStatus.dataset.tone = !state.codex?.checking && !state.codex?.available ? "error" : "";
@@ -145,7 +145,7 @@ function render() {
   for (const [field, button] of Object.entries(shortcutButtons)) { button.textContent = displayShortcut(state[field]); button.title = button.textContent; }
   keyStatus.textContent = state.apiKeyConfigured
     ? "Key saved."
-    : "Optional. Unlocks Advanced extraction.";
+    : "Used for Dictation and Advanced extraction.";
   delete keyStatus.dataset.tone;
   keyInput.removeAttribute("aria-invalid");
   keyInput.dataset.configured = String(state.apiKeyConfigured);

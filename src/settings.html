@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="settings.css" />
     <script src="settings.js" defer></script>
     <script type="module" src="text-extractor-settings.js"></script>
+    <script type="module" src="dictation-settings.js"></script>
   </head>
   <body>
     <main class="settings-shell">
@@ -43,6 +44,23 @@
         </section>
       </div>
       <div id="page-advanced" class="settings-page" role="tabpanel" aria-labelledby="tab-advanced" tabindex="0" hidden>
+        <section id="dictation-section" class="settings-group" aria-labelledby="dictation-heading" hidden>
+          <h2 id="dictation-heading">Dictation</h2>
+          <div class="extractor-settings-card">
+            <label class="setting-row">
+              <span class="setting-copy"><span class="setting-text"><strong>Hold to dictate</strong><small>Hold Option + Shift + Space. Release to insert. Escape cancels.</small></span></span>
+              <input id="dictation-enabled" type="checkbox" />
+            </label>
+            <p id="dictation-key-note" class="page-note"></p>
+            <p class="page-note">Without a selected input, text is copied to your clipboard. Allow Accessibility to insert into other apps.</p>
+            <div class="dictation-access-actions">
+              <button id="dictation-copy-last" class="settings-button" type="button" hidden>Copy last transcript</button>
+              <button id="dictation-microphone" class="settings-button" type="button">Allow Microphone</button>
+              <button id="dictation-accessibility" class="settings-button" type="button">Allow Accessibility</button>
+            </div>
+            <p id="dictation-error" class="extractor-error" role="alert" hidden></p>
+          </div>
+        </section>
         <section id="text-extractor-section" class="settings-group" aria-labelledby="extractor-heading" hidden>
           <h2 id="extractor-heading">Text Extractor</h2>
           <div class="extractor-settings-card">

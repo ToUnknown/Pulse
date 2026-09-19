@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod dictation;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod openai_credentials;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1624,6 +1626,16 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
+        #[cfg(target_os = "macos")]
+        dictation::dictation_settings,
+        #[cfg(target_os = "macos")]
+        dictation::copy_last_dictation,
+        #[cfg(target_os = "macos")]
+        dictation::set_dictation_enabled,
+        #[cfg(target_os = "macos")]
+        dictation::request_dictation_access,
+        #[cfg(target_os = "macos")]
+        dictation::dictation_snapshot,
         settings_window_action,
         set_start_at_login,
         set_tray_icon_mode,
@@ -1934,6 +1946,9 @@ pub fn run() {
 
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             text_extractor::install(app.handle())?;
+
+            #[cfg(target_os = "macos")]
+            dictation::install(app.handle())?;
 
             #[cfg(target_os = "macos")]
             start_macos_appearance_watcher(app.handle().clone());

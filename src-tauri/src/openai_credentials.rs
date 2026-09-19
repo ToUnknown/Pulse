@@ -3,7 +3,7 @@
 const API_KEY_SERVICE: &str = "app.pulse.desktop";
 const API_KEY_ACCOUNT: &str = "openai-api-key";
 pub const MISSING_KEY: &str =
-    "Add an OpenAI API key in Pulse Settings to use Advanced or Translate.";
+    "Add an OpenAI API key in Pulse Settings to use Dictation or Advanced.";
 
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(API_KEY_SERVICE, API_KEY_ACCOUNT)
