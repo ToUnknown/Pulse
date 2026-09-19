@@ -112,41 +112,42 @@
           </div>
         </section>
         <section id="openai-key-section" class="settings-group" aria-labelledby="openai-key-title" hidden>
-          <div class="advanced-access-heading">
-            <h2 id="openai-key-title">API key</h2>
-            <div id="advanced-provider" class="shortcut-mode" role="radiogroup" aria-label="Advanced provider" style="--mode-index: 0" hidden>
-              <span class="shortcut-mode-pill" aria-hidden="true"><span class="shortcut-mode-highlight"><span>Codex</span><span>API key</span></span></span>
-              <button type="button" role="radio" data-provider="codex" aria-checked="true">Codex</button>
-              <button type="button" role="radio" data-provider="api" aria-checked="false" tabindex="-1">API key</button>
+          <h2 id="openai-key-title">Advanced access</h2>
+          <div class="api-key-card">
+            <form id="openai-key-form" class="api-key-form">
+              <div class="api-key-heading">
+                <img class="api-key-icon" src="translation-icons/key-icon-yellow.svg" alt="" aria-hidden="true" />
+                <div class="api-key-copy">
+                  <label for="openai-api-key">OpenAI API key</label>
+                  <small id="extractor-key-status" role="status" aria-live="polite">Loading…</small>
+                </div>
+              </div>
+              <div class="api-key-controls">
+                <div class="api-key-field">
+                  <input id="openai-api-key" name="api-key" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="2048" aria-describedby="extractor-key-status" />
+                  <span id="openai-key-mask" class="api-key-mask" aria-hidden="true" hidden>************</span>
+                </div>
+                <div class="api-key-buttons">
+                  <button id="openai-key-save" class="settings-button" type="submit" disabled>Save</button>
+                  <button id="openai-key-remove" class="settings-button" type="button" hidden>Remove</button>
+                </div>
+              </div>
+              <p id="openai-key-error" class="extractor-error" role="alert" hidden></p>
+            </form>
+            <div id="codex-access" class="codex-access" hidden>
+              <label class="codex-access-row" for="codex-enabled">
+                <span class="api-key-copy">
+                  <strong>Use Codex subscription</strong>
+                  <small>LLMs only, like Luna in Text Extractor. Dictation uses your API key.</small>
+                </span>
+                <input id="codex-enabled" type="checkbox" aria-describedby="codex-access-status" />
+              </label>
+              <div id="codex-access-notice" class="codex-access-notice" hidden>
+                <small id="codex-access-status" role="status" aria-live="polite"></small>
+                <button id="codex-access-retry" class="settings-button" type="button" hidden>Retry</button>
+              </div>
             </div>
           </div>
-          <div id="codex-access" class="api-key-card codex-access" hidden>
-            <div class="api-key-copy">
-              <strong>Codex subscription</strong>
-              <small id="codex-access-status" role="status" aria-live="polite"></small>
-            </div>
-            <button id="codex-access-retry" class="settings-button" type="button" hidden>Retry</button>
-          </div>
-          <form id="openai-key-form" class="api-key-card">
-            <div class="api-key-heading">
-              <img class="api-key-icon" src="translation-icons/key-icon-yellow.svg" alt="" aria-hidden="true" />
-              <div class="api-key-copy">
-                <label for="openai-api-key">OpenAI API key</label>
-                <small id="extractor-key-status" role="status" aria-live="polite">Loading…</small>
-              </div>
-            </div>
-            <div class="api-key-controls">
-              <div class="api-key-field">
-                <input id="openai-api-key" name="api-key" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" required maxlength="2048" aria-describedby="extractor-key-status" />
-                <span id="openai-key-mask" class="api-key-mask" aria-hidden="true" hidden>************</span>
-              </div>
-              <div class="api-key-buttons">
-                <button id="openai-key-save" class="settings-button" type="submit" disabled>Save</button>
-                <button id="openai-key-remove" class="settings-button" type="button" hidden>Remove</button>
-              </div>
-            </div>
-            <p id="openai-key-error" class="extractor-error" role="alert" hidden></p>
-          </form>
         </section>
         <p id="advanced-unavailable" class="page-note" hidden>Text Extractor is available on macOS and Windows.</p>
       </div>

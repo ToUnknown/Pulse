@@ -12,9 +12,6 @@ async function refresh() {
     document.querySelector("#dictation-microphone").hidden = state.microphone;
     document.querySelector("#dictation-accessibility").hidden = state.accessibility;
     if (state.error) { error.textContent=state.error; error.hidden=false; }
-    document.documentElement.dataset.dictationAvailable = "true";
-    // Dictation needs an API key even when extraction uses the Codex provider.
-    document.querySelector("#openai-key-form").hidden = false;
   } catch { /* Dictation is currently a macOS feature. */ }
 }
 enabled.addEventListener("change", async () => {

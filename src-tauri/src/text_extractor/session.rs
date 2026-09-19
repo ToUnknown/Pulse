@@ -1431,16 +1431,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_preferences_prefer_codex_without_changing_shortcut_modes() {
+    fn preferences_default_to_api_and_preserve_explicit_codex() {
         let preferences: Preferences =
             serde_json::from_value(json!({"enabled": true, "quickMode": "advanced"})).unwrap();
-        assert_eq!(preferences.advanced_provider, AdvancedProvider::Codex);
+        assert_eq!(preferences.advanced_provider, AdvancedProvider::Api);
         assert_eq!(preferences.quick_mode, ExtractionMode::Advanced);
         assert_eq!(preferences.editor_mode, ExtractionMode::Basic);
         let mut explicit = preferences;
-        explicit.advanced_provider = AdvancedProvider::Api;
+        explicit.advanced_provider = AdvancedProvider::Codex;
         let restored: Preferences =
             serde_json::from_slice(&serde_json::to_vec(&explicit).unwrap()).unwrap();
-        assert_eq!(restored.advanced_provider, AdvancedProvider::Api);
+        assert_eq!(restored.advanced_provider, AdvancedProvider::Codex);
     }
 }

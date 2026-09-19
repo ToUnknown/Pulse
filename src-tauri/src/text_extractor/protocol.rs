@@ -44,8 +44,8 @@ pub struct Preferences {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AdvancedProvider {
-    #[default]
     Codex,
+    #[default]
     Api,
 }
 
@@ -57,7 +57,7 @@ impl Default for Preferences {
             quick_shortcut: QUICK_SHORTCUT.into(),
             editor_mode: ExtractionMode::Basic,
             quick_mode: ExtractionMode::Basic,
-            advanced_provider: AdvancedProvider::Codex,
+            advanced_provider: AdvancedProvider::Api,
         }
     }
 }
