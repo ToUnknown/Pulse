@@ -3,7 +3,10 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
-static AXUIElementRef fakeElement, selectedElement;
+static AXUIElementRef fakeElement, selectedElement, fakeSystem;
+static bool missingSystemFocus;
+static NSUInteger emptyCaretOffset;
+static long characterCountOverride=-1;
 static void (*observePosted)(CGEventRef);
 static unsigned shortcutActions;
 static NSString *editor;
@@ -22,16 +25,18 @@ static unsigned keyboardEvents, clipboardWrites;
 - (NSInteger)clearContents { clipboardWrites++; return 0; }
 - (BOOL)setString:(NSString *)text forType:(NSString *)type { clipboardWrites++; return text.length>0; }
 @end
+static AXUIElementRef createSystem(void) { return (AXUIElementRef)CFRetain(fakeSystem); }
 static bool trusted(void) { return true; }
 static AXError getPid(AXUIElementRef element,pid_t *pid) { *pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier; return kAXErrorSuccess; }
 static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *out) {
     *out=NULL;
-    if (CFEqual(name,kAXFocusedUIElementAttribute) && focused) *out=CFRetain(selectedElement);
+    if (CFEqual(name,kAXFocusedUIElementAttribute) && focused && !(missingSystemFocus && CFEqual(element,fakeSystem))) *out=CFRetain(selectedElement);
     else if (CFEqual(name,kAXRoleAttribute)) *out=CFRetain(kAXTextAreaRole);
     else if (CFEqual(name,CFSTR("AXEditable"))) *out=CFRetain(kCFBooleanTrue);
     else if (CFEqual(name,kAXValueAttribute)) *out=CFBridgingRetain(!editor.length && emptyParagraph ? @"\n" : exposesPlaceholder && !editor.length ? @"\nType here" : editor);
+    else if (CFEqual(name,kAXNumberOfCharactersAttribute)) { long count=characterCountOverride>=0 ? characterCountOverride : editor.length; *out=CFNumberCreate(NULL,kCFNumberLongType,&count); }
     else if (CFEqual(name,kAXDescriptionAttribute) && exposesPlaceholder) *out=CFRetain(CFSTR("Type here"));
-    else if (CFEqual(name,kAXSelectedTextRangeAttribute)) { CFRange r=CFRangeMake(phantomPlaceholderCaret && !editor.length ? 10 : caret.location,caret.length); *out=AXValueCreate(kAXValueCFRangeType,&r); }
+    else if (CFEqual(name,kAXSelectedTextRangeAttribute)) { CFRange r=CFRangeMake(!editor.length && emptyCaretOffset ? emptyCaretOffset : phantomPlaceholderCaret && !editor.length ? 10 : caret.location,caret.length); *out=AXValueCreate(kAXValueCFRangeType,&r); }
     return *out?kAXErrorSuccess:kAXErrorNoValue;
 }
 static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true; return kAXErrorSuccess; }
@@ -55,6 +60,7 @@ static void post(CGEventTapLocation tap,CGEventRef event) {
     caret=NSMakeRange(caret.location+insert.length,0);
     [editFrames addObject:editor];
 }
+#define AXUIElementCreateSystemWide createSystem
 #define AXIsProcessTrusted trusted
 #define AXUIElementGetPid getPid
 #define AXUIElementCopyAttributeValue copyAttribute
@@ -68,6 +74,7 @@ static void expect(bool ok,const char *message) { if (!ok) { fprintf(stderr,"FAI
 static void observeOwnEvent(CGEventRef event) { PulseDictationShortcutEvent([NSEvent eventWithCGEvent:event]); }
 static void shortcutAction(bool down,bool chord,bool interrupted,double time) { shortcutActions++; }
 static void begin(void) {
+    missingSystemFocus=false; emptyCaretOffset=0; characterCountOverride=-1;
     selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false;
     focused=supportsRange=acceptTyping=acceptSelection=true;
     editor=@"Before SELECT after"; caret=NSMakeRange(7,6);
@@ -81,6 +88,7 @@ static void syncText(const char *text) {
 int main(void) {
     @autoreleasepool {
         fakeElement=AXUIElementCreateApplication(getpid());
+        fakeSystem=AXUIElementCreateApplication(getpid()+2);
         begin();
         shortcutCallback=shortcutAction; observePosted=observeOwnEvent;
         syncText("hello wonderful world");
@@ -153,6 +161,24 @@ int main(void) {
         expect(pulse_dictation_live_begin()==1,"label-like real text is a candidate only");
         syncText("prefix ");
         expect([editor isEqualToString:@"prefix \nType here"] && !livePlaceholderConfirmed,"never discard real text matching an input label");
+        begin(); missingSystemFocus=true;
+        expect(pulse_dictation_live_begin()==1,"application focus fallback supports embedded editors");
+        syncText("app focused");
+        expect([editor isEqualToString:@"Before app focused after"],"fallback retains verified insertion");
+        AXUIElementRef fallbackOther=AXUIElementCreateApplication(getpid()+3);
+        selectedElement=fallbackOther;
+        unsigned fallbackEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("app focused more")==2 && keyboardEvents==fallbackEvents,"application fallback never retargets another focused input");
+        selectedElement=fakeElement; CFRelease(fallbackOther);
+        syncText("app focused more");
+        begin(); editor=@""; caret=NSMakeRange(0,0); emptyCaretOffset=1;
+        expect(pulse_dictation_live_begin()==1,"empty editor's synthetic position one is normalized");
+        syncText("empty editor"); syncText("Empty editor."); syncText(""); syncText("again");
+        expect([editor isEqualToString:@"again"],"synthetic empty caret works through insertion and corrections");
+        begin(); editor=@""; caret=NSMakeRange(0,0); emptyCaretOffset=2;
+        expect(pulse_dictation_live_begin()==2,"other out-of-range positions remain unsupported");
+        emptyCaretOffset=1; characterCountOverride=1;
+        expect(pulse_dictation_live_begin()==2,"inconsistent character counts cannot authorize empty-caret normalization");
         // Exercise the actual edit planner on deterministic, varied Unicode
         // sequences, including insertions longer than its alignment window.
         NSArray<NSString *> *tokens=@[@"a",@"b",@" ",@".",@"🌍",@"é",@"👨‍👩‍👧‍👦",@"中文"];
@@ -179,7 +205,7 @@ int main(void) {
         focused=false;
         expect(pulse_dictation_live_begin()==0,"no selected input uses bottom preview");
         expect(pulse_dictation_copy("clipboard result") && clipboardWrites==2,"clipboard only written by explicit no-input path");
-        pulse_dictation_clear_target(); CFRelease(fakeElement);
-        puts("PASS: final corrections without replay, Unicode edit convergence, selection ownership, focus/edit guards, read-back failures, clipboard preservation");
+        pulse_dictation_clear_target(); CFRelease(fakeElement); CFRelease(fakeSystem);
+        puts("PASS: application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
     }
 }

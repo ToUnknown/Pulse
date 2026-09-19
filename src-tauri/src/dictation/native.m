@@ -173,6 +173,18 @@ static AXUIElementRef focusedElement(void) {
     CFRelease(system);
     if (value && CFGetTypeID(value) == AXUIElementGetTypeID()) return (AXUIElementRef)value;
     if (value) CFRelease(value);
+    // Embedded browser editors can be absent from system-wide focus while the
+    // active application still exposes the precise focused element. Query only
+    // that app; never search other windows or follow an unrelated editor.
+    pid_t pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+    if (pid<=0) return NULL;
+    AXUIElementRef app=AXUIElementCreateApplication(pid);
+    AXUIElementSetMessagingTimeout(app,0.25);
+    value=attribute(app,kAXFocusedUIElementAttribute);
+    CFRelease(app);
+    if (value && CFGetTypeID(value)==AXUIElementGetTypeID() &&
+        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier==pid) return (AXUIElementRef)value;
+    if (value) CFRelease(value);
     return NULL;
 }
 static bool elementBounds(AXUIElementRef element, CGRect *rect) {
@@ -230,6 +242,16 @@ static bool readSelection(AXUIElementRef element, NSRange *range) {
         *range = NSMakeRange((NSUInteger)selected.location, (NSUInteger)selected.length);
         if (!range->length) {
             CFTypeRef raw=attribute(element,kAXValueAttribute);
+            // Some empty contenteditable fields expose a synthetic paragraph
+            // position at 1 despite AXValue and AXNumberOfCharacters being empty.
+            // Normalize only this verified empty state, never nonempty ranges.
+            if (range->location==1 && raw && CFGetTypeID(raw)==CFStringGetTypeID() && CFStringGetLength(raw)==0) {
+                CFTypeRef count=attribute(element,kAXNumberOfCharactersAttribute);
+                long length=-1;
+                if (count && CFGetTypeID(count)==CFNumberGetTypeID() &&
+                    CFNumberGetValue(count,kCFNumberLongType,&length) && length==0) range->location=0;
+                if (count) CFRelease(count);
+            }
             if (raw && CFGetTypeID(raw)==CFStringGetTypeID() && range->location <= [(__bridge NSString *)raw length] && emptyDisplayValue((__bridge NSString *)raw)) *range=NSMakeRange(0,0);
             if (raw) CFRelease(raw);
         }
