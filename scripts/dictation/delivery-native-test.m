@@ -7,6 +7,7 @@ static AXUIElementRef fakeElement, selectedElement;
 static void (*observePosted)(CGEventRef);
 static unsigned shortcutActions;
 static NSString *editor;
+static bool exposesPlaceholder, phantomPlaceholderCaret, emptyParagraph;
 static NSRange caret;
 static bool focused=true, supportsRange=true, acceptTyping=true, acceptSelection=true;
 static unsigned keyboardEvents, clipboardWrites;
@@ -27,8 +28,9 @@ static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *
     if (CFEqual(name,kAXFocusedUIElementAttribute) && focused) *out=CFRetain(selectedElement);
     else if (CFEqual(name,kAXRoleAttribute)) *out=CFRetain(kAXTextAreaRole);
     else if (CFEqual(name,CFSTR("AXEditable"))) *out=CFRetain(kCFBooleanTrue);
-    else if (CFEqual(name,kAXValueAttribute)) *out=CFBridgingRetain(editor);
-    else if (CFEqual(name,kAXSelectedTextRangeAttribute)) { CFRange r=CFRangeMake(caret.location,caret.length); *out=AXValueCreate(kAXValueCFRangeType,&r); }
+    else if (CFEqual(name,kAXValueAttribute)) *out=CFBridgingRetain(!editor.length && emptyParagraph ? @"\n" : exposesPlaceholder && !editor.length ? @"\nType here" : editor);
+    else if (CFEqual(name,kAXDescriptionAttribute) && exposesPlaceholder) *out=CFRetain(CFSTR("Type here"));
+    else if (CFEqual(name,kAXSelectedTextRangeAttribute)) { CFRange r=CFRangeMake(phantomPlaceholderCaret && !editor.length ? 10 : caret.location,caret.length); *out=AXValueCreate(kAXValueCFRangeType,&r); }
     return *out?kAXErrorSuccess:kAXErrorNoValue;
 }
 static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true; return kAXErrorSuccess; }
@@ -64,7 +66,7 @@ static void expect(bool ok,const char *message) { if (!ok) { fprintf(stderr,"FAI
 static void observeOwnEvent(CGEventRef event) { PulseDictationShortcutEvent([NSEvent eventWithCGEvent:event]); }
 static void shortcutAction(bool down,bool chord,bool interrupted,double time) { shortcutActions++; }
 static void begin(void) {
-    selectedElement=fakeElement;
+    selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false;
     focused=supportsRange=acceptTyping=acceptSelection=true;
     editor=@"Before SELECT after"; caret=NSMakeRange(7,6);
     expect(pulse_dictation_live_begin()==1,"readable input supports live insertion");
@@ -103,9 +105,34 @@ int main(void) {
         pendingSince-=1;
         expect(pulse_dictation_live_step("ignored")==-1,"unacknowledged typing stops without duplicate retries");
         begin(); syncText("old"); acceptSelection=false;
+        expect(pulse_dictation_live_step("new")==0,"wait for asynchronous selection acknowledgement");
+        selectionSince-=1;
         expect(pulse_dictation_live_step("new")==-1,"ignored range selection never overwrites unrelated text");
+        begin(); syncText("old"); acceptSelection=false;
+        unsigned beforeSelection=keyboardEvents;
+        expect(pulse_dictation_live_step("new")==0 && keyboardEvents==beforeSelection,"no text posted before selection acknowledgement");
+        caret=requestedSelection; acceptSelection=true;
+        syncText("new");
+        expect([editor isEqualToString:@"Before new after"],"deferred selection completes safely");
         begin(); supportsRange=false;
         expect(pulse_dictation_live_begin()==2,"unsupported input uses preview");
+        begin(); exposesPlaceholder=true; editor=@""; caret=NSMakeRange(0,0);
+        expect(pulse_dictation_live_begin()==1,"placeholder editor supports live insertion");
+        syncText("hello placeholder editor");
+        expect([editor isEqualToString:@"hello placeholder editor"] && livePlaceholderConfirmed,"placeholder disappearance is not a user edit");
+        syncText("corrected 🌍"); emptyParagraph=true; syncText(""); syncText("again");
+        syncText("\nType here");
+        expect([editor isEqualToString:@"\nType here"],"dictated text matching placeholder must remain real text");
+        syncText("again");
+        expect([editor isEqualToString:@"again"],"empty corrections and placeholder reappearance are supported");
+        begin(); exposesPlaceholder=phantomPlaceholderCaret=true; editor=@""; caret=NSMakeRange(0,0);
+        expect(pulse_dictation_live_begin()==1,"phantom placeholder caret remains readable");
+        syncText("rich editor"); syncText(""); syncText("again");
+        expect([editor isEqualToString:@"again"],"placeholder caret offsets do not break rich editors");
+        begin(); exposesPlaceholder=true; editor=@"\nType here"; caret=NSMakeRange(0,0);
+        expect(pulse_dictation_live_begin()==1,"label-like real text is a candidate only");
+        syncText("prefix ");
+        expect([editor isEqualToString:@"prefix \nType here"] && !livePlaceholderConfirmed,"never discard real text matching an input label");
         expect(clipboardWrites==0,"ALL input paths preserve clipboard");
         focused=false;
         expect(pulse_dictation_live_begin()==0,"no selected input uses bottom preview");

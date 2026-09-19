@@ -8,7 +8,7 @@ const bars=[];
 let barStart;
 const drawing={setTransform(){},clearRect(){bars.length=0;},beginPath(){},moveTo(x,y){barStart=y;},lineTo(x,y){this.amplitude=y-barStart;},stroke(){bars.push({height:this.amplitude,alpha:this.globalAlpha});}};
 nodes['#waveform'].getContext = () => drawing;
-Object.assign(nodes['#waveform'],{clientWidth:104,clientHeight:32});
+Object.assign(nodes['#waveform'],{clientWidth:88,clientHeight:28});
 let resolveSnapshot;
 const calls = [];
 const invoke = (name,args) => {
@@ -42,6 +42,7 @@ sandbox.render({id:4,phase:'listening',inline:true,text:'Live words',target:{x:2
 assert.equal(body.style['--anchor-x'],'500px','pill centered across original field');
 assert.equal(body.style['--anchor-bottom'],'258px');
 assert.equal(body.dataset.inline,'true');
+assert.equal(body.dataset.placing,'false','initial positioning completes before showing the overlay');
 sandbox.render({id:4,phase:'listening',inline:true,text:'More words',target:{x:200,y:570,width:600,height:140}});
 assert.equal(body.style['--anchor-x'],'500px');
 assert.equal(body.style['--anchor-bottom'],'338px','pill follows expanding field top edge');
@@ -52,8 +53,8 @@ console.log('PASS: field centering, growing-input positioning, standalone output
 
 sandbox.render({id:6,phase:'listening',samples:1,level:.12});
 sandbox.drawWave(100);
-assert.equal(bars.length,15);
-assert.ok(bars[7].height>bars[0].height*2 && bars[7].alpha>bars[0].alpha,'voice peaks and opacity are strongest at center');
+assert.equal(bars.length,13);
+assert.ok(bars[6].height>bars[0].height*2 && bars[6].alpha>bars[0].alpha,'voice peaks and opacity are strongest at center');
 sandbox.render({id:7,phase:'listening',samples:1,level:0,levels:[1,1,1]});
 sandbox.drawWave(100);
 assert.ok(bars.every(bar=>bar.height===1.5),'old loud history cannot move a silent live waveform');

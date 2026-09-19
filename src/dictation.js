@@ -15,7 +15,9 @@ function setText(value, instant = false) {
 }
 export function render(next) {
   if (next.id !== undefined && id !== undefined && next.id < id) return;
-  if (next.id !== undefined && next.id !== id) {
+  const freshSession = next.id !== undefined && next.id !== id;
+  if (freshSession) {
+    body.dataset.placing = "true";
     generation++;
     id = next.id; shown = desired = ""; words.textContent = ""; lastSamples = 0;
     body.dataset.expanded = "false"; voice = 0;
@@ -26,9 +28,9 @@ export function render(next) {
   body.dataset.anchored = String(!!next.target);
   if (next.target) {
     const field = next.target;
-    const halfWidth = next.inline ? 52 : Math.min(210, (innerWidth - 32) / 2);
+    const halfWidth = next.inline ? 44 : Math.min(210, (innerWidth - 32) / 2);
     const x = Math.max(halfWidth + 16, Math.min(innerWidth - halfWidth - 16, field.x + field.width / 2));
-    const maxHeight = next.inline || !next.text ? 32 : 164;
+    const maxHeight = next.inline || !next.text ? 28 : 164;
     let bottom = innerHeight - field.y + 8;
     if (field.y < maxHeight + 24) bottom = innerHeight - field.y - field.height - 8 - maxHeight;
     bottom = Math.max(16, Math.min(innerHeight - maxHeight - 16, bottom));
@@ -41,6 +43,12 @@ export function render(next) {
   if (next.text) body.dataset.expanded = "true";
   body.dataset.phase = next.phase;
   status.textContent = next.phase === "error" ? next.message || "" : "";
+  if (freshSession) {
+    // Resolve the new field position with movement disabled before showing.
+    // Subsequent bounds changes may animate, but a session never flies in.
+    void body.offsetHeight;
+    body.dataset.placing = "false";
+  }
   if (invoke && next.id !== undefined && shownSession !== next.id && ["listening", "finalizing", "error"].includes(next.phase)) {
     shownSession = next.id;
     // Reset the DOM before showing a reused webview. Do not wait for an
@@ -70,15 +78,15 @@ function drawWave(now) {
   context.strokeStyle = getComputedStyle(body).getPropertyValue("--wave"); context.lineWidth = 3; context.lineCap = "round";
   // Only the current microphone level drives the wave; there is no history.
   const level = now - waveTime < 220 ? Math.max(0, snapshot.level ?? snapshot.levels?.at(-1) ?? 0) : 0;
-  const target = Math.min(1, Math.sqrt(level) * 3);
+  const target = Math.min(1, Math.sqrt(level) * 4.2);
   const elapsed = Math.min(64, Math.max(1, now - lastFrame)); lastFrame = now;
   voice += (target - voice) * (1 - Math.exp(-elapsed / (target > voice ? 45 : 130)));
-  const count = 15, step = 6, center = (count - 1) / 2;
+  const count = 13, step = 5, center = (count - 1) / 2;
   for (let i = 0; i < count; i++) {
     const distance = Math.abs(i - center) / (center + 1);
     const envelope = Math.cos(distance * Math.PI / 2) ** 1.8;
-    const movement = reducedMotion.matches ? 1 : .84 + .16 * Math.cos(now * .009 + distance * 7);
-    const amplitude = 1.5 + voice * envelope * movement * (height - 12);
+    const movement = reducedMotion.matches ? 1 : .72 + .28 * Math.cos(now * .014 + i * 1.9);
+    const amplitude = 1.5 + voice * envelope * movement * (height - 7);
     const x = width / 2 + (i - center) * step;
     context.globalAlpha = .12 + .88 * envelope;
     context.beginPath(); context.moveTo(x,height/2-amplitude/2); context.lineTo(x,height/2+amplitude/2); context.stroke();

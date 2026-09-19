@@ -208,18 +208,42 @@ static NSString *liveBase, *liveApplied, *liveExpected, *pendingText, *pendingVa
 static NSRange liveOriginal, liveSelection, pendingSelection;
 static CFTimeInterval pendingSince;
 static bool liveUsable, liveStarted;
+static NSString *livePlaceholderCandidate;
+static bool livePlaceholderConfirmed;
+static bool liveSelecting;
+static NSRange requestedSelection;
+static CFTimeInterval selectionSince;
+static bool emptyDisplayValue(NSString *raw) {
+    bool expectingEmpty = pendingValue ? pendingValue.length == 0 : liveExpected.length == 0;
+    if (liveBase.length || !(liveStarted || livePlaceholderConfirmed) || !expectingEmpty) return false;
+    return (livePlaceholderConfirmed && [raw isEqualToString:livePlaceholderCandidate]) ||
+        [raw stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet].length == 0;
+}
 static bool readSelection(AXUIElementRef element, NSRange *range) {
     CFTypeRef value = attribute(element, kAXSelectedTextRangeAttribute);
     CFRange selected;
     bool ok = value && CFGetTypeID(value) == AXValueGetTypeID() &&
         AXValueGetValue(value, kAXValueCFRangeType, &selected) && selected.location >= 0 && selected.length >= 0;
-    if (ok) *range = NSMakeRange((NSUInteger)selected.location, (NSUInteger)selected.length);
+    if (ok) {
+        *range = NSMakeRange((NSUInteger)selected.location, (NSUInteger)selected.length);
+        if (!range->length) {
+            CFTypeRef raw=attribute(element,kAXValueAttribute);
+            if (raw && CFGetTypeID(raw)==CFStringGetTypeID() && range->location <= [(__bridge NSString *)raw length] && emptyDisplayValue((__bridge NSString *)raw)) *range=NSMakeRange(0,0);
+            if (raw) CFRelease(raw);
+        }
+    }
     if (value) CFRelease(value);
     return ok;
 }
 static NSString *readText(AXUIElementRef element) {
     CFTypeRef value = attribute(element, kAXValueAttribute);
-    if (value && CFGetTypeID(value) == CFStringGetTypeID()) return CFBridgingRelease(value);
+    if (value && CFGetTypeID(value) == CFStringGetTypeID()) {
+        NSString *text = CFBridgingRelease(value);
+        NSRange selected;
+        if (emptyDisplayValue(text) &&
+            readSelection(element,&selected) && NSEqualRanges(selected,NSMakeRange(0,0))) return @"";
+        return text;
+    }
     if (value) CFRelease(value);
     return nil;
 }
@@ -234,6 +258,7 @@ void pulse_dictation_clear_target(void) {
     deliveryElement = NULL; deliveryPID = 0;
     liveBase = liveApplied = liveExpected = pendingText = pendingValue = nil;
     liveUsable = false; liveStarted = false; liveInterrupted = false;
+    livePlaceholderCandidate=nil; livePlaceholderConfirmed=false; liveSelecting=false;
 }
 // 0 = no input, 1 = safely readable/replaceable input, 2 = unsupported input.
 int pulse_dictation_live_begin(void) {
@@ -252,6 +277,10 @@ int pulse_dictation_live_begin(void) {
     liveUsable = rangeSettable && liveBase && readSelection(element,&liveOriginal) &&
         liveOriginal.location <= liveBase.length && liveOriginal.length <= liveBase.length-liveOriginal.location;
     if (!liveUsable) return 2;
+    // Web placeholders can be included in AXValue AND AX caret offsets.
+    // Keep the original content until a real edit proves it was display-only:
+    // the entire resulting document must equal precisely our inserted text.
+    if (liveBase.length && !liveOriginal.length) livePlaceholderCandidate=liveBase;
     liveExpected = liveBase; liveApplied = @""; liveSelection = liveOriginal;
     return 1;
 }
@@ -274,8 +303,7 @@ static bool selectOwnedRange(NSRange selection) {
     AXValueRef value = AXValueCreate(kAXValueCFRangeType,&range);
     AXError result = AXUIElementSetAttributeValue(deliveryElement,kAXSelectedTextRangeAttribute,value);
     CFRelease(value);
-    NSRange actual;
-    return result == kAXErrorSuccess && readSelection(deliveryElement,&actual) && NSEqualRanges(actual,selection);
+    return result == kAXErrorSuccess;
 }
 static bool typeUnicode(NSString *text) {
     CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStatePrivate);
@@ -308,7 +336,20 @@ int pulse_dictation_live_step(const char *utf8) {
     NSString *actual = readText(deliveryElement);
     NSRange selection;
     if (!actual || !readSelection(deliveryElement,&selection)) { liveUsable=false; return -1; }
+    if (liveSelecting) {
+        if (![actual isEqualToString:liveExpected]) { liveUsable=false; return -1; }
+        if (NSEqualRanges(selection,requestedSelection)) { liveSelection=selection; liveSelecting=false; }
+        else if (NSEqualRanges(selection,liveSelection) && CFAbsoluteTimeGetCurrent()-selectionSince < 0.8) return 0;
+        else { liveUsable=false; return -1; }
+    }
     if (pendingValue) {
+        if (!liveStarted && livePlaceholderCandidate && [actual isEqualToString:pendingText] &&
+            NSEqualRanges(selection,NSMakeRange(pendingText.length,0))) {
+            // The editor removed its placeholder, not user content. Rebase the
+            // owned range to the verified empty document without typing twice.
+            livePlaceholderConfirmed=true; liveBase=@""; liveExpected=@""; pendingValue=pendingText;
+            liveOriginal=NSMakeRange(0,0); pendingSelection=selection;
+        }
         if ([actual isEqualToString:pendingValue] && NSEqualRanges(selection,pendingSelection)) {
             liveApplied=pendingText; liveExpected=pendingValue; liveSelection=pendingSelection; liveStarted=true;
             pendingText=pendingValue=nil;
@@ -333,7 +374,10 @@ int pulse_dictation_live_step(const char *utf8) {
     NSRange replace = liveStarted ? NSMakeRange(liveOriginal.location+common,liveApplied.length-common) : liveOriginal;
     if (!NSEqualRanges(replace,selection)) {
         if (!selectOwnedRange(replace)) { liveUsable=false; return -1; }
-        liveSelection=replace;
+        requestedSelection=replace; selectionSince=CFAbsoluteTimeGetCurrent(); liveSelecting=true;
+        // AX writes may be acknowledged before the editor updates its range.
+        // Read it back on the next tick; never type into an unconfirmed range.
+        return 0;
     }
     // Revalidate content and focus after selecting, before posting input.
     if (liveInterrupted || !sameInput() || ![readText(deliveryElement) isEqualToString:liveExpected]) { liveUsable=false; return -1; }
