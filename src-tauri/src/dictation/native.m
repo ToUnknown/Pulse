@@ -9,7 +9,9 @@
 // callback runs on the audio thread; its buffers are copied before returning.
 static AVAudioEngine *engine;
 static AXUIElementRef deliveryElement;
-static CFTypeRef deliveryRange;
+static const int64_t PulseDictationEventTag = 0x50554c5345444943;
+static bool liveInterrupted;
+static bool sameInput(void);
 static pid_t deliveryPID;
 static bool tapInstalled;
 typedef void (*PulseAudio)(uint64_t, const uint8_t *, size_t, float);
@@ -29,6 +31,9 @@ bool pulse_dictation_right_option_down(void) {
 }
 static void PulseDictationShortcutEvent(NSEvent *event) {
     if (!shortcutCallback) return;
+    CGEventRef cgEvent = event.CGEvent;
+    if (cgEvent && CGEventGetIntegerValueField(cgEvent,kCGEventSourceUserData) == PulseDictationEventTag) return;
+    if (deliveryElement && event.type == NSEventTypeKeyDown && sameInput()) liveInterrupted = true;
     NSEventModifierFlags flags = event.modifierFlags;
     // Device-specific bits distinguish the two Option keys, including when
     // both are held. The ordinary Option flag merges them and is insufficient.
@@ -196,64 +201,161 @@ static bool editable(AXUIElementRef element) {
     if (readOnly) CFRelease(readOnly);
     return valid;
 }
+// Delivery never uses the pasteboard when an input was selected. Unicode key
+// events exercise web editors' normal input path; AX only reads and selects the
+// exact range owned by this dictation. Every asynchronous write is read back.
+static NSString *liveBase, *liveApplied, *liveExpected, *pendingText, *pendingValue;
+static NSRange liveOriginal, liveSelection, pendingSelection;
+static CFTimeInterval pendingSince;
+static bool liveUsable, liveStarted;
+static bool readSelection(AXUIElementRef element, NSRange *range) {
+    CFTypeRef value = attribute(element, kAXSelectedTextRangeAttribute);
+    CFRange selected;
+    bool ok = value && CFGetTypeID(value) == AXValueGetTypeID() &&
+        AXValueGetValue(value, kAXValueCFRangeType, &selected) && selected.location >= 0 && selected.length >= 0;
+    if (ok) *range = NSMakeRange((NSUInteger)selected.location, (NSUInteger)selected.length);
+    if (value) CFRelease(value);
+    return ok;
+}
+static NSString *readText(AXUIElementRef element) {
+    CFTypeRef value = attribute(element, kAXValueAttribute);
+    if (value && CFGetTypeID(value) == CFStringGetTypeID()) return CFBridgingRelease(value);
+    if (value) CFRelease(value);
+    return nil;
+}
+static bool textInput(AXUIElementRef element) {
+    CFTypeRef role = attribute(element, kAXRoleAttribute);
+    bool result = role && (CFEqual(role,kAXTextFieldRole) || CFEqual(role,kAXTextAreaRole) || CFEqual(role,kAXComboBoxRole));
+    if (role) CFRelease(role);
+    return result;
+}
 void pulse_dictation_clear_target(void) {
     if (deliveryElement) CFRelease(deliveryElement);
-    if (deliveryRange) CFRelease(deliveryRange);
-    deliveryElement = NULL; deliveryRange = NULL; deliveryPID = 0;
+    deliveryElement = NULL; deliveryPID = 0;
+    liveBase = liveApplied = liveExpected = pendingText = pendingValue = nil;
+    liveUsable = false; liveStarted = false; liveInterrupted = false;
 }
-// CGRect output is in global top-left desktop points (not backing pixels).
-bool pulse_dictation_target(double *x, double *y, double *width, double *height) {
+// 0 = no input, 1 = safely readable/replaceable input, 2 = unsupported input.
+int pulse_dictation_live_begin(void) {
     pulse_dictation_clear_target();
     AXUIElementRef element = focusedElement();
-    if (!element) return false;
-    AXUIElementSetMessagingTimeout(element, 0.25);
-    if (!editable(element)) { CFRelease(element); return false; }
+    if (!element) return 0;
+    bool isInput = textInput(element) || editable(element);
+    if (!isInput) { CFRelease(element); return 0; }
     deliveryElement = element;
+    AXUIElementSetMessagingTimeout(element, 0.08);
     AXUIElementGetPid(element, &deliveryPID);
-    deliveryRange = attribute(element, kAXSelectedTextRangeAttribute);
-    CGRect rect = CGRectZero;
-    CFTypeRef bounds = NULL;
-    bool hasBounds = deliveryRange && AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute, deliveryRange, &bounds) == kAXErrorSuccess
-        && bounds && CFGetTypeID(bounds) == AXValueGetTypeID() && AXValueGetValue(bounds, kAXValueCGRectType, &rect);
-    if (bounds) CFRelease(bounds);
-    if (!hasBounds || rect.size.height <= 0) hasBounds = elementBounds(element, &rect);
-    if (hasBounds) { *x = rect.origin.x; *y = rect.origin.y; *width = MAX(2, rect.size.width); *height = MAX(18, rect.size.height); }
-    return hasBounds;
+    if (!editable(element)) return 2;
+    Boolean rangeSettable = false;
+    AXUIElementIsAttributeSettable(element,kAXSelectedTextRangeAttribute,&rangeSettable);
+    liveBase = readText(element);
+    liveUsable = rangeSettable && liveBase && readSelection(element,&liveOriginal) &&
+        liveOriginal.location <= liveBase.length && liveOriginal.length <= liveBase.length-liveOriginal.location;
+    if (!liveUsable) return 2;
+    liveExpected = liveBase; liveApplied = @""; liveSelection = liveOriginal;
+    return 1;
 }
-// 2 = clipboard, 3 = standard paste dispatched with clipboard backup.
-// Web editors can acknowledge AXSelectedText writes without updating their
-// document. Use the normal paste pipeline so their input handlers run.
-int pulse_dictation_deliver(const char *utf8) {
-    NSString *text = [NSString stringWithUTF8String:utf8];
-    if (!text.length) return 0;
+// Global top-left coordinates. Prefer the input's upper edge, not the caret.
+bool pulse_dictation_live_bounds(double *x, double *y, double *width, double *height) {
+    CGRect rect;
+    if (!deliveryElement || !elementBounds(deliveryElement,&rect) || rect.size.width <= 0 || rect.size.height <= 0) return false;
+    *x=rect.origin.x; *y=rect.origin.y; *width=rect.size.width; *height=rect.size.height;
+    return true;
+}
+static bool sameInput(void) {
     AXUIElementRef focused = focusedElement();
-    CFTypeRef range = focused ? attribute(focused, kAXSelectedTextRangeAttribute) : NULL;
-    bool same = focused && deliveryElement && CFEqual(focused, deliveryElement)
-        && NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID
-        && (!deliveryRange || (range && CFEqual(range, deliveryRange))) && editable(focused);
-    if (range) CFRelease(range);
+    bool same = focused && deliveryElement && CFEqual(focused,deliveryElement) &&
+        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID && editable(focused);
     if (focused) CFRelease(focused);
-    NSPasteboard *board = NSPasteboard.generalPasteboard;
-    [board clearContents];
-    if (![board setString:text forType:NSPasteboardTypeString]) { pulse_dictation_clear_target(); return 0; }
-    if (same) {
-        CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStatePrivate);
-        CGEventRef down = source ? CGEventCreateKeyboardEvent(source, 9, true) : NULL;
-        CGEventRef up = source ? CGEventCreateKeyboardEvent(source, 9, false) : NULL;
-        bool sent = down && up;
-        if (sent) {
-            CGEventSetFlags(down, kCGEventFlagMaskCommand); CGEventSetFlags(up, kCGEventFlagMaskCommand);
-            CGEventPost(kCGHIDEventTap, down); CGEventPost(kCGHIDEventTap, up);
-        }
-        if (down) CFRelease(down);
-        if (up) CFRelease(up);
-        if (source) CFRelease(source);
-        pulse_dictation_clear_target(); return sent ? 3 : 2;
-    }
-    pulse_dictation_clear_target(); return 2;
+    return same;
 }
-// Cover the target's screen without becoming key. A full transparent canvas
-// lets the transcript travel to the caret without moving a focused window.
+static bool selectOwnedRange(NSRange selection) {
+    CFRange range = CFRangeMake(selection.location,selection.length);
+    AXValueRef value = AXValueCreate(kAXValueCFRangeType,&range);
+    AXError result = AXUIElementSetAttributeValue(deliveryElement,kAXSelectedTextRangeAttribute,value);
+    CFRelease(value);
+    NSRange actual;
+    return result == kAXErrorSuccess && readSelection(deliveryElement,&actual) && NSEqualRanges(actual,selection);
+}
+static bool typeUnicode(NSString *text) {
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStatePrivate);
+    // Empty replacement deletes only our explicitly selected suffix.
+    CGKeyCode key = text.length ? 0 : 0x33;
+    CGEventRef down = source ? CGEventCreateKeyboardEvent(source,key,true) : NULL;
+    CGEventRef up = source ? CGEventCreateKeyboardEvent(source,key,false) : NULL;
+    if (down && up) {
+        if (text.length) {
+            UniChar characters[text.length];
+            [text getCharacters:characters range:NSMakeRange(0,text.length)];
+            CGEventKeyboardSetUnicodeString(down,text.length,characters);
+            CGEventKeyboardSetUnicodeString(up,text.length,characters);
+        }
+        CGEventSetFlags(down,0); CGEventSetFlags(up,0);
+        CGEventSetIntegerValueField(down,kCGEventSourceUserData,PulseDictationEventTag);
+        CGEventSetIntegerValueField(up,kCGEventSourceUserData,PulseDictationEventTag);
+        CGEventPost(kCGHIDEventTap,down); CGEventPost(kCGHIDEventTap,up);
+    }
+    bool sent = down && up;
+    if (down) CFRelease(down);
+    if (up) CFRelease(up);
+    if (source) CFRelease(source);
+    return sent;
+}
+// -1 = unsafe to continue, 0 = pending, 1 = synced, 2 = original input unfocused.
+int pulse_dictation_live_step(const char *utf8) {
+    if (!liveUsable || liveInterrupted) { liveUsable=false; return -1; }
+    if (!sameInput()) return 2; // Pin the session; never follow focus to a new input.
+    NSString *actual = readText(deliveryElement);
+    NSRange selection;
+    if (!actual || !readSelection(deliveryElement,&selection)) { liveUsable=false; return -1; }
+    if (pendingValue) {
+        if ([actual isEqualToString:pendingValue] && NSEqualRanges(selection,pendingSelection)) {
+            liveApplied=pendingText; liveExpected=pendingValue; liveSelection=pendingSelection; liveStarted=true;
+            pendingText=pendingValue=nil;
+        } else if (([actual isEqualToString:liveExpected] || [actual isEqualToString:pendingValue]) &&
+                   (NSEqualRanges(selection,liveSelection) || NSEqualRanges(selection,pendingSelection)) &&
+                   CFAbsoluteTimeGetCurrent()-pendingSince < 0.8) {
+            return 0;
+        } else { liveUsable=false; return -1; }
+    }
+    if (![actual isEqualToString:liveExpected] || !NSEqualRanges(selection,liveSelection)) { liveUsable=false; return -1; }
+    NSString *desired = [NSString stringWithUTF8String:utf8];
+    if (!desired) { liveUsable=false; return -1; }
+    if ([desired isEqualToString:liveApplied]) return 1;
+    NSUInteger common = 0, limit = MIN(desired.length,liveApplied.length);
+    while (common < limit && [desired characterAtIndex:common] == [liveApplied characterAtIndex:common]) common++;
+    // Do not split a surrogate pair, combining sequence, or emoji family.
+    if (common < liveApplied.length) common = MIN(common,[liveApplied rangeOfComposedCharacterSequenceAtIndex:common].location);
+    if (common < desired.length) common = MIN(common,[desired rangeOfComposedCharacterSequenceAtIndex:common].location);
+    NSUInteger end = MIN(desired.length,common+12);
+    if (end < desired.length) end = NSMaxRange([desired rangeOfComposedCharacterSequenceAtIndex:end-1]);
+    NSString *next = [desired substringToIndex:end];
+    NSRange replace = liveStarted ? NSMakeRange(liveOriginal.location+common,liveApplied.length-common) : liveOriginal;
+    if (!NSEqualRanges(replace,selection)) {
+        if (!selectOwnedRange(replace)) { liveUsable=false; return -1; }
+        liveSelection=replace;
+    }
+    // Revalidate content and focus after selecting, before posting input.
+    if (liveInterrupted || !sameInput() || ![readText(deliveryElement) isEqualToString:liveExpected]) { liveUsable=false; return -1; }
+    NSString *fragment = [next substringFromIndex:common];
+    if (!typeUnicode(fragment)) { liveUsable=false; return -1; }
+    pendingText=next;
+    pendingValue=[liveBase stringByReplacingCharactersInRange:liveOriginal withString:next];
+    pendingSelection=NSMakeRange(liveOriginal.location+next.length,0);
+    pendingSince=CFAbsoluteTimeGetCurrent();
+    return 0;
+}
+// Called only for a session that started with no input selected.
+bool pulse_dictation_copy(const char *utf8) {
+    NSString *text=[NSString stringWithUTF8String:utf8];
+    if (!text.length) return false;
+    NSPasteboard *board=NSPasteboard.generalPasteboard;
+    [board clearContents];
+    return [board setString:text forType:NSPasteboardTypeString];
+}
+
+// Cover the target screen without becoming key so the pill can sit above
+// the input while the original app keeps keyboard focus.
 void pulse_dictation_position(void *pointer, double *originX, double *originY, double *bottom) {
     NSWindow *window = (__bridge NSWindow *)pointer;
     NSScreen *chosen = nil;
