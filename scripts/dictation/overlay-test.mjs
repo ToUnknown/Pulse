@@ -35,10 +35,11 @@ const invoke = (name,args) => {
   return name === 'dictation_snapshot' ? new Promise(resolve=>{resolveSnapshot=resolve;}) : Promise.resolve(name === 'dictation_glass');
 };
 const motionPreference = {matches:false};
+const themePreference = {matches:false};
 const sandbox = vm.createContext({
   window:{__TAURI__:{core:{invoke}}},
   document:{body,querySelector:id=>nodes[id],createElement:element},
-  matchMedia:()=>motionPreference,
+  matchMedia:query=>query.includes("color-scheme")?themePreference:motionPreference,
   requestAnimationFrame(){},setTimeout(){},performance:{now:()=>0},innerWidth:1440,innerHeight:900,devicePixelRatio:1, getComputedStyle:element=>({opacity:element===nodes["#dictation"]?overlayOpacity:"1",getPropertyValue:()=>"#303237"}),
 });
 vm.runInContext(readFileSync(new URL('../../src/dictation.js',import.meta.url),'utf8').replace('export function render','function render'),sandbox);
@@ -136,3 +137,14 @@ assert.equal(nodes['#words'].style.transform,'translateY(0px)','reduced motion s
 sandbox.window.pulseDictationStart(11,28);
 assert.equal(nodes['#text-viewport'].style.height,'0px','fresh recording clears the previous height');
 console.log('PASS: partial-word identity, continuous growth, shared overflow, reduced motion and session layout reset');
+
+await sandbox.syncGlass();
+const themeCalls = calls.length;
+themePreference.matches = true;
+await sandbox.syncGlass();
+assert.equal(calls.length,themeCalls+1,'theme change updates native glass even if geometry is unchanged');
+assert.equal(calls.at(-1).args.darkMode,true);
+themePreference.matches = false;
+await sandbox.syncGlass();
+assert.equal(calls.at(-1).args.darkMode,false);
+console.log('PASS: native glass tracks appearance changes without geometry changes');

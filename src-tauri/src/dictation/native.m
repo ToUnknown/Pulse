@@ -428,7 +428,7 @@ void pulse_dictation_position(void *pointer, double *bottom) {
 }
 
 // Back the bordered transcript box with the native desktop material.
-void pulse_dictation_transcript_blur(void *pointer, double x, double y, double width, double height, double opacity) {
+void pulse_dictation_transcript_blur(void *pointer, double x, double y, double width, double height, double opacity, bool darkMode) {
     NSWindow *window=(__bridge NSWindow *)pointer;
     NSView *host=window.contentView;
     if (!host) return;
@@ -445,6 +445,7 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
         [host addSubview:blur positioned:NSWindowBelow relativeTo:nil];
         objc_setAssociatedObject(window,&blurKey,blur,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    blur.appearance=[NSAppearance appearanceNamed:darkMode ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
     blur.hidden=opacity<=0 || width<=0 || height<=0;
     if (blur.hidden) return;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -456,7 +457,7 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
 
 // Native material sits under the transparent WKWebView. DOM-measured geometry
 // keeps the glass aligned with the bars through placement and pill morphs.
-bool pulse_dictation_glass(void *pointer, double x, double y, double width, double height, double opacity) {
+bool pulse_dictation_glass(void *pointer, double x, double y, double width, double height, double opacity, bool darkMode) {
     NSWindow *window=(__bridge NSWindow *)pointer;
     NSView *host=window.contentView;
     if (!host) return false;
@@ -481,11 +482,17 @@ bool pulse_dictation_glass(void *pointer, double x, double y, double width, doub
             effect.layer.masksToBounds=YES;
             glass=effect;
         }
-        // Use a light material in both appearances so charcoal bars stay legible.
-        glass.appearance=[NSAppearance appearanceNamed:NSAppearanceNameAqua];
         [host addSubview:glass positioned:NSWindowBelow relativeTo:nil];
         objc_setAssociatedObject(window,&glassKey,glass,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    // Use the inverse appearance, matching the CSS surface and waveform colors.
+    glass.appearance=[NSAppearance appearanceNamed:darkMode ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+    if (@available(macOS 26.0, *)) {
+        if ([glass isKindOfClass:NSGlassEffectView.class])
+            ((NSGlassEffectView *)glass).tintColor=[NSColor colorWithWhite:darkMode ? 1.0 : 0.0 alpha:0.8];
+    }
+#endif
     glass.hidden=opacity<=0 || width<=0 || height<=0;
     if (glass.hidden) return true;
     CGFloat nativeY=host.isFlipped ? y : NSHeight(host.bounds)-y-height;

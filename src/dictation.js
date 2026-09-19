@@ -7,6 +7,7 @@ const overlay = document.querySelector("#dictation");
 const transcript = document.querySelector("#transcript");
 const textViewport = document.querySelector("#text-viewport");
 const context = canvas.getContext("2d");
+const darkMode = matchMedia("(prefers-color-scheme: dark)");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
 let shown = "", id, lastSamples = 0, waveTime = 0;
@@ -49,10 +50,10 @@ async function syncGlass() {
   const textRect = transcript.getBoundingClientRect();
   const textFrame = { x: textRect.x, y: textRect.y, width: textRect.width, height: textRect.height,
     opacity: visible ? Number(getComputedStyle(transcript).opacity) * Number(getComputedStyle(overlay).opacity) : 0 };
-  const signature = JSON.stringify([sessionId, ...[...Object.values(frame), ...Object.values(textFrame)].map(value => Math.round(value * 100) / 100)]);
+  const signature = JSON.stringify([sessionId, darkMode.matches, ...[...Object.values(frame), ...Object.values(textFrame)].map(value => Math.round(value * 100) / 100)]);
   if (signature === lastGlass) return;
   try {
-    const available = await invoke("dictation_glass", { sessionId, frame, transcript: textFrame });
+    const available = await invoke("dictation_glass", { sessionId, frame, transcript: textFrame, darkMode: darkMode.matches });
     if (id === sessionId) {
       lastGlass = signature;
       body.dataset.nativeGlass = String(!!available);
@@ -183,7 +184,7 @@ function drawWave(now) {
     const movement = reducedMotion.matches ? 1 : .72 + .28 * Math.cos(now * .014 + i * 1.9);
     const amplitude = 1.5 + voice * envelope * movement * (height - 7);
     const x = width / 2 + (i - center) * step;
-    context.globalAlpha = .12 + .88 * envelope;
+    context.globalAlpha = .3 + .7 * envelope;
     context.beginPath(); context.moveTo(x,height/2-amplitude/2); context.lineTo(x,height/2+amplitude/2); context.stroke();
   }
   context.globalAlpha = 1;

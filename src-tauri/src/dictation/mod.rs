@@ -51,6 +51,7 @@ extern "C" {
         width: f64,
         height: f64,
         opacity: f64,
+        dark_mode: bool,
     );
     fn pulse_dictation_glass(
         window: *mut c_void,
@@ -59,6 +60,7 @@ extern "C" {
         width: f64,
         height: f64,
         opacity: f64,
+        dark_mode: bool,
     ) -> bool;
 }
 struct Session {
@@ -285,6 +287,7 @@ pub async fn dictation_glass(
     session_id: u64,
     frame: GlassFrame,
     transcript: GlassFrame,
+    dark_mode: bool,
 ) -> Result<bool, String> {
     if window.label() != WINDOW {
         return Err("This is only available to the dictation overlay.".into());
@@ -336,6 +339,7 @@ pub async fn dictation_glass(
                 transcript.width,
                 transcript.height,
                 transcript.opacity,
+                dark_mode,
             );
             pulse_dictation_glass(
                 pointer,
@@ -344,6 +348,7 @@ pub async fn dictation_glass(
                 frame.width,
                 frame.height,
                 frame.opacity,
+                dark_mode,
             )
         })
     })

@@ -1,4 +1,4 @@
-:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #101012; --paper: rgba(253,253,253,.94); --panel-border: rgba(0,0,0,.24); --line: rgba(0,0,0,.07); --wave: #303237; --bottom: 28px; }
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #ffffff; --paper: rgba(16,16,18,.96); --surface: #101012; --pill-tint: rgba(16,16,18,.78); --panel-border: rgba(255,255,255,.28); --line: rgba(255,255,255,.28); --wave: #ffffff; --bottom: 28px; }
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; pointer-events: none; }
 #dictation { position: absolute; bottom: var(--bottom); left: 50%; width: min(320px, calc(100vw - 32px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; transition: opacity .22s ease, transform .28s cubic-bezier(.22,.8,.25,1); }
@@ -14,9 +14,10 @@ body[data-expanded="true"]:is([data-phase="listening"],[data-phase="finalizing"]
 .new-word { animation: word-arrive .34s cubic-bezier(.2,.7,.3,1) both; }
 @keyframes word-arrive { from { opacity: .2; filter: blur(1.5px); } to { opacity: 1; filter: blur(0); } }
 body:is([data-phase="done"],[data-phase="error"],[data-phase="idle"]) #transcript { transition-duration: .2s; }
-#waveform-shell { position: relative; flex: none; width: 64px; height: 28px; border-radius: 16px; border: 1px solid rgba(255,255,255,.72); background: linear-gradient(165deg,rgba(255,255,255,.78),rgba(239,243,249,.46) 55%,rgba(255,255,255,.64)); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: inset 0 1px 0 rgba(255,255,255,.92), inset 0 -1px 0 rgba(96,111,131,.16), 0 2px 6px rgba(30,40,55,.10); overflow: hidden; transition: width .32s cubic-bezier(.22,.8,.25,1), height .32s ease, border-radius .32s ease; }
-/* The native material samples the desktop behind the transparent window. */
-body[data-native-glass="true"] #waveform-shell { background: transparent; border-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+#waveform-shell { position: relative; flex: none; width: 64px; height: 28px; border-radius: 16px; border: 1px solid var(--panel-border); background: var(--pill-tint); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), inset 0 -1px 0 rgba(0,0,0,.16), 0 2px 6px rgba(30,40,55,.10); overflow: hidden; transition: width .32s cubic-bezier(.22,.8,.25,1), height .32s ease, border-radius .32s ease; }
+/* Preserve the native refracting rim; a center tint keeps the bars readable
+   even when clear glass samples content with the opposite brightness. */
+body[data-native-glass="true"] #waveform-shell { background: var(--pill-tint); border-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 
 
 #waveform { width: 100%; height: 100%; display: block; transition: opacity .14s; }
@@ -26,7 +27,7 @@ body:is([data-phase="finalizing"],[data-phase="sending"],[data-phase="done"]) #w
 body:not([data-phase="listening"]) #waveform { opacity: 0; }
 body:is([data-phase="finalizing"],[data-phase="sending"]) #spinner { opacity: 1; }
 body[data-phase="error"] #waveform-shell { display: none; }
-@media (prefers-color-scheme: dark) { :root { --ink: #ffffff; --paper: rgba(24,24,27,.94); --panel-border: rgba(255,255,255,.3); --line: rgba(255,255,255,.1); --wave: #303237; } }
+@media (prefers-color-scheme: dark) { :root { --ink: #101012; --paper: rgba(253,253,253,.96); --surface: #fdfdfd; --pill-tint: rgba(253,253,253,.84); --panel-border: rgba(0,0,0,.24); --line: rgba(0,0,0,.24); --wave: #101012; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; transition-delay: 0ms !important; } }
 
 body[data-placing="true"] #dictation, body[data-placing="true"] #transcript, body[data-placing="true"] #text-viewport { transition: none; }
@@ -40,4 +41,4 @@ body[data-phase="listening"][data-placing="false"] #waveform-shell { animation: 
   100% { width: 64px; opacity: 1; }
 }
 
-@media (prefers-reduced-transparency: reduce) { #transcript { background: var(--paper); } #waveform-shell { background: #f1f3f6; -webkit-backdrop-filter: none; backdrop-filter: none; } }
+@media (prefers-reduced-transparency: reduce) { #transcript { background: var(--paper); } #waveform-shell { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; } }
