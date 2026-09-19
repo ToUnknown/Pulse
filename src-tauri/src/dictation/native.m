@@ -10,7 +10,8 @@
 // All lifecycle and AX operations run on AppKit's main thread. Only the tap
 // callback runs on the audio thread; its buffers are copied before returning.
 static AVAudioEngine *engine;
-static AXUIElementRef deliveryElement, deliveryWindow;
+static AXUIElementRef deliveryElement, deliveryWindow, deliveryParent;
+static NSString *deliveryIdentity, *deliveryIdentityAttribute;
 static const int64_t PulseDictationEventTag = 0x50554c5345444943;
 static bool liveInterrupted;
 static bool sameInput(void);
@@ -281,6 +282,8 @@ static bool textInput(AXUIElementRef element) {
 void pulse_dictation_clear_target(void) {
     if (deliveryElement) CFRelease(deliveryElement);
     if (deliveryWindow) CFRelease(deliveryWindow);
+    if (deliveryParent) CFRelease(deliveryParent);
+    deliveryParent=NULL; deliveryIdentity=deliveryIdentityAttribute=nil;
     deliveryWindow=NULL; liveRecovering=false; recoverySince=lastRecoveryAttempt=0;
     deliveryElement = NULL; deliveryPID = 0;
     liveBase = liveApplied = liveExpected = pendingText = pendingValue = nil;
@@ -301,6 +304,16 @@ int pulse_dictation_live_begin(void) {
     if (window && CFGetTypeID(window)==AXUIElementGetTypeID()) deliveryWindow=(AXUIElementRef)window;
     else if (window) CFRelease(window);
     if (deliveryWindow) AXUIElementSetMessagingTimeout(deliveryWindow,0.08);
+    CFTypeRef parent=attribute(element,kAXParentAttribute);
+    if (parent && CFGetTypeID(parent)==AXUIElementGetTypeID()) deliveryParent=(AXUIElementRef)parent;
+    else if (parent) CFRelease(parent);
+    for (NSString *name in @[@"AXIdentifier", @"AXDOMIdentifier"]) {
+        CFTypeRef value=attribute(element,(__bridge CFStringRef)name);
+        if (value && CFGetTypeID(value)==CFStringGetTypeID() && CFStringGetLength(value)>0) {
+            deliveryIdentity=CFBridgingRelease(value); deliveryIdentityAttribute=name; break;
+        }
+        if (value) CFRelease(value);
+    }
     if (!editable(element)) return 2;
     Boolean rangeSettable = false;
     AXUIElementIsAttributeSettable(element,kAXSelectedTextRangeAttribute,&rangeSettable);
@@ -315,19 +328,74 @@ int pulse_dictation_live_begin(void) {
     liveExpected = liveBase; liveApplied = @""; liveSelection = liveOriginal;
     return 1;
 }
-// Global top-left coordinates. Prefer the input's upper edge, not the caret.
+// Track the caret, including wrapping/growing editors, instead of centering
+// on the entire field. Older AX implementations fall back to the field edge.
+static bool boundsForRange(NSRange range, CGRect *rect) {
+    CFRange r=CFRangeMake(range.location,range.length);
+    AXValueRef value=AXValueCreate(kAXValueCFRangeType,&r);
+    CFTypeRef result=NULL;
+    AXUIElementCopyParameterizedAttributeValue(deliveryElement,kAXBoundsForRangeParameterizedAttribute,value,&result);
+    CFRelease(value);
+    bool ok=result && CFGetTypeID(result)==AXValueGetTypeID() && AXValueGetValue(result,kAXValueCGRectType,rect) &&
+        isfinite(rect->origin.x) && isfinite(rect->origin.y) && isfinite(rect->size.width) && isfinite(rect->size.height) &&
+        rect->size.height>0 && rect->size.width>=0;
+    if (result) CFRelease(result);
+    return ok;
+}
 bool pulse_dictation_live_bounds(double *x, double *y, double *width, double *height) {
+    if (!deliveryElement) return false;
     CGRect rect;
-    if (!deliveryElement || !elementBounds(deliveryElement,&rect) || rect.size.width <= 0 || rect.size.height <= 0) return false;
+    NSRange caret;
+    if (readSelection(deliveryElement,&caret)) {
+        NSUInteger end=caret.location;
+        // Corrections may temporarily select an earlier word. Keep the pill at
+        // the current dictation end rather than bouncing back to that selection.
+        if (liveStarted) {
+            NSString *actual=readText(deliveryElement);
+            NSString *applied=pendingValue && [actual isEqualToString:pendingValue] ? pendingText : liveApplied;
+            NSUInteger ownedEnd=liveOriginal.location+applied.length;
+            if (ownedEnd<=actual.length) end=ownedEnd;
+        }
+        if (boundsForRange(NSMakeRange(end,0),&rect)) {
+            *x=rect.origin.x; *y=rect.origin.y; *width=MAX(1,rect.size.width); *height=rect.size.height; return true;
+        }
+        NSString *text=readText(deliveryElement);
+        if (end>0 && end<=text.length && boundsForRange([text rangeOfComposedCharacterSequenceAtIndex:end-1],&rect)) {
+            *x=CGRectGetMaxX(rect); *y=rect.origin.y; *width=1; *height=rect.size.height; return true;
+        }
+    }
+    if (!elementBounds(deliveryElement,&rect) || rect.size.width<=0 || rect.size.height<=0) return false;
     *x=rect.origin.x; *y=rect.origin.y; *width=rect.size.width; *height=rect.size.height;
+    return true;
+}
+// Recreated controls may get a new AX object. Rebind only when the old one is
+// invalid and a stable identifier, parent, window and process all still match.
+// Similar text or screen coordinates alone never authorize a replacement.
+static bool rebindOriginal(AXUIElementRef candidate) {
+    if (!candidate || !deliveryIdentity || !deliveryParent || !deliveryWindow) return false;
+    CFTypeRef oldRole=NULL;
+    AXError oldStatus=AXUIElementCopyAttributeValue(deliveryElement,kAXRoleAttribute,&oldRole);
+    if (oldRole) CFRelease(oldRole);
+    if (oldStatus!=kAXErrorInvalidUIElement) return false;
+    pid_t pid=0;
+    if (AXUIElementGetPid(candidate,&pid)!=kAXErrorSuccess || pid!=deliveryPID || !editable(candidate)) return false;
+    CFTypeRef identity=attribute(candidate,(__bridge CFStringRef)deliveryIdentityAttribute);
+    CFTypeRef parent=attribute(candidate,kAXParentAttribute), window=attribute(candidate,kAXWindowAttribute);
+    bool match=identity && CFGetTypeID(identity)==CFStringGetTypeID() && [(__bridge NSString *)identity isEqualToString:deliveryIdentity] &&
+        parent && CFEqual(parent,deliveryParent) && window && CFEqual(window,deliveryWindow);
+    if (identity) CFRelease(identity); if (parent) CFRelease(parent); if (window) CFRelease(window);
+    if (!match) return false;
+    CFRelease(deliveryElement); deliveryElement=(AXUIElementRef)CFRetain(candidate);
+    AXUIElementSetMessagingTimeout(deliveryElement,0.08);
+    liveRecovering=true; recoverySince=lastRecoveryAttempt=0;
     return true;
 }
 // Identity is pinned for the whole session. Capability reads may temporarily
 // fail while an editor updates; check them before mutations, not as identity.
 static bool sameInput(void) {
     AXUIElementRef focused = focusedElement();
-    bool same = focused && deliveryElement && CFEqual(focused,deliveryElement) &&
-        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID;
+    bool owner = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID;
+    bool same = owner && focused && deliveryElement && (CFEqual(focused,deliveryElement) || rebindOriginal(focused));
     if (same && deliveryWindow) {
         // Some apps keep reporting their last focused control after a different
         // window becomes key. Verify window ownership as well as element/PID.
@@ -440,58 +508,39 @@ static int awaitLiveReadback(void) {
     liveUsable=false;
     return -1;
 }
-// Keyboard delivery requires focus. Retain the original AX objects, bring that
-// exact window/input back, then verify both content and caret before resuming.
-// Never find a substitute by label, position, or whichever control was clicked.
+// Focus belongs to the user. Pause into the centered preview without raising
+// windows or moving focus. Only returning to the original control may resume.
 static int ensureLiveTarget(void) {
-    bool focused=sameInput();
-    if (focused && !liveRecovering) return 1;
+    if (!sameInput()) {
+        liveRecovering=true; recoverySince=lastRecoveryAttempt=0;
+        return 2;
+    }
+    if (!liveRecovering) return 1;
     CFTimeInterval now=CFAbsoluteTimeGetCurrent();
-    if (!liveRecovering) { liveRecovering=true; recoverySince=now; lastRecoveryAttempt=0; }
-    if (now-recoverySince>=1.2) { liveUsable=false; return -1; }
-    NSRunningApplication *app=[NSRunningApplication runningApplicationWithProcessIdentifier:deliveryPID];
-    CFTypeRef role=NULL;
-    AXError validity=AXUIElementCopyAttributeValue(deliveryElement,kAXRoleAttribute,&role);
-    if (role) CFRelease(role);
-    if (!app || app.terminated || validity==kAXErrorInvalidUIElement) { liveUsable=false; return -1; }
+    if (!recoverySince) { recoverySince=now; if(pendingValue)pendingSince=now; if(liveSelecting)selectionSince=now; }
+    if (now-recoverySince>=0.8) { liveUsable=false; return -1; }
     NSString *actual=readText(deliveryElement);
     NSString *expected=pendingValue ?: liveExpected;
-    // Preserve the existing placeholder proof during recovery as well.
     if (pendingValue && !liveStarted && livePlaceholderCandidate && [actual isEqualToString:pendingText]) {
         livePlaceholderConfirmed=true; liveBase=@""; liveExpected=@""; pendingValue=pendingText;
         liveOriginal=NSMakeRange(0,0); pendingSelection=NSMakeRange(pendingText.length,0); expected=pendingValue;
     }
-    if (actual && ![actual isEqualToString:expected]) {
+    if (!actual) return 0;
+    if (![actual isEqualToString:expected]) {
         if (pendingValue) return awaitLiveReadback();
-        liveUsable=false; return -1; // The pinned document was edited/replaced.
-    }
-    if (!focused) {
-        if (now-lastRecoveryAttempt>=0.15) {
-            lastRecoveryAttempt=now;
-            if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier!=deliveryPID)
-                [app activateWithOptions:0];
-            if (deliveryWindow) AXUIElementPerformAction(deliveryWindow,kAXRaiseAction);
-            AXError result=AXUIElementSetAttributeValue(deliveryElement,kAXFocusedAttribute,kCFBooleanTrue);
-            if (result==kAXErrorInvalidUIElement) { liveUsable=false; return -1; }
-        }
-        return 0; // Activation is asynchronous; acknowledge on a later tick.
+        liveUsable=false; return -1;
     }
     NSRange selection;
-    if (!actual || !readSelection(deliveryElement,&selection) || !editable(deliveryElement)) return 0;
+    if (!readSelection(deliveryElement,&selection) || !editable(deliveryElement)) return 0;
     NSRange owned=pendingValue ? pendingSelection : liveSelecting ? requestedSelection : liveSelection;
     if (!NSEqualRanges(selection,owned)) {
-        // Blurring a control often clears its selection. Restore only the
-        // previously owned range in an unchanged, identity-verified document.
-        if (now-lastRecoveryAttempt>=0.15) {
-            lastRecoveryAttempt=now;
-            if (!selectOwnedRange(owned)) return 0;
-        }
+        if (now-lastRecoveryAttempt>=0.15) { lastRecoveryAttempt=now; selectOwnedRange(owned); }
         return 0;
     }
     liveRecovering=false; recoverySince=lastRecoveryAttempt=0;
     return 1;
 }
-// -1 = target lost/unsafe, 0 = pending or restoring the original target, 1 = synced.
+// -1 = unsafe (clipboard fallback), 0 = pending, 1 = synced, 2 = original input unfocused.
 int pulse_dictation_live_step(const char *utf8) {
     if (!liveUsable || liveInterrupted) { liveUsable=false; return -1; }
     int target=ensureLiveTarget();
@@ -541,7 +590,7 @@ int pulse_dictation_live_step(const char *utf8) {
     }
     // Revalidate content and focus after selecting, before posting input.
     if (liveInterrupted) { liveUsable=false; return -1; }
-    if (!sameInput()) return 0; // Recover the original target on the next tick.
+    if (!sameInput()) { liveRecovering=true; recoverySince=lastRecoveryAttempt=0; return 2; }
     if (![readText(deliveryElement) isEqualToString:liveExpected]) return awaitLiveReadback();
     if (!typeUnicode(fragment)) { liveUsable=false; return -1; }
     pendingText=next;
@@ -551,7 +600,7 @@ int pulse_dictation_live_step(const char *utf8) {
     unreadableSince=0;
     return 0;
 }
-// Called only for a session that started with no input selected.
+// Final clipboard delivery when the original input is not verified and synced.
 bool pulse_dictation_copy(const char *utf8) {
     NSString *text=[NSString stringWithUTF8String:utf8];
     if (!text.length) return false;

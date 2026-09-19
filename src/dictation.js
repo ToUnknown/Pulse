@@ -5,7 +5,6 @@ const canvas = document.querySelector("#waveform");
 const shell = document.querySelector("#waveform-shell");
 const overlay = document.querySelector("#dictation");
 const context = canvas.getContext("2d");
-const status = document.querySelector("#status");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
 let shown = "", desired = "", id, lastTyping = 0, lastSamples = 0, waveTime = 0;
@@ -50,10 +49,10 @@ export function render(next) {
   body.dataset.anchored = String(!!next.target);
   if (next.target) {
     const field = next.target;
-    const halfWidth = next.inline ? 44 : Math.min(210, (innerWidth - 32) / 2);
+    const halfWidth = next.inline ? 32 : Math.min(160, (innerWidth - 32) / 2);
     const x = Math.max(halfWidth + 16, Math.min(innerWidth - halfWidth - 16, field.x + field.width / 2));
     const maxHeight = next.inline || !next.text ? 28 : 164;
-    let bottom = innerHeight - field.y + 8;
+    let bottom = innerHeight - field.y + 6;
     if (field.y < maxHeight + 24) bottom = innerHeight - field.y - field.height - 8 - maxHeight;
     bottom = Math.max(16, Math.min(innerHeight - maxHeight - 16, bottom));
     body.style.setProperty("--anchor-x", `${x}px`);
@@ -64,7 +63,6 @@ export function render(next) {
   setText(next.text || "", final);
   if (next.text) body.dataset.expanded = "true";
   body.dataset.phase = next.phase;
-  status.textContent = next.phase === "error" ? next.message || "" : "";
   if (freshSession) {
     // Resolve the new field position with movement disabled before showing.
     // Subsequent bounds changes may animate, but a session never flies in.
@@ -110,7 +108,7 @@ function drawWave(now) {
   const target = Math.min(1, Math.sqrt(level) * 4.2);
   const elapsed = Math.min(64, Math.max(1, now - lastFrame)); lastFrame = now;
   voice += (target - voice) * (1 - Math.exp(-elapsed / (target > voice ? 45 : 130)));
-  const count = 13, step = 5, center = (count - 1) / 2;
+  const count = 9, step = 5, center = (count - 1) / 2;
   for (let i = 0; i < count; i++) {
     const distance = Math.abs(i - center) / (center + 1);
     const envelope = Math.cos(distance * Math.PI / 2) ** 1.8;
@@ -150,7 +148,20 @@ else if (new URLSearchParams(location.search).has("preview")) {
   const advance=()=>{render({id:1,bottom:32,samples:step+1,level:.09,...demo[Math.min(step++,demo.length-1)]});};
   const fixture = new URLSearchParams(location.search).get("preview");
   const index = { pill: 0, expanded: 1, finalizing: 2, sending: 3, done: 4 }[fixture];
-  if (fixture === "motion") {
+  if (fixture === "handoff") {
+    let session = 0;
+    const cycle = () => {
+      const base = {id:++session,inline:true,target:{x:innerWidth*.2,y:innerHeight*.65,width:1,height:18},text:"A thought becomes a sentence.",level:.12,samples:1};
+      render({...base,phase:"listening"});
+      setTimeout(()=>render({...base,phase:"listening",target:{...base.target,x:innerWidth*.4}}),800);
+      setTimeout(()=>render({...base,phase:"listening",inline:false,target:null}),1600);
+      setTimeout(()=>render({...base,phase:"listening",target:{...base.target,x:innerWidth*.3,y:innerHeight*.7}}),3000);
+      setTimeout(()=>render({...base,phase:"finalizing",inline:false,target:null}),4000);
+      setTimeout(()=>render({...base,phase:"done",inline:false,target:null}),4650);
+    };
+    cycle(); setInterval(cycle,5400);
+  }
+  else if (fixture === "motion") {
     let session = 0;
     const cycle = () => {
       const base = {id:++session,inline:true,target:{x:innerWidth*.2,y:innerHeight*.65,width:innerWidth*.6,height:90},level:.12,samples:1};

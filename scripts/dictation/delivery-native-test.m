@@ -3,7 +3,8 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
-static AXUIElementRef fakeElement, selectedElement, fakeSystem, fakeWindow, focusedWindow;
+static AXUIElementRef fakeElement, selectedElement, fakeSystem, fakeWindow, focusedWindow, fakeParent;
+static bool stableIdentity, wrongIdentity, wrongParent, caretBounds;
 static bool acceptFocus=true, targetGone=false;
 static pid_t foregroundPID=1000;
 static unsigned focusRequests, raiseRequests;
@@ -57,6 +58,8 @@ static AXError getPid(AXUIElementRef element,pid_t *pid) { *pid=1000; return kAX
 static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *out) {
     *out=NULL;
     if (targetGone && CFEqual(element,fakeElement)) return kAXErrorInvalidUIElement;
+    if (CFEqual(name,kAXIdentifierAttribute) && stableIdentity) { *out=CFRetain(wrongIdentity && !CFEqual(element,fakeElement) ? CFSTR("other") : CFSTR("original-editor")); return kAXErrorSuccess; }
+    if (CFEqual(name,kAXParentAttribute)) { *out=CFRetain(wrongParent && !CFEqual(element,fakeElement) ? fakeWindow : fakeParent); return kAXErrorSuccess; }
     if (CFEqual(name,kAXFocusedWindowAttribute)) { *out=CFRetain(focusedWindow); return kAXErrorSuccess; }
     if (CFEqual(name,kAXWindowAttribute)) { *out=CFRetain(fakeWindow); return kAXErrorSuccess; }
     if ((missingText && CFEqual(name,kAXValueAttribute)) || (missingSelection && CFEqual(name,kAXSelectedTextRangeAttribute))) return kAXErrorCannotComplete;
@@ -92,6 +95,14 @@ static void post(pid_t pid,CGEventRef event) {
     caret=NSMakeRange(caret.location+insert.length,0);
     [editFrames addObject:editor];
 }
+static AXError parameterized(AXUIElementRef e,CFStringRef name,CFTypeRef value,CFTypeRef *out) {
+    *out=NULL;
+    if (!caretBounds || !CFEqual(name,kAXBoundsForRangeParameterizedAttribute))return kAXErrorNoValue;
+    CFRange r; if(!AXValueGetValue(value,kAXValueCFRangeType,&r))return kAXErrorIllegalArgument;
+    CGRect rect=CGRectMake(100+(r.location%20)*7,200+(r.location/20)*18,r.length*7,18);
+    *out=AXValueCreate(kAXValueCGRectType,&rect);return kAXErrorSuccess;
+}
+#define AXUIElementCopyParameterizedAttributeValue parameterized
 static AXError performAction(AXUIElementRef e,CFStringRef action) { if(!CFEqual(e,fakeWindow) || !CFEqual(action,kAXRaiseAction))abort(); raiseRequests++; if(acceptFocus)focusedWindow=fakeWindow; return kAXErrorSuccess; }
 static CFAbsoluteTime testTime=1000;
 static CFAbsoluteTime currentTime(void) { testTime+=0.02; return testTime; }
@@ -113,6 +124,7 @@ static void expect(bool ok,const char *message) { if (!ok) { fprintf(stderr,"FAI
 static void observeOwnEvent(CGEventRef event) { PulseDictationShortcutEvent([NSEvent eventWithCGEvent:event]); }
 static void shortcutAction(bool down,bool chord,bool interrupted,double time) { shortcutActions++; }
 static void begin(void) {
+    stableIdentity=wrongIdentity=wrongParent=caretBounds=false;
     acceptFocus=true; targetGone=false; foregroundPID=1000; focusedWindow=fakeWindow;
     missingSystemFocus=missingText=missingSelection=missingEditability=false; emptyCaretOffset=0; characterCountOverride=-1;
     selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false;
@@ -130,6 +142,7 @@ int main(void) {
         fakeElement=AXUIElementCreateApplication(getpid());
         fakeSystem=AXUIElementCreateApplication(getpid()+2);
         fakeWindow=AXUIElementCreateApplication(getpid()+9);
+        fakeParent=AXUIElementCreateApplication(getpid()+11);
         begin();
         shortcutCallback=shortcutAction; observePosted=observeOwnEvent;
         syncText("hello wonderful world");
@@ -165,45 +178,47 @@ int main(void) {
         begin(); syncText("hello");
         AXUIElementRef clicked=AXUIElementCreateApplication(getpid()+10);
         selectedElement=clicked; foregroundPID=2000; caret=NSMakeRange(0,0);
-        unsigned beforeRecovery=keyboardEvents;
-        expect(pulse_dictation_live_step("hello more")==0 && keyboardEvents==beforeRecovery,"focus loss starts recovery without typing into the clicked field");
-        expect(selectedElement==fakeElement && foregroundPID==1000 && focusRequests && raiseRequests,"restore the original app, window and input");
+        unsigned beforePreview=keyboardEvents;
+        expect(pulse_dictation_live_step("hello more")==2 && keyboardEvents==beforePreview,"switching apps pauses into preview without typing");
+        expect(selectedElement==clicked && foregroundPID==2000 && !focusRequests && !raiseRequests,"never pull focus or raise the original window");
+        testTime+=60;
+        expect(pulse_dictation_live_step("hello more")==2,"preview can continue indefinitely while focus is elsewhere");
+        selectedElement=fakeElement; foregroundPID=1000;
         syncText("hello more");
-        expect([editor isEqualToString:@"Before hello more after"],"restore owned caret after blur and continue only original input");
+        expect([editor isEqualToString:@"Before hello more after"],"returning to original unchanged input restores owned caret and resumes");
         begin(); syncText("hello"); focusedWindow=clicked;
-        unsigned windowEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello more")==0 && keyboardEvents==windowEvents,"stale focused element in another key window cannot authorize typing");
-        syncText("hello more");
-        expect(focusedWindow==fakeWindow,"recover the original window even when application focus reports a stale field");
-        begin(); selectedElement=clicked; acceptFocus=false;
-        expect(pulse_dictation_live_step("hello")==0,"refused focus is initially recoverable");
-        unsigned deniedEvents=keyboardEvents; recoverySince-=2;
-        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==deniedEvents,"refused focus times out without typing into another control");
+        expect(pulse_dictation_live_step("hello more")==2,"another key window cannot authorize typing even with stale AX focus");
+        focusedWindow=fakeWindow; syncText("hello more");
         begin(); selectedElement=clicked; targetGone=true;
-        unsigned goneEvents=keyboardEvents, goneRequests=focusRequests;
-        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==goneEvents && focusRequests==goneRequests,"closed target stops rather than finding a replacement");
-        begin(); syncText("hello"); selectedElement=clicked; editor=@"a different document";
-        unsigned editedEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello more")==-1 && keyboardEvents==editedEvents,"changed document is never overwritten during recovery");
+        expect(pulse_dictation_live_step("hello")==2 && !focusRequests,"closed target stays in preview without finding another field");
+        begin(); syncText("hello"); selectedElement=clicked;
+        expect(pulse_dictation_live_step("hello more")==2,"leave input before external edit");
+        editor=@"a different document"; selectedElement=fakeElement;
+        expect(pulse_dictation_live_step("hello more")==-1,"changed document falls back instead of overwriting user text");
         begin(); acceptTyping=false;
         expect(pulse_dictation_live_step("hello")==0,"start asynchronous write before blur");
         editor=pendingValue; caret=NSMakeRange(0,0); selectedElement=clicked;
         unsigned acknowledgedEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello")==0,"recover focus after accepted write with cleared caret");
-        acceptTyping=true; syncText("hello");
-        expect(keyboardEvents==acknowledgedEvents && [editor isEqualToString:@"Before hello after"],"acknowledge accepted write after focus recovery without replay");
-        begin(); selectedElement=clicked; missingText=true;
-        expect(pulse_dictation_live_step("hello")==0,"recover focus even when blurred field temporarily hides text");
-        missingText=false; syncText("hello");
-        expect([editor isEqualToString:@"Before hello after"],"validate text after restoring a blurred field");
+        expect(pulse_dictation_live_step("hello")==2,"blur during a write enters preview");
+        selectedElement=fakeElement; acceptTyping=true; syncText("hello");
+        expect(keyboardEvents==acknowledgedEvents,"returning after an accepted write must not replay it");
+        // Recreated original fields need identity AND container proof. Never
+        // rebind a still-live field or an unrelated field with the same text.
+        begin(); stableIdentity=true; expect(pulse_dictation_live_begin()==1,"capture stable input identity");
+        syncText("hello"); selectedElement=clicked;
+        expect(pulse_dictation_live_step("hello more")==2,"matching identifiers cannot redirect a still-live input");
+        targetGone=true; syncText("hello more");
+        expect(CFEqual(deliveryElement,clicked) && [editor isEqualToString:@"Before hello more after"],"recreated original control continues the same owned text");
+        begin(); stableIdentity=true; pulse_dictation_live_begin(); targetGone=true; selectedElement=clicked; wrongIdentity=true;
+        expect(pulse_dictation_live_step("hello")==2,"different identifiers cannot rebind the original");
+        begin(); stableIdentity=true; pulse_dictation_live_begin(); targetGone=true; selectedElement=clicked; wrongParent=true;
+        expect(pulse_dictation_live_step("hello")==2,"same identifier in a different container cannot rebind");
+        begin(); caretBounds=true; editor=@"a long sentence with wrapping text"; caret=NSMakeRange(12,0); pulse_dictation_live_begin();
+        double x,y,w,h;
+        expect(pulse_dictation_live_bounds(&x,&y,&w,&h) && x==184 && y==200 && w==1,"pill tracks the caret rather than field center");
+        caret=NSMakeRange(25,0);
+        expect(pulse_dictation_live_bounds(&x,&y,&w,&h) && x==135 && y==218,"caret anchor follows a wrapped line");
         CFRelease(clicked);
-        begin();
-        AXUIElementRef otherField=AXUIElementCreateApplication(getpid()+1);
-        selectedElement=otherField;
-        unsigned beforeFocus=keyboardEvents;
-        expect(pulse_dictation_live_step("hello")==0 && keyboardEvents==beforeFocus,"focus changes recover the pinned input");
-        selectedElement=fakeElement; CFRelease(otherField); syncText("hello");
-        expect([editor isEqualToString:@"Before hello after"],"returning to original input resumes without retargeting");
         // Chromium can expose an in-flight Unicode insertion a few characters
         // at a time. It is still the same field; do not fail or post it again.
         begin(); acceptTyping=false;
@@ -234,7 +249,7 @@ int main(void) {
         AXUIElementRef duringWriteOther=AXUIElementCreateApplication(getpid()+4);
         selectedElement=duringWriteOther;
         unsigned switchedEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==switchedEvents,"pending transaction never follows another focused input");
+        expect(pulse_dictation_live_step("hello world")==2 && keyboardEvents==switchedEvents,"pending transaction never follows another focused input");
         selectedElement=fakeElement; CFRelease(duringWriteOther);
         editor=pendingValue; caret=pendingSelection; acceptTyping=true;
         syncText("hello world");
@@ -292,7 +307,7 @@ int main(void) {
         AXUIElementRef fallbackOther=AXUIElementCreateApplication(getpid()+3);
         selectedElement=fallbackOther;
         unsigned fallbackEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("app focused more")==0 && keyboardEvents==fallbackEvents,"application fallback never retargets another focused input");
+        expect(pulse_dictation_live_step("app focused more")==2 && keyboardEvents==fallbackEvents,"application fallback never retargets another focused input");
         selectedElement=fakeElement; CFRelease(fallbackOther);
         syncText("app focused more");
         begin(); editor=@""; caret=NSMakeRange(0,0); emptyCaretOffset=1;
@@ -329,7 +344,7 @@ int main(void) {
         focused=false;
         expect(pulse_dictation_live_begin()==0,"no selected input uses bottom preview");
         expect(pulse_dictation_copy("clipboard result") && clipboardWrites==2,"clipboard only written by explicit no-input path");
-        pulse_dictation_clear_target(); CFRelease(fakeElement); CFRelease(fakeSystem); CFRelease(fakeWindow);
-        puts("PASS: pinned app/window/field recovery, lost-target failures, partial and missing AX readbacks, pinned transaction recovery, real user interruption, application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
+        pulse_dictation_clear_target(); CFRelease(fakeElement); CFRelease(fakeSystem); CFRelease(fakeWindow); CFRelease(fakeParent);
+        puts("PASS: passive preview, original-only resumption, recreated control identity, caret tracking, partial and missing AX readbacks, pinned transaction recovery, real user interruption, application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
     }
 }

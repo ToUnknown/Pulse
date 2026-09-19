@@ -67,24 +67,58 @@ struct Session {
     origin: (f64, f64),
     bottom: f64,
     target: Option<Value>,
-    input_selected: bool,
     inline: bool,
     inline_synced: bool,
     inline_paused: bool,
     message: String,
 }
+#[derive(Debug, PartialEq, Eq)]
+enum FinalDelivery {
+    Pending,
+    Input,
+    Clipboard,
+    Discard,
+}
 impl Session {
-    fn lose_target(&mut self) {
+    fn final_delivery(&self, expired: bool) -> FinalDelivery {
+        if self.cancel.is_cancelled() {
+            return FinalDelivery::Discard;
+        }
+        if self.inline && !self.inline_paused {
+            if self.inline_synced {
+                return FinalDelivery::Input;
+            }
+            if !expired {
+                return FinalDelivery::Pending;
+            }
+        }
+        FinalDelivery::Clipboard
+    }
+
+    fn use_preview(&mut self) {
         self.inline = false;
         self.inline_synced = false;
         self.inline_paused = false;
         self.target = None;
-        self.phase = "error";
-        self.message = "Dictation stopped because the original input could not be restored.".into();
-        self.error = Some(self.message.clone());
-        self.audio.take();
-        self.cancel.cancel();
-        // Keep input_selected true: loss must never turn into clipboard delivery.
+        // Capture continues. Clipboard is written only once, at final delivery.
+    }
+
+    fn apply_live_update(&mut self, outcome: i32, target: Option<Value>, current_text: bool) {
+        match outcome {
+            0 | 1 => {
+                self.inline_synced = outcome == 1 && current_text;
+                self.inline_paused = false;
+                if target.is_some() {
+                    self.target = target;
+                }
+            }
+            2 => {
+                self.inline_synced = false;
+                self.inline_paused = true;
+                self.target = None;
+            }
+            _ => self.use_preview(),
+        }
     }
 }
 struct Dictation {
@@ -406,59 +440,43 @@ fn live_bounds(origin: (f64, f64)) -> Option<Value> {
 // One main-thread writer, coalescing incoming model deltas into small edits.
 fn live_tick(app: &tauri::AppHandle, id: u64) -> bool {
     let state = app.state::<Dictation>();
-    let (origin, input_selected, inline, text) = {
+    let (origin, inline, text) = {
         let guard = state.session.lock().unwrap();
-        let Some(s) = guard
-            .as_ref()
-            .filter(|s| s.id == id && matches!(s.phase, "listening" | "finalizing" | "sending"))
-        else {
+        let Some(s) = guard.as_ref().filter(|s| {
+            s.id == id
+                && matches!(s.phase, "listening" | "finalizing" | "sending")
+                && !s.cancel.is_cancelled()
+        }) else {
             return false;
         };
-        (s.origin, s.input_selected, s.inline, s.text.clone())
+        (s.origin, s.inline, s.text.clone())
     };
-    // AX can be slow. Never block the microphone callback on another app.
-    let target = if input_selected {
-        live_bounds(origin)
-    } else {
-        None
-    };
+    // One pinned native writer owns all edits. Focus loss is preview mode,
+    // not cancellation, and never authorizes a different input.
     let outcome = if inline {
         let text = CString::new(text.replace('\0', "")).unwrap();
         Some(unsafe { pulse_dictation_live_step(text.as_ptr()) })
     } else {
         None
     };
+    let target = if matches!(outcome, Some(0 | 1)) {
+        live_bounds(origin)
+    } else {
+        None
+    };
+    if outcome.is_some_and(|result| result < 0) {
+        unsafe {
+            pulse_dictation_clear_target();
+        }
+    }
     let mut guard = state.session.lock().unwrap();
     let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
         return false;
     };
-    if target.is_some() {
-        s.target = target;
+    if let Some(outcome) = outcome {
+        s.apply_live_update(outcome, target, s.text == text);
     }
-    match outcome {
-        Some(1) => {
-            s.inline_synced = s.text == text;
-            s.inline_paused = false;
-        }
-        Some(0) => {
-            s.inline_synced = false;
-            s.inline_paused = false;
-        }
-        Some(_) => s.lose_target(),
-        None => {}
-    }
-    let lost = s.cancel.is_cancelled();
-    drop(guard);
-    if lost {
-        state.hold_shortcut.lock().unwrap().interrupt();
-        // Removing the audio tap may wait for its callback, which also locks
-        // the session. Stop it only after releasing the session mutex.
-        unsafe {
-            pulse_dictation_stop();
-            pulse_dictation_clear_target();
-        }
-    }
-    !lost
+    true
 }
 
 fn start(app: &tauri::AppHandle) {
@@ -504,7 +522,16 @@ fn start(app: &tauri::AppHandle) {
         }
     }
     let input_mode = unsafe { pulse_dictation_live_begin() };
-    let target = live_bounds((x, y));
+    let target = if input_mode == 1 {
+        live_bounds((x, y))
+    } else {
+        None
+    };
+    if input_mode != 1 {
+        unsafe {
+            pulse_dictation_clear_target();
+        }
+    }
     let (tx, rx) = mpsc::channel(256); // Bounded startup/network backlog, about 10 seconds.
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let token = CancellationToken::new();
@@ -520,15 +547,10 @@ fn start(app: &tauri::AppHandle) {
         origin: (x, y),
         bottom,
         target: target.clone(),
-        input_selected: input_mode != 0,
         inline: input_mode == 1,
         inline_synced: true,
         inline_paused: false,
-        message: if input_mode == 2 {
-            "This input does not support safe live insertion. Your clipboard is unchanged; the transcript remains available in Settings.".into()
-        } else {
-            String::new()
-        },
+        message: String::new(),
     });
     let _ = window.eval(format!(
         "window.pulseDictationStart?.({id}, {bottom}, {}, {});",
@@ -537,7 +559,7 @@ fn start(app: &tauri::AppHandle) {
     ));
     let _ = window.set_ignore_cursor_events(true);
     let mic = unsafe { pulse_dictation_mic_allowed() };
-    let started = mic && input_mode != 2 && unsafe { pulse_dictation_start(id, audio_callback) };
+    let started = mic && unsafe { pulse_dictation_start(id, audio_callback) };
     let escape_registered = app
         .global_shortcut()
         .on_shortcut("Escape", |app, _, event| {
@@ -565,9 +587,7 @@ fn start(app: &tauri::AppHandle) {
     });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = if input_mode == 2 {
-            Err("Dictation stopped because this input could not be locked.".into())
-        } else if !mic {
+        let result = if !mic {
             Err("Allow Microphone access in Pulse Settings → Advanced → Dictation.".into())
         } else if !started {
             Err("Could not start the microphone. Check your input device and try again.".into())
@@ -764,92 +784,72 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         } else {
             result
         };
-        match result {
-            Ok(text) if !text.trim().is_empty() => {
-                *state.last_transcript.lock().unwrap() = text.clone();
-                s.text = text;
-                s.inline_synced = false;
-                s.phase = "sending";
-                Ok(Some((s.text.clone(), true)))
-            }
-            Ok(_) => {
-                s.phase = "error";
-                s.message = "No speech detected".into();
-                Ok(None)
-            }
+        let text = match result {
+            Ok(text) => text,
             Err(error) if error == "cancelled" => {
-                s.phase = "idle";
+                s.phase = "done";
                 s.text.clear();
-                Ok(None)
+                return Ok(None);
             }
             Err(error) => {
-                s.inline = false;
-                s.phase = "error";
-                s.message = error;
+                // Operational diagnostics belong in Settings, never in the pill.
+                *state.startup_error.lock().unwrap() = Some(error);
+                s.text.clone()
+            }
+        };
+        if text.trim().is_empty() {
+            s.phase = "done";
+            return Ok(None);
+        }
+        *state.last_transcript.lock().unwrap() = text.clone();
+        s.text = text.clone();
+        s.inline_synced = false;
+        s.phase = "sending";
+        // Capture failures may cancel the network but should still deliver the
+        // partial words. Escape was handled above and never delivers anything.
+        s.cancel = CancellationToken::new();
+        Ok(Some(text))
+    })
+    .await;
+    if let Ok(Some(_)) = prepared {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let expired = Instant::now() >= deadline;
+            let handle = app.clone();
+            let complete = on_main(&app, move || {
+                // Refresh ownership and decide delivery in the same main-thread
+                // turn. Returning to the original field cannot race a separate
+                // clipboard decision, and pending edits must be acknowledged.
+                live_tick(&handle, id);
+                let state = handle.state::<Dictation>();
+                let mut guard = state.session.lock().unwrap();
+                let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
+                    return Ok(true);
+                };
+                match s.final_delivery(expired) {
+                    FinalDelivery::Pending => return Ok(false),
+                    FinalDelivery::Clipboard => {
+                        let text = CString::new(s.text.replace('\0', "")).unwrap();
+                        if !unsafe { pulse_dictation_copy(text.as_ptr()) } {
+                            *state.startup_error.lock().unwrap() = Some("Could not copy the transcript. Use Copy last transcript in Settings.".into());
+                        }
+                    }
+                    FinalDelivery::Input | FinalDelivery::Discard => {}
+                }
+                s.phase = "done";
+                s.message.clear();
                 unsafe {
                     pulse_dictation_clear_target();
                 }
-                if s.text.is_empty() {
-                    Ok(None)
-                } else {
-                    *state.last_transcript.lock().unwrap() = s.text.clone();
-                    s.message.push_str(if s.input_selected {
-                        " Partial transcript retained in Settings; clipboard unchanged."
-                    } else {
-                        " Partial transcript copied."
-                    });
-                    Ok(Some((s.text.clone(), false)))
-                }
-            }
-        }
-    })
-    .await;
-    if let Ok(Some((text, completed))) = prepared {
-        // The same writer handles partial and final text. Wait for read-back,
-        // never report success just because keyboard events were dispatched.
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let pending = app
-                .state::<Dictation>()
-                .session
-                .lock()
-                .unwrap()
-                .as_ref()
-                .is_some_and(|s| {
-                    s.id == id
-                        && completed
-                        && s.inline
-                        && !s.inline_synced
-                        && !s.inline_paused
-                        && !s.cancel.is_cancelled()
-                });
-            if !pending || Instant::now() >= deadline {
+                Ok(true)
+            })
+            .await
+            .unwrap_or(true);
+            if complete {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(40)).await;
         }
-        let handle = app.clone();
-        let _ = on_main(&app, move || {
-            let state = handle.state::<Dictation>();
-            let mut guard = state.session.lock().unwrap();
-            let Some(s) = guard.as_mut().filter(|s| s.id == id) else { return Ok(()); };
-            if s.cancel.is_cancelled() && s.phase != "error" { s.phase = "idle"; return Ok(()); }
-            if !s.input_selected {
-                let text = CString::new(text.replace('\0', "")).unwrap();
-                if !unsafe { pulse_dictation_copy(text.as_ptr()) } {
-                    s.phase = "error";
-                    s.message = "Could not copy the transcript. Use Copy last transcript in Settings.".into();
-                } else if completed { s.phase = "done"; }
-            } else if completed {
-                if s.inline && s.inline_synced { s.phase = "done"; }
-                else {
-                    s.phase = "error";
-                    s.inline = false;
-                    if s.message.is_empty() { s.message = "Could not finish inserting. Your clipboard is unchanged; the transcript remains available in Settings.".into(); }
-                }
-            }
-            Ok(())
-        }).await;
     }
     // Allow the lens contraction/fade plus one overlay polling interval.
     let wait = app
@@ -858,7 +858,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         .lock()
         .unwrap()
         .as_ref()
-        .map(|s| if s.phase == "error" { 6000 } else { 400 })
+        .map(|_| 400)
         .unwrap_or(0);
     tokio::time::sleep(Duration::from_millis(wait)).await;
     let handle = app.clone();
@@ -886,10 +886,9 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
 mod tests {
     use super::*;
 
-    #[test]
-    fn losing_target_cancels_capture_and_never_switches_to_clipboard() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let mut session = Session {
+    fn test_session() -> Session {
+        let (tx, _) = mpsc::channel(1);
+        Session {
             id: 1,
             audio: Some(tx),
             cancel: CancellationToken::new(),
@@ -901,28 +900,55 @@ mod tests {
             origin: (0.0, 0.0),
             bottom: 28.0,
             target: Some(json!({"x":100})),
-            input_selected: true,
             inline: true,
             inline_synced: false,
             inline_paused: false,
             message: String::new(),
-        };
-        session.lose_target();
-        assert!(session.cancel.is_cancelled());
-        assert!(session.audio.is_none());
-        assert!(matches!(
-            rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Disconnected)
-        ));
+        }
+    }
+
+    #[test]
+    fn final_delivery_is_exclusive_and_waits_for_verified_input() {
+        let mut session = test_session();
+        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
+        session.apply_live_update(2, None, true);
+        assert_eq!(session.final_delivery(false), FinalDelivery::Clipboard);
+        session.apply_live_update(0, None, true);
+        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
+        session.apply_live_update(1, None, true);
+        assert_eq!(session.final_delivery(false), FinalDelivery::Input);
+        // A changed transcript invalidates an earlier successful read-back.
+        session.apply_live_update(1, None, false);
+        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
+        assert_eq!(session.final_delivery(true), FinalDelivery::Clipboard);
+        session.cancel.cancel();
+        assert_eq!(session.final_delivery(true), FinalDelivery::Discard);
+    }
+
+    #[test]
+    fn focus_loss_previews_and_return_resumes_without_cancelling_capture() {
+        let mut session = test_session();
+        session.apply_live_update(2, None, true);
+        assert!(session.inline && session.inline_paused);
         assert!(session.target.is_none());
-        assert!(!session.inline);
-        assert!(
-            session.input_selected,
-            "target loss cannot enable clipboard delivery"
-        );
+        assert!(session.audio.is_some() && !session.cancel.is_cancelled());
+        assert_eq!(session.phase, "listening");
+        session.apply_live_update(1, Some(json!({"x":200})), true);
+        assert!(session.inline_synced && !session.inline_paused);
+        assert_eq!(session.target, Some(json!({"x":200})));
+        assert!(session.message.is_empty());
+    }
+
+    #[test]
+    fn unusable_field_falls_back_without_an_error_or_stopping_capture() {
+        let mut session = test_session();
+        session.apply_live_update(-1, None, false);
+        assert!(!session.inline && !session.inline_synced);
+        assert!(session.target.is_none());
+        assert!(session.audio.is_some() && !session.cancel.is_cancelled());
         assert_eq!(session.text, "Keep these words");
-        assert_eq!(session.phase, "error");
-        assert!(session.error.is_some());
+        assert_eq!(session.phase, "listening");
+        assert!(session.message.is_empty() && session.error.is_none());
     }
 
     use tokio::net::TcpListener;
