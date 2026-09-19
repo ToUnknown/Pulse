@@ -1629,8 +1629,6 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         dictation::dictation_settings,
         #[cfg(target_os = "macos")]
-        dictation::copy_last_dictation,
-        #[cfg(target_os = "macos")]
         dictation::set_dictation_enabled,
         #[cfg(target_os = "macos")]
         dictation::request_dictation_access,

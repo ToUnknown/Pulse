@@ -9,7 +9,6 @@ async function refresh() {
     const state = await invoke("dictation_settings");
     section.hidden = false;
     enabled.checked = state.enabled;
-    document.querySelector("#dictation-copy-last").hidden = !state.hasLastTranscript;
     document.querySelector("#dictation-microphone").hidden = state.microphone;
     document.querySelector("#dictation-accessibility").hidden = state.accessibility;
     if (state.error) { error.textContent=state.error; error.hidden=false; }
@@ -32,8 +31,3 @@ for (const [id,microphone] of [["dictation-microphone",true],["dictation-accessi
 }
 refresh();
 setInterval(()=>{if(!document.hidden) refresh();},2000);
-
-document.querySelector("#dictation-copy-last").addEventListener("click", async (event) => {
-  try { await invoke("copy_last_dictation"); event.target.textContent = "Copied"; setTimeout(() => { event.target.textContent = "Copy last transcript"; }, 1500); }
-  catch(reason) { error.textContent=String(reason); error.hidden=false; }
-});

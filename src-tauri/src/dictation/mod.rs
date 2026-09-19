@@ -98,7 +98,6 @@ struct Dictation {
     next_id: AtomicU64,
     session: Mutex<Option<Session>>,
     startup_error: Mutex<Option<String>>,
-    last_transcript: Mutex<String>,
 }
 async fn on_main<T: Send + 'static>(
     app: &tauri::AppHandle,
@@ -164,7 +163,6 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         next_id: AtomicU64::new(1),
         session: Mutex::new(None),
         startup_error: Mutex::new(None),
-        last_transcript: Mutex::new(String::new()),
     });
     if enabled {
         if let Err(error) = register(app) {
@@ -206,26 +204,9 @@ pub fn dictation_settings(app: tauri::AppHandle, window: WebviewWindow) -> Resul
     settings_only(&window)?;
     let state = app.state::<Dictation>();
     Ok(
-        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":"Right Option", "microphone":unsafe { pulse_dictation_mic_allowed() }, "accessibility":unsafe { pulse_dictation_ax_allowed() }, "apiKeyConfigured":crate::openai_credentials::is_configured().unwrap_or(false), "error":*state.startup_error.lock().unwrap(), "hasLastTranscript":!state.last_transcript.lock().unwrap().is_empty()}),
+        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":"Right Option", "microphone":unsafe { pulse_dictation_mic_allowed() }, "accessibility":unsafe { pulse_dictation_ax_allowed() }, "apiKeyConfigured":crate::openai_credentials::is_configured().unwrap_or(false), "error":*state.startup_error.lock().unwrap()}),
     )
 }
-#[tauri::command]
-pub fn copy_last_dictation(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
-    settings_only(&window)?;
-    let text = app
-        .state::<Dictation>()
-        .last_transcript
-        .lock()
-        .unwrap()
-        .clone();
-    if text.is_empty() {
-        return Err("No transcript is available yet.".into());
-    }
-    arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.set_text(text))
-        .map_err(|_| "Could not copy the last transcript. Try again.".into())
-}
-
 #[tauri::command]
 pub async fn request_dictation_access(
     app: tauri::AppHandle,
@@ -738,7 +719,6 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             s.phase = "done";
             return Ok(None);
         }
-        *state.last_transcript.lock().unwrap() = text.clone();
         s.text = text.clone();
         s.phase = "sending";
         // Capture the input selected now, never the one selected at recording
