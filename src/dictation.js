@@ -10,7 +10,7 @@ const context = canvas.getContext("2d");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
 let shown = "", id, lastSamples = 0, waveTime = 0;
-let sliderOffset = 0, sliderSpeed = 0, arrivalSpeed = 0, lastArrival = 0, lastSliderFrame = 0;
+let sliderLead = 0, sliderFollow = 0, sliderOffset = 0, lastSliderFrame = null;
 let generation = 0, shownSession, voice = 0, lastFrame = 0;
 let glassBusy = false, lastGlass = "";
 async function syncGlass() {
@@ -37,39 +37,29 @@ async function syncGlass() {
 }
 function setText(value) {
   if (value === shown) return;
-  const now = performance.now();
-  const previousWidth = words.getBoundingClientRect().width;
-  const appended = value.startsWith(shown);
   shown = value;
-  // A single text node moves as a ribbon; no character-by-character replay.
+  // Arrival changes only the destination, never the current motion state.
   words.textContent = value.replace(/\s+/gu, " ");
-  const addedWidth = Math.max(0, words.getBoundingClientRect().width - previousWidth);
-  if (appended && lastArrival) {
-    const rate = addedWidth / Math.max(.12, Math.min(2, (now - lastArrival) / 1000));
-    arrivalSpeed += (Math.min(500, rate) - arrivalSpeed) * .15;
-  }
-  lastArrival = now;
 }
 function moveSlider(now) {
-  const elapsed = Math.min(.05, Math.max(0, (now - (lastSliderFrame || now)) / 1000));
+  const elapsed = lastSliderFrame === null ? 0 : Math.min(.05, Math.max(0, (now - lastSliderFrame) / 1000));
   lastSliderFrame = now;
   const target = Math.max(0, words.getBoundingClientRect().width - textViewport.clientWidth);
-  const distance = target - sliderOffset;
   if (reducedMotion.matches) {
-    sliderOffset = target; sliderSpeed = 0;
+    sliderLead = sliderFollow = sliderOffset = target;
   } else {
-    // Average incoming bursts, then limit acceleration in both directions.
-    // A braking curve eases toward the newest text instead of stopping sharply.
-    arrivalSpeed *= Math.exp(-elapsed / 2);
-    const acceleration = 120;
-    const pace = Math.min(280, Math.abs(distance) * 1.8 + arrivalSpeed * .12,
-      Math.sqrt(2 * acceleration * Math.abs(distance)));
-    const desiredSpeed = Math.sign(distance) * pace;
-    const change = (desiredSpeed - sliderSpeed) * (1 - Math.exp(-elapsed / .55));
-    sliderSpeed += Math.max(-acceleration * elapsed, Math.min(acceleration * elapsed, change));
-    const movement = sliderSpeed * elapsed;
-    if (Math.abs(distance) < .15) { sliderOffset = target; sliderSpeed = 0; }
-    else if (Math.sign(movement) === Math.sign(distance)) sliderOffset += Math.sign(distance) * Math.min(Math.abs(distance), Math.abs(movement));
+    // Three cascaded dampers, integrated exactly for this frame's duration.
+    // Position, velocity AND acceleration remain continuous when the target
+    // changes. A fresh burst starts softly; a pause settles without clamps,
+    // speed resets, a dead zone, or overshoot for an advancing transcript.
+    const t = elapsed * 5;
+    const decay = Math.exp(-t);
+    const lead = sliderLead - target;
+    const follow = sliderFollow - target;
+    const offset = sliderOffset - target;
+    sliderLead = target + lead * decay;
+    sliderFollow = target + (follow + lead * t) * decay;
+    sliderOffset = target + (offset + follow * t + lead * t * t / 2) * decay;
   }
   words.style.transform = `translate3d(${-sliderOffset}px, 0, 0)`;
 }
@@ -80,7 +70,7 @@ export function render(next) {
     body.dataset.placing = "true";
     generation++;
     id = next.id; shown = ""; words.textContent = ""; lastSamples = 0;
-    sliderOffset = sliderSpeed = arrivalSpeed = lastArrival = lastSliderFrame = 0;
+    sliderLead = sliderFollow = sliderOffset = 0; lastSliderFrame = null;
     words.style.transform = "translate3d(0, 0, 0)";
     body.dataset.expanded = "false"; voice = 0;
   }
