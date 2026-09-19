@@ -4,7 +4,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
 static AXUIElementRef fakeElement, selectedElement, fakeSystem;
-static bool missingSystemFocus;
+static bool missingSystemFocus, missingText, missingSelection, missingEditability;
 static NSUInteger emptyCaretOffset;
 static long characterCountOverride=-1;
 static void (*observePosted)(CGEventRef);
@@ -30,6 +30,8 @@ static bool trusted(void) { return true; }
 static AXError getPid(AXUIElementRef element,pid_t *pid) { *pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier; return kAXErrorSuccess; }
 static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *out) {
     *out=NULL;
+    if ((missingText && CFEqual(name,kAXValueAttribute)) || (missingSelection && CFEqual(name,kAXSelectedTextRangeAttribute))) return kAXErrorCannotComplete;
+    if (missingEditability && (CFEqual(name,kAXRoleAttribute) || CFEqual(name,CFSTR("AXEditable")))) return kAXErrorCannotComplete;
     if (CFEqual(name,kAXFocusedUIElementAttribute) && focused && !(missingSystemFocus && CFEqual(element,fakeSystem))) *out=CFRetain(selectedElement);
     else if (CFEqual(name,kAXRoleAttribute)) *out=CFRetain(kAXTextAreaRole);
     else if (CFEqual(name,CFSTR("AXEditable"))) *out=CFRetain(kCFBooleanTrue);
@@ -39,7 +41,7 @@ static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *
     else if (CFEqual(name,kAXSelectedTextRangeAttribute)) { CFRange r=CFRangeMake(!editor.length && emptyCaretOffset ? emptyCaretOffset : phantomPlaceholderCaret && !editor.length ? 10 : caret.location,caret.length); *out=AXValueCreate(kAXValueCFRangeType,&r); }
     return *out?kAXErrorSuccess:kAXErrorNoValue;
 }
-static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true; return kAXErrorSuccess; }
+static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=!missingEditability && (CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true); return kAXErrorSuccess; }
 static AXError writeAttribute(AXUIElementRef e,CFStringRef name,CFTypeRef value) {
     // A direct selected-text/value write must never be used for insertion.
     if (!CFEqual(name,kAXSelectedTextRangeAttribute)) abort();
@@ -74,7 +76,7 @@ static void expect(bool ok,const char *message) { if (!ok) { fprintf(stderr,"FAI
 static void observeOwnEvent(CGEventRef event) { PulseDictationShortcutEvent([NSEvent eventWithCGEvent:event]); }
 static void shortcutAction(bool down,bool chord,bool interrupted,double time) { shortcutActions++; }
 static void begin(void) {
-    missingSystemFocus=false; emptyCaretOffset=0; characterCountOverride=-1;
+    missingSystemFocus=missingText=missingSelection=missingEditability=false; emptyCaretOffset=0; characterCountOverride=-1;
     selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false;
     focused=supportsRange=acceptTyping=acceptSelection=true;
     editor=@"Before SELECT after"; caret=NSMakeRange(7,6);
@@ -128,6 +130,54 @@ int main(void) {
         expect(pulse_dictation_live_step("hello")==2 && keyboardEvents==beforeFocus,"focus changes pause the pinned input");
         selectedElement=fakeElement; CFRelease(otherField); syncText("hello");
         expect([editor isEqualToString:@"Before hello after"],"returning to original input resumes without retargeting");
+        // Chromium can expose an in-flight Unicode insertion a few characters
+        // at a time. It is still the same field; do not fail or post it again.
+        begin(); acceptTyping=false;
+        expect(pulse_dictation_live_step("hello")==0,"start asynchronous insertion");
+        unsigned inFlightEvents=keyboardEvents;
+        editor=@"Before he after"; caret=NSMakeRange(9,0);
+        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"partial insertion must wait without losing the field or duplicating text");
+        missingText=true;
+        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"temporary missing text must not lose the field");
+        missingText=false; missingSelection=true;
+        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"temporary missing selection must not lose the field");
+        missingSelection=false; editor=pendingValue; caret=NSMakeRange(9,0);
+        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"text can finish before the caret catches up");
+        caret=pendingSelection; acceptTyping=true;
+        syncText("hello world");
+        expect([editor isEqualToString:@"Before hello world after"],"partial readbacks converge without replay");
+        begin(); missingEditability=true;
+        unsigned capabilityEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("hello")==0 && keyboardEvents==capabilityEvents,"temporarily missing editability must wait, not report lost focus");
+        missingEditability=false; syncText("hello");
+        expect([editor isEqualToString:@"Before hello after"],"same pinned input resumes when capabilities recover");
+        begin(); missingText=true;
+        expect(pulse_dictation_live_step("hello")==0,"missing initial readback waits");
+        unreadableSince-=1;
+        expect(pulse_dictation_live_step("hello")==-1,"unreadable input has a bounded timeout");
+        begin(); acceptTyping=false;
+        expect(pulse_dictation_live_step("hello")==0,"start insertion before focus switch");
+        AXUIElementRef duringWriteOther=AXUIElementCreateApplication(getpid()+4);
+        selectedElement=duringWriteOther;
+        unsigned switchedEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("hello world")==2 && keyboardEvents==switchedEvents,"pending transaction never follows another focused input");
+        selectedElement=fakeElement; CFRelease(duringWriteOther);
+        editor=pendingValue; caret=pendingSelection; acceptTyping=true;
+        syncText("hello world");
+        expect([editor isEqualToString:@"Before hello world after"],"return to pinned field completes the existing transaction once");
+        begin(); acceptTyping=false;
+        expect(pulse_dictation_live_step("hello")==0,"start insertion before user key");
+        CGEventRef userKey=CGEventCreateKeyboardEvent(NULL,0,true);
+        PulseDictationShortcutEvent([NSEvent eventWithCGEvent:userKey]); CFRelease(userKey);
+        unsigned userEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==userEvents,"real typing interrupts even while readback is pending");
+        begin(); acceptTyping=false;
+        expect(pulse_dictation_live_step("hello")==0,"start rejected insertion");
+        editor=@"Before unrelated after"; caret=NSMakeRange(16,0);
+        unsigned rejectedEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("hello")==0,"unexpected in-flight result gets bounded settling time");
+        pendingSince-=1;
+        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==rejectedEvents,"unconfirmed text is never adopted or overwritten");
         begin(); acceptTyping=false;
         expect(pulse_dictation_live_step("ignored")==0,"posting is not success");
         pendingSince-=1;
@@ -206,6 +256,6 @@ int main(void) {
         expect(pulse_dictation_live_begin()==0,"no selected input uses bottom preview");
         expect(pulse_dictation_copy("clipboard result") && clipboardWrites==2,"clipboard only written by explicit no-input path");
         pulse_dictation_clear_target(); CFRelease(fakeElement); CFRelease(fakeSystem);
-        puts("PASS: application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
+        puts("PASS: partial and missing AX readbacks, pinned transaction recovery, real user interruption, application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
     }
 }

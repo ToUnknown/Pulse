@@ -220,7 +220,7 @@ static bool editable(AXUIElementRef element) {
 // exact range owned by this dictation. Every asynchronous write is read back.
 static NSString *liveBase, *liveApplied, *liveExpected, *pendingText, *pendingValue;
 static NSRange liveOriginal, liveSelection, pendingSelection;
-static CFTimeInterval pendingSince;
+static CFTimeInterval pendingSince, unreadableSince;
 static bool liveUsable, liveStarted;
 static NSString *livePlaceholderCandidate;
 static bool livePlaceholderConfirmed;
@@ -282,7 +282,7 @@ void pulse_dictation_clear_target(void) {
     deliveryElement = NULL; deliveryPID = 0;
     liveBase = liveApplied = liveExpected = pendingText = pendingValue = nil;
     liveUsable = false; liveStarted = false; liveInterrupted = false;
-    livePlaceholderCandidate=nil; livePlaceholderConfirmed=false; liveSelecting=false;
+    livePlaceholderCandidate=nil; livePlaceholderConfirmed=false; liveSelecting=false; unreadableSince=0;
 }
 // 0 = no input, 1 = safely readable/replaceable input, 2 = unsupported input.
 int pulse_dictation_live_begin(void) {
@@ -315,10 +315,12 @@ bool pulse_dictation_live_bounds(double *x, double *y, double *width, double *he
     *x=rect.origin.x; *y=rect.origin.y; *width=rect.size.width; *height=rect.size.height;
     return true;
 }
+// Identity is pinned for the whole session. Capability reads may temporarily
+// fail while an editor updates; check them before mutations, not as identity.
 static bool sameInput(void) {
     AXUIElementRef focused = focusedElement();
     bool same = focused && deliveryElement && CFEqual(focused,deliveryElement) &&
-        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID && editable(focused);
+        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID;
     if (focused) CFRelease(focused);
     return same;
 }
@@ -408,18 +410,29 @@ static bool requestLiveSelection(NSRange selection) {
     requestedSelection=selection; selectionSince=CFAbsoluteTimeGetCurrent(); liveSelecting=true;
     return true;
 }
+// AX value and selection are independent, asynchronous observations. A Unicode
+// event can also be applied in several input events by the receiving editor.
+// While waiting, never resend, adopt partial content, or write to another field.
+// Only the exact expected value AND caret can acknowledge our transaction.
+static int awaitLiveReadback(void) {
+    CFTimeInterval now=CFAbsoluteTimeGetCurrent();
+    if (!unreadableSince) unreadableSince=now;
+    CFTimeInterval since=pendingValue ? pendingSince : liveSelecting ? selectionSince : unreadableSince;
+    if (now-since < 0.8) return 0;
+    liveUsable=false;
+    return -1;
+}
 // -1 = unsafe to continue, 0 = pending, 1 = synced, 2 = original input unfocused.
 int pulse_dictation_live_step(const char *utf8) {
     if (!liveUsable || liveInterrupted) { liveUsable=false; return -1; }
     if (!sameInput()) return 2; // Pin the session; never follow focus to a new input.
     NSString *actual = readText(deliveryElement);
     NSRange selection;
-    if (!actual || !readSelection(deliveryElement,&selection)) { liveUsable=false; return -1; }
+    if (!actual || !readSelection(deliveryElement,&selection)) return awaitLiveReadback();
     if (liveSelecting) {
-        if (![actual isEqualToString:liveExpected]) { liveUsable=false; return -1; }
+        if (![actual isEqualToString:liveExpected]) return awaitLiveReadback();
         if (NSEqualRanges(selection,requestedSelection)) { liveSelection=selection; liveSelecting=false; }
-        else if (NSEqualRanges(selection,liveSelection) && CFAbsoluteTimeGetCurrent()-selectionSince < 0.8) return 0;
-        else { liveUsable=false; return -1; }
+        else return awaitLiveReadback();
     }
     if (pendingValue) {
         if (!liveStarted && livePlaceholderCandidate && [actual isEqualToString:pendingText] &&
@@ -432,18 +445,15 @@ int pulse_dictation_live_step(const char *utf8) {
         if ([actual isEqualToString:pendingValue] && NSEqualRanges(selection,pendingSelection)) {
             liveApplied=pendingText; liveExpected=pendingValue; liveSelection=pendingSelection; liveStarted=true;
             pendingText=pendingValue=nil;
-        } else if (([actual isEqualToString:liveExpected] || [actual isEqualToString:pendingValue]) &&
-                   (NSEqualRanges(selection,liveSelection) || NSEqualRanges(selection,pendingSelection)) &&
-                   CFAbsoluteTimeGetCurrent()-pendingSince < 0.8) {
-            return 0;
-        } else { liveUsable=false; return -1; }
+        } else return awaitLiveReadback();
     }
     if (![actual isEqualToString:liveExpected] || !NSEqualRanges(selection,liveSelection)) { liveUsable=false; return -1; }
     NSString *desired = [NSString stringWithUTF8String:utf8];
     if (!desired) { liveUsable=false; return -1; }
     if ([desired isEqualToString:liveApplied]) {
         NSRange end=NSMakeRange(liveOriginal.location+liveApplied.length,0);
-        if (!liveStarted || NSEqualRanges(selection,end)) return 1;
+        if (!liveStarted || NSEqualRanges(selection,end)) { unreadableSince=0; return 1; }
+        if (!editable(deliveryElement)) return awaitLiveReadback();
         if (!requestLiveSelection(end)) { liveUsable=false; return -1; }
         return 0;
     }
@@ -452,6 +462,7 @@ int pulse_dictation_live_step(const char *utf8) {
     nextLiveEdit(liveApplied,desired,&change,&fragment);
     NSString *next=[liveApplied stringByReplacingCharactersInRange:change withString:fragment];
     NSRange replace=liveStarted ? NSMakeRange(liveOriginal.location+change.location,change.length) : liveOriginal;
+    if (!editable(deliveryElement)) return awaitLiveReadback();
     if (!NSEqualRanges(replace,selection)) {
         if (!requestLiveSelection(replace)) { liveUsable=false; return -1; }
         // AX writes may be acknowledged before the editor updates its range.
@@ -459,12 +470,15 @@ int pulse_dictation_live_step(const char *utf8) {
         return 0;
     }
     // Revalidate content and focus after selecting, before posting input.
-    if (liveInterrupted || !sameInput() || ![readText(deliveryElement) isEqualToString:liveExpected]) { liveUsable=false; return -1; }
+    if (liveInterrupted) { liveUsable=false; return -1; }
+    if (!sameInput()) return 2;
+    if (![readText(deliveryElement) isEqualToString:liveExpected]) return awaitLiveReadback();
     if (!typeUnicode(fragment)) { liveUsable=false; return -1; }
     pendingText=next;
     pendingValue=[liveBase stringByReplacingCharactersInRange:liveOriginal withString:next];
     pendingSelection=NSMakeRange(replace.location+fragment.length,0);
     pendingSince=CFAbsoluteTimeGetCurrent();
+    unreadableSince=0;
     return 0;
 }
 // Called only for a session that started with no input selected.
