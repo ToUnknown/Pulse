@@ -73,6 +73,20 @@ struct Session {
     inline_paused: bool,
     message: String,
 }
+impl Session {
+    fn lose_target(&mut self) {
+        self.inline = false;
+        self.inline_synced = false;
+        self.inline_paused = false;
+        self.target = None;
+        self.phase = "error";
+        self.message = "Dictation stopped because the original input could not be restored.".into();
+        self.error = Some(self.message.clone());
+        self.audio.take();
+        self.cancel.cancel();
+        // Keep input_selected true: loss must never turn into clipboard delivery.
+    }
+}
 struct Dictation {
     hold_shortcut: Mutex<shortcut::HoldShortcut>,
     enabled: AtomicBool,
@@ -430,18 +444,21 @@ fn live_tick(app: &tauri::AppHandle, id: u64) -> bool {
             s.inline_synced = false;
             s.inline_paused = false;
         }
-        Some(2) => {
-            s.inline_synced = false;
-            s.inline_paused = true;
-        }
-        Some(_) => {
-            s.inline = false;
-            s.inline_synced = false;
-            s.message = "Live insertion stopped because the input changed or did not accept text. Your clipboard is unchanged; the transcript remains available in Settings.".into();
-        }
+        Some(_) => s.lose_target(),
         None => {}
     }
-    true
+    let lost = s.cancel.is_cancelled();
+    drop(guard);
+    if lost {
+        state.hold_shortcut.lock().unwrap().interrupt();
+        // Removing the audio tap may wait for its callback, which also locks
+        // the session. Stop it only after releasing the session mutex.
+        unsafe {
+            pulse_dictation_stop();
+            pulse_dictation_clear_target();
+        }
+    }
+    !lost
 }
 
 fn start(app: &tauri::AppHandle) {
@@ -520,7 +537,7 @@ fn start(app: &tauri::AppHandle) {
     ));
     let _ = window.set_ignore_cursor_events(true);
     let mic = unsafe { pulse_dictation_mic_allowed() };
-    let started = mic && unsafe { pulse_dictation_start(id, audio_callback) };
+    let started = mic && input_mode != 2 && unsafe { pulse_dictation_start(id, audio_callback) };
     let escape_registered = app
         .global_shortcut()
         .on_shortcut("Escape", |app, _, event| {
@@ -548,7 +565,9 @@ fn start(app: &tauri::AppHandle) {
     });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = if !mic {
+        let result = if input_mode == 2 {
+            Err("Dictation stopped because this input could not be locked.".into())
+        } else if !mic {
             Err("Allow Microphone access in Pulse Settings → Advanced → Dictation.".into())
         } else if !started {
             Err("Could not start the microphone. Check your input device and try again.".into())
@@ -606,7 +625,7 @@ fn update_text(app: &tauri::AppHandle, id: u64, text: &str) {
         .lock()
         .unwrap()
         .as_mut()
-        .filter(|s| s.id == id)
+        .filter(|s| s.id == id && !s.cancel.is_cancelled())
     {
         s.text = text.to_owned();
         s.inline_synced = false;
@@ -866,6 +885,46 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn losing_target_cancels_capture_and_never_switches_to_clipboard() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut session = Session {
+            id: 1,
+            audio: Some(tx),
+            cancel: CancellationToken::new(),
+            error: None,
+            phase: "listening",
+            text: "Keep these words".into(),
+            level: 0.1,
+            samples: 10,
+            origin: (0.0, 0.0),
+            bottom: 28.0,
+            target: Some(json!({"x":100})),
+            input_selected: true,
+            inline: true,
+            inline_synced: false,
+            inline_paused: false,
+            message: String::new(),
+        };
+        session.lose_target();
+        assert!(session.cancel.is_cancelled());
+        assert!(session.audio.is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(session.target.is_none());
+        assert!(!session.inline);
+        assert!(
+            session.input_selected,
+            "target loss cannot enable clipboard delivery"
+        );
+        assert_eq!(session.text, "Keep these words");
+        assert_eq!(session.phase, "error");
+        assert!(session.error.is_some());
+    }
+
     use tokio::net::TcpListener;
 
     #[tokio::test]

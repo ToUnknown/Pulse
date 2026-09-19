@@ -10,7 +10,7 @@
 // All lifecycle and AX operations run on AppKit's main thread. Only the tap
 // callback runs on the audio thread; its buffers are copied before returning.
 static AVAudioEngine *engine;
-static AXUIElementRef deliveryElement;
+static AXUIElementRef deliveryElement, deliveryWindow;
 static const int64_t PulseDictationEventTag = 0x50554c5345444943;
 static bool liveInterrupted;
 static bool sameInput(void);
@@ -220,7 +220,8 @@ static bool editable(AXUIElementRef element) {
 // exact range owned by this dictation. Every asynchronous write is read back.
 static NSString *liveBase, *liveApplied, *liveExpected, *pendingText, *pendingValue;
 static NSRange liveOriginal, liveSelection, pendingSelection;
-static CFTimeInterval pendingSince, unreadableSince;
+static CFTimeInterval pendingSince, unreadableSince, recoverySince, lastRecoveryAttempt;
+static bool liveRecovering;
 static bool liveUsable, liveStarted;
 static NSString *livePlaceholderCandidate;
 static bool livePlaceholderConfirmed;
@@ -279,6 +280,8 @@ static bool textInput(AXUIElementRef element) {
 }
 void pulse_dictation_clear_target(void) {
     if (deliveryElement) CFRelease(deliveryElement);
+    if (deliveryWindow) CFRelease(deliveryWindow);
+    deliveryWindow=NULL; liveRecovering=false; recoverySince=lastRecoveryAttempt=0;
     deliveryElement = NULL; deliveryPID = 0;
     liveBase = liveApplied = liveExpected = pendingText = pendingValue = nil;
     liveUsable = false; liveStarted = false; liveInterrupted = false;
@@ -293,7 +296,11 @@ int pulse_dictation_live_begin(void) {
     if (!isInput) { CFRelease(element); return 0; }
     deliveryElement = element;
     AXUIElementSetMessagingTimeout(element, 0.08);
-    AXUIElementGetPid(element, &deliveryPID);
+    if (AXUIElementGetPid(element, &deliveryPID)!=kAXErrorSuccess || deliveryPID<=0) return 2;
+    CFTypeRef window=attribute(element,kAXWindowAttribute);
+    if (window && CFGetTypeID(window)==AXUIElementGetTypeID()) deliveryWindow=(AXUIElementRef)window;
+    else if (window) CFRelease(window);
+    if (deliveryWindow) AXUIElementSetMessagingTimeout(deliveryWindow,0.08);
     if (!editable(element)) return 2;
     Boolean rangeSettable = false;
     AXUIElementIsAttributeSettable(element,kAXSelectedTextRangeAttribute,&rangeSettable);
@@ -321,6 +328,15 @@ static bool sameInput(void) {
     AXUIElementRef focused = focusedElement();
     bool same = focused && deliveryElement && CFEqual(focused,deliveryElement) &&
         NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID;
+    if (same && deliveryWindow) {
+        // Some apps keep reporting their last focused control after a different
+        // window becomes key. Verify window ownership as well as element/PID.
+        AXUIElementRef app=AXUIElementCreateApplication(deliveryPID);
+        AXUIElementSetMessagingTimeout(app,0.08);
+        CFTypeRef window=attribute(app,kAXFocusedWindowAttribute);
+        if (window) { same=CFEqual(window,deliveryWindow); CFRelease(window); }
+        CFRelease(app);
+    }
     if (focused) CFRelease(focused);
     return same;
 }
@@ -347,7 +363,9 @@ static bool typeUnicode(NSString *text) {
         CGEventSetFlags(down,0); CGEventSetFlags(up,0);
         CGEventSetIntegerValueField(down,kCGEventSourceUserData,PulseDictationEventTag);
         CGEventSetIntegerValueField(up,kCGEventSourceUserData,PulseDictationEventTag);
-        CGEventPost(kCGHIDEventTap,down); CGEventPost(kCGHIDEventTap,up);
+        // Constrain delivery to the pinned process even if another app becomes
+        // active between the last AX focus check and event dispatch.
+        CGEventPostToPid(deliveryPID,down); CGEventPostToPid(deliveryPID,up);
     }
     bool sent = down && up;
     if (down) CFRelease(down);
@@ -422,10 +440,62 @@ static int awaitLiveReadback(void) {
     liveUsable=false;
     return -1;
 }
-// -1 = unsafe to continue, 0 = pending, 1 = synced, 2 = original input unfocused.
+// Keyboard delivery requires focus. Retain the original AX objects, bring that
+// exact window/input back, then verify both content and caret before resuming.
+// Never find a substitute by label, position, or whichever control was clicked.
+static int ensureLiveTarget(void) {
+    bool focused=sameInput();
+    if (focused && !liveRecovering) return 1;
+    CFTimeInterval now=CFAbsoluteTimeGetCurrent();
+    if (!liveRecovering) { liveRecovering=true; recoverySince=now; lastRecoveryAttempt=0; }
+    if (now-recoverySince>=1.2) { liveUsable=false; return -1; }
+    NSRunningApplication *app=[NSRunningApplication runningApplicationWithProcessIdentifier:deliveryPID];
+    CFTypeRef role=NULL;
+    AXError validity=AXUIElementCopyAttributeValue(deliveryElement,kAXRoleAttribute,&role);
+    if (role) CFRelease(role);
+    if (!app || app.terminated || validity==kAXErrorInvalidUIElement) { liveUsable=false; return -1; }
+    NSString *actual=readText(deliveryElement);
+    NSString *expected=pendingValue ?: liveExpected;
+    // Preserve the existing placeholder proof during recovery as well.
+    if (pendingValue && !liveStarted && livePlaceholderCandidate && [actual isEqualToString:pendingText]) {
+        livePlaceholderConfirmed=true; liveBase=@""; liveExpected=@""; pendingValue=pendingText;
+        liveOriginal=NSMakeRange(0,0); pendingSelection=NSMakeRange(pendingText.length,0); expected=pendingValue;
+    }
+    if (actual && ![actual isEqualToString:expected]) {
+        if (pendingValue) return awaitLiveReadback();
+        liveUsable=false; return -1; // The pinned document was edited/replaced.
+    }
+    if (!focused) {
+        if (now-lastRecoveryAttempt>=0.15) {
+            lastRecoveryAttempt=now;
+            if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier!=deliveryPID)
+                [app activateWithOptions:0];
+            if (deliveryWindow) AXUIElementPerformAction(deliveryWindow,kAXRaiseAction);
+            AXError result=AXUIElementSetAttributeValue(deliveryElement,kAXFocusedAttribute,kCFBooleanTrue);
+            if (result==kAXErrorInvalidUIElement) { liveUsable=false; return -1; }
+        }
+        return 0; // Activation is asynchronous; acknowledge on a later tick.
+    }
+    NSRange selection;
+    if (!actual || !readSelection(deliveryElement,&selection) || !editable(deliveryElement)) return 0;
+    NSRange owned=pendingValue ? pendingSelection : liveSelecting ? requestedSelection : liveSelection;
+    if (!NSEqualRanges(selection,owned)) {
+        // Blurring a control often clears its selection. Restore only the
+        // previously owned range in an unchanged, identity-verified document.
+        if (now-lastRecoveryAttempt>=0.15) {
+            lastRecoveryAttempt=now;
+            if (!selectOwnedRange(owned)) return 0;
+        }
+        return 0;
+    }
+    liveRecovering=false; recoverySince=lastRecoveryAttempt=0;
+    return 1;
+}
+// -1 = target lost/unsafe, 0 = pending or restoring the original target, 1 = synced.
 int pulse_dictation_live_step(const char *utf8) {
     if (!liveUsable || liveInterrupted) { liveUsable=false; return -1; }
-    if (!sameInput()) return 2; // Pin the session; never follow focus to a new input.
+    int target=ensureLiveTarget();
+    if (target!=1) return target;
     NSString *actual = readText(deliveryElement);
     NSRange selection;
     if (!actual || !readSelection(deliveryElement,&selection)) return awaitLiveReadback();
@@ -471,7 +541,7 @@ int pulse_dictation_live_step(const char *utf8) {
     }
     // Revalidate content and focus after selecting, before posting input.
     if (liveInterrupted) { liveUsable=false; return -1; }
-    if (!sameInput()) return 2;
+    if (!sameInput()) return 0; // Recover the original target on the next tick.
     if (![readText(deliveryElement) isEqualToString:liveExpected]) return awaitLiveReadback();
     if (!typeUnicode(fragment)) { liveUsable=false; return -1; }
     pendingText=next;

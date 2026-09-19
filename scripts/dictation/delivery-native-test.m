@@ -3,7 +3,10 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
-static AXUIElementRef fakeElement, selectedElement, fakeSystem;
+static AXUIElementRef fakeElement, selectedElement, fakeSystem, fakeWindow, focusedWindow;
+static bool acceptFocus=true, targetGone=false;
+static pid_t foregroundPID=1000;
+static unsigned focusRequests, raiseRequests;
 static bool missingSystemFocus, missingText, missingSelection, missingEditability;
 static NSUInteger emptyCaretOffset;
 static long characterCountOverride=-1;
@@ -25,11 +28,37 @@ static unsigned keyboardEvents, clipboardWrites;
 - (NSInteger)clearContents { clipboardWrites++; return 0; }
 - (BOOL)setString:(NSString *)text forType:(NSString *)type { clipboardWrites++; return text.length>0; }
 @end
+// Focus recovery is mocked too: the harness never activates a real app.
+@interface TestRunningApplication : NSObject
+@property pid_t processIdentifier;
+@property BOOL terminated;
++ (instancetype)runningApplicationWithProcessIdentifier:(pid_t)pid;
+- (BOOL)activateWithOptions:(NSApplicationActivationOptions)options;
+@end
+@implementation TestRunningApplication
++ (instancetype)runningApplicationWithProcessIdentifier:(pid_t)pid { TestRunningApplication *app=[self new]; app.processIdentifier=pid; app.terminated=targetGone; return app; }
+- (BOOL)activateWithOptions:(NSApplicationActivationOptions)options { if(acceptFocus)foregroundPID=self.processIdentifier; return acceptFocus; }
+@end
+@interface TestWorkspace : NSObject
+@property(readonly) TestRunningApplication *frontmostApplication;
+@property(readonly) NSNotificationCenter *notificationCenter;
++ (instancetype)sharedWorkspace;
+- (BOOL)openURL:(NSURL *)url;
+@end
+@implementation TestWorkspace
++ (instancetype)sharedWorkspace { static TestWorkspace *w; if(!w)w=[self new]; return w; }
+- (TestRunningApplication *)frontmostApplication { return [TestRunningApplication runningApplicationWithProcessIdentifier:foregroundPID]; }
+- (BOOL)openURL:(NSURL *)url { abort(); }
+- (NSNotificationCenter *)notificationCenter { return NSNotificationCenter.defaultCenter; }
+@end
 static AXUIElementRef createSystem(void) { return (AXUIElementRef)CFRetain(fakeSystem); }
 static bool trusted(void) { return true; }
-static AXError getPid(AXUIElementRef element,pid_t *pid) { *pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier; return kAXErrorSuccess; }
+static AXError getPid(AXUIElementRef element,pid_t *pid) { *pid=1000; return kAXErrorSuccess; }
 static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *out) {
     *out=NULL;
+    if (targetGone && CFEqual(element,fakeElement)) return kAXErrorInvalidUIElement;
+    if (CFEqual(name,kAXFocusedWindowAttribute)) { *out=CFRetain(focusedWindow); return kAXErrorSuccess; }
+    if (CFEqual(name,kAXWindowAttribute)) { *out=CFRetain(fakeWindow); return kAXErrorSuccess; }
     if ((missingText && CFEqual(name,kAXValueAttribute)) || (missingSelection && CFEqual(name,kAXSelectedTextRangeAttribute))) return kAXErrorCannotComplete;
     if (missingEditability && (CFEqual(name,kAXRoleAttribute) || CFEqual(name,CFSTR("AXEditable")))) return kAXErrorCannotComplete;
     if (CFEqual(name,kAXFocusedUIElementAttribute) && focused && !(missingSystemFocus && CFEqual(element,fakeSystem))) *out=CFRetain(selectedElement);
@@ -43,14 +72,15 @@ static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *
 }
 static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=!missingEditability && (CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true); return kAXErrorSuccess; }
 static AXError writeAttribute(AXUIElementRef e,CFStringRef name,CFTypeRef value) {
+    if (CFEqual(name,kAXFocusedAttribute)) { if(!CFEqual(e,fakeElement)) abort(); focusRequests++; if(acceptFocus){focused=true;selectedElement=fakeElement;} return kAXErrorSuccess; }
     // A direct selected-text/value write must never be used for insertion.
     if (!CFEqual(name,kAXSelectedTextRangeAttribute)) abort();
     CFRange r;
     if (acceptSelection && AXValueGetValue(value,kAXValueCFRangeType,&r)) caret=NSMakeRange(r.location,r.length);
     return kAXErrorSuccess;
 }
-static void post(CGEventTapLocation tap,CGEventRef event) {
-    if (tap!=kCGHIDEventTap || CGEventGetFlags(event)!=0 || !CGEventGetIntegerValueField(event,kCGEventSourceUserData)) abort();
+static void post(pid_t pid,CGEventRef event) {
+    if (pid!=1000 || CGEventGetFlags(event)!=0 || !CGEventGetIntegerValueField(event,kCGEventSourceUserData)) abort();
     keyboardEvents++;
     if (observePosted) observePosted(event);
     if (!acceptTyping || CGEventGetType(event)!=kCGEventKeyDown) return;
@@ -62,13 +92,20 @@ static void post(CGEventTapLocation tap,CGEventRef event) {
     caret=NSMakeRange(caret.location+insert.length,0);
     [editFrames addObject:editor];
 }
+static AXError performAction(AXUIElementRef e,CFStringRef action) { if(!CFEqual(e,fakeWindow) || !CFEqual(action,kAXRaiseAction))abort(); raiseRequests++; if(acceptFocus)focusedWindow=fakeWindow; return kAXErrorSuccess; }
+static CFAbsoluteTime testTime=1000;
+static CFAbsoluteTime currentTime(void) { testTime+=0.02; return testTime; }
+#define CFAbsoluteTimeGetCurrent currentTime
+#define AXUIElementPerformAction performAction
+#define NSRunningApplication TestRunningApplication
+#define NSWorkspace TestWorkspace
 #define AXUIElementCreateSystemWide createSystem
 #define AXIsProcessTrusted trusted
 #define AXUIElementGetPid getPid
 #define AXUIElementCopyAttributeValue copyAttribute
 #define AXUIElementIsAttributeSettable settable
 #define AXUIElementSetAttributeValue writeAttribute
-#define CGEventPost post
+#define CGEventPostToPid post
 #define NSPasteboard TestPasteboard
 #include "../../src-tauri/src/dictation/native.m"
 #include <stdio.h>
@@ -76,6 +113,7 @@ static void expect(bool ok,const char *message) { if (!ok) { fprintf(stderr,"FAI
 static void observeOwnEvent(CGEventRef event) { PulseDictationShortcutEvent([NSEvent eventWithCGEvent:event]); }
 static void shortcutAction(bool down,bool chord,bool interrupted,double time) { shortcutActions++; }
 static void begin(void) {
+    acceptFocus=true; targetGone=false; foregroundPID=1000; focusedWindow=fakeWindow;
     missingSystemFocus=missingText=missingSelection=missingEditability=false; emptyCaretOffset=0; characterCountOverride=-1;
     selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false;
     focused=supportsRange=acceptTyping=acceptSelection=true;
@@ -91,6 +129,7 @@ int main(void) {
     @autoreleasepool {
         fakeElement=AXUIElementCreateApplication(getpid());
         fakeSystem=AXUIElementCreateApplication(getpid()+2);
+        fakeWindow=AXUIElementCreateApplication(getpid()+9);
         begin();
         shortcutCallback=shortcutAction; observePosted=observeOwnEvent;
         syncText("hello wonderful world");
@@ -123,11 +162,46 @@ int main(void) {
         expect(pulse_dictation_live_step("new words")==-1 && keyboardEvents==posted,"cursor movement stops insertion");
         begin(); syncText("dictated"); editor=[editor stringByAppendingString:@" user edit"];
         expect(pulse_dictation_live_step("correction")==-1,"user edits stop replacement");
+        begin(); syncText("hello");
+        AXUIElementRef clicked=AXUIElementCreateApplication(getpid()+10);
+        selectedElement=clicked; foregroundPID=2000; caret=NSMakeRange(0,0);
+        unsigned beforeRecovery=keyboardEvents;
+        expect(pulse_dictation_live_step("hello more")==0 && keyboardEvents==beforeRecovery,"focus loss starts recovery without typing into the clicked field");
+        expect(selectedElement==fakeElement && foregroundPID==1000 && focusRequests && raiseRequests,"restore the original app, window and input");
+        syncText("hello more");
+        expect([editor isEqualToString:@"Before hello more after"],"restore owned caret after blur and continue only original input");
+        begin(); syncText("hello"); focusedWindow=clicked;
+        unsigned windowEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("hello more")==0 && keyboardEvents==windowEvents,"stale focused element in another key window cannot authorize typing");
+        syncText("hello more");
+        expect(focusedWindow==fakeWindow,"recover the original window even when application focus reports a stale field");
+        begin(); selectedElement=clicked; acceptFocus=false;
+        expect(pulse_dictation_live_step("hello")==0,"refused focus is initially recoverable");
+        unsigned deniedEvents=keyboardEvents; recoverySince-=2;
+        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==deniedEvents,"refused focus times out without typing into another control");
+        begin(); selectedElement=clicked; targetGone=true;
+        unsigned goneEvents=keyboardEvents, goneRequests=focusRequests;
+        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==goneEvents && focusRequests==goneRequests,"closed target stops rather than finding a replacement");
+        begin(); syncText("hello"); selectedElement=clicked; editor=@"a different document";
+        unsigned editedEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("hello more")==-1 && keyboardEvents==editedEvents,"changed document is never overwritten during recovery");
+        begin(); acceptTyping=false;
+        expect(pulse_dictation_live_step("hello")==0,"start asynchronous write before blur");
+        editor=pendingValue; caret=NSMakeRange(0,0); selectedElement=clicked;
+        unsigned acknowledgedEvents=keyboardEvents;
+        expect(pulse_dictation_live_step("hello")==0,"recover focus after accepted write with cleared caret");
+        acceptTyping=true; syncText("hello");
+        expect(keyboardEvents==acknowledgedEvents && [editor isEqualToString:@"Before hello after"],"acknowledge accepted write after focus recovery without replay");
+        begin(); selectedElement=clicked; missingText=true;
+        expect(pulse_dictation_live_step("hello")==0,"recover focus even when blurred field temporarily hides text");
+        missingText=false; syncText("hello");
+        expect([editor isEqualToString:@"Before hello after"],"validate text after restoring a blurred field");
+        CFRelease(clicked);
         begin();
         AXUIElementRef otherField=AXUIElementCreateApplication(getpid()+1);
         selectedElement=otherField;
         unsigned beforeFocus=keyboardEvents;
-        expect(pulse_dictation_live_step("hello")==2 && keyboardEvents==beforeFocus,"focus changes pause the pinned input");
+        expect(pulse_dictation_live_step("hello")==0 && keyboardEvents==beforeFocus,"focus changes recover the pinned input");
         selectedElement=fakeElement; CFRelease(otherField); syncText("hello");
         expect([editor isEqualToString:@"Before hello after"],"returning to original input resumes without retargeting");
         // Chromium can expose an in-flight Unicode insertion a few characters
@@ -160,7 +234,7 @@ int main(void) {
         AXUIElementRef duringWriteOther=AXUIElementCreateApplication(getpid()+4);
         selectedElement=duringWriteOther;
         unsigned switchedEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello world")==2 && keyboardEvents==switchedEvents,"pending transaction never follows another focused input");
+        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==switchedEvents,"pending transaction never follows another focused input");
         selectedElement=fakeElement; CFRelease(duringWriteOther);
         editor=pendingValue; caret=pendingSelection; acceptTyping=true;
         syncText("hello world");
@@ -218,7 +292,7 @@ int main(void) {
         AXUIElementRef fallbackOther=AXUIElementCreateApplication(getpid()+3);
         selectedElement=fallbackOther;
         unsigned fallbackEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("app focused more")==2 && keyboardEvents==fallbackEvents,"application fallback never retargets another focused input");
+        expect(pulse_dictation_live_step("app focused more")==0 && keyboardEvents==fallbackEvents,"application fallback never retargets another focused input");
         selectedElement=fakeElement; CFRelease(fallbackOther);
         syncText("app focused more");
         begin(); editor=@""; caret=NSMakeRange(0,0); emptyCaretOffset=1;
@@ -255,7 +329,7 @@ int main(void) {
         focused=false;
         expect(pulse_dictation_live_begin()==0,"no selected input uses bottom preview");
         expect(pulse_dictation_copy("clipboard result") && clipboardWrites==2,"clipboard only written by explicit no-input path");
-        pulse_dictation_clear_target(); CFRelease(fakeElement); CFRelease(fakeSystem);
-        puts("PASS: partial and missing AX readbacks, pinned transaction recovery, real user interruption, application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
+        pulse_dictation_clear_target(); CFRelease(fakeElement); CFRelease(fakeSystem); CFRelease(fakeWindow);
+        puts("PASS: pinned app/window/field recovery, lost-target failures, partial and missing AX readbacks, pinned transaction recovery, real user interruption, application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
     }
 }
