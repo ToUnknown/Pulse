@@ -10,7 +10,31 @@ const context = canvas.getContext("2d");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
 let shown = "", id, lastSamples = 0, waveTime = 0;
-let wordTokens = [], wordNodes = [], lastTextHeight = 0;
+let wordTokens = [], wordNodes = [];
+let textHeight = 0, textVelocity = 0, layoutTime;
+const wordMoves = new WeakMap();
+// One spring drives growth and overflow together. The text's screen position
+// stays continuous as the box reaches five lines and starts following the tail.
+function layoutText(now) {
+  const target = words.offsetHeight;
+  const dt = Math.min(64, Math.max(0, now - (layoutTime ?? now))) / 1000;
+  layoutTime = now;
+  if (reducedMotion.matches) {
+    textHeight = target; textVelocity = 0;
+    for (const node of wordNodes) wordMoves.get(node)?.cancel();
+  }
+  else {
+    const distance = textHeight - target, rate = 20;
+    const combined = textVelocity + rate * distance, decay = Math.exp(-rate * dt);
+    textHeight = target + (distance + combined * dt) * decay;
+    textVelocity = (textVelocity - rate * combined * dt) * decay;
+    if (Math.abs(textHeight - target) < .02 && Math.abs(textVelocity) < .2) {
+      textHeight = target; textVelocity = 0;
+    }
+  }
+  textViewport.style.height = `${Math.min(100, Math.max(0, textHeight))}px`;
+  words.style.transform = `translateY(${-Math.max(0, textHeight - 100)}px)`;
+}
 let generation = 0, shownSession, voice = 0, lastFrame = 0;
 let glassBusy = false, lastGlass = "";
 async function syncGlass() {
@@ -37,6 +61,13 @@ async function syncGlass() {
 }
 function setText(value) {
   if (value === shown) return;
+  const parentRect = words.getBoundingClientRect();
+  const positions = new Map();
+  if (!reducedMotion.matches) for (const node of wordNodes) {
+    if (!/\S/u.test(node.textContent)) continue;
+    const rect = node.getBoundingClientRect();
+    positions.set(node, { x: rect.x - parentRect.x, y: rect.y - parentRect.y });
+  }
   shown = value;
   const tokens = value.match(/\s+|\S+/gu) || [];
   let prefix = 0, suffix = 0;
@@ -72,11 +103,22 @@ function setText(value) {
   }
   wordNodes = [...wordNodes.slice(0, prefix), ...added, ...tail];
   wordTokens = tokens;
-  const height = textViewport.scrollHeight;
-  if (height !== lastTextHeight) {
-    textViewport.scrollTo({ top: height, behavior: reducedMotion.matches ? "instant" : "smooth" });
-    lastTextHeight = height;
+  // Retarget from the currently painted position, including an unfinished move.
+  // Opacity/blur entrances use different properties and never affect measurement.
+  for (const node of wordNodes) {
+    const previous = positions.get(node);
+    if (!previous) continue;
+    wordMoves.get(node)?.cancel();
+    const rect = node.getBoundingClientRect();
+    const x = previous.x - (rect.x - parentRect.x);
+    const y = previous.y - (rect.y - parentRect.y);
+    if (Math.abs(x) > .1 || Math.abs(y) > .1) {
+      wordMoves.set(node, node.animate([
+        { translate: `${x}px ${y}px` }, { translate: '0px 0px' },
+      ], { duration: 220, easing: 'cubic-bezier(.22,.8,.25,1)' }));
+    }
   }
+  if (reducedMotion.matches) layoutText(performance.now());
 }
 export function render(next) {
   if (next.id !== undefined && id !== undefined && next.id < id) return;
@@ -85,7 +127,9 @@ export function render(next) {
     body.dataset.placing = "true";
     generation++;
     id = next.id; shown = ""; words.textContent = ""; lastSamples = 0;
-    wordTokens = []; wordNodes = []; lastTextHeight = 0;
+    wordTokens = []; wordNodes = [];
+    textHeight = 0; textVelocity = 0; layoutTime = undefined;
+    textViewport.style.height = '0px'; words.style.transform = 'translateY(0px)';
     textViewport.scrollTop = 0;
     body.dataset.expanded = "false"; voice = 0;
   }
@@ -112,6 +156,7 @@ export function render(next) {
   }
 }
 function frame(now) {
+  layoutText(now);
   if (!glassBusy) {
     glassBusy = true;
     syncGlass().finally(() => { glassBusy = false; });

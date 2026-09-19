@@ -13,7 +13,8 @@ const element = () => ({
   set textContent(value){this.value=value;this.children=[];},
   insertBefore(node,anchor){const index=anchor?this.children.indexOf(anchor):this.children.length;this.children.splice(index,0,node);node.parent=this;},
   remove(){if(this.parent)this.parent.children.splice(this.parent.children.indexOf(this),1);},
-  append(node){this.insertBefore(node,null);}, scrollHeight:0,
+  append(node){this.insertBefore(node,null);}, scrollHeight:0, offsetHeight:0,
+  animate(){return {cancel(){}};},
   scrollTo({top}){this.scrollTop=top;},
   getBoundingClientRect(){return {x:400,y:600,width:64,height:28};},
 });
@@ -33,10 +34,11 @@ const invoke = (name,args) => {
   if (name === 'dictation_glass' && holdGlass) return new Promise(resolve => glassReplies.push(resolve));
   return name === 'dictation_snapshot' ? new Promise(resolve=>{resolveSnapshot=resolve;}) : Promise.resolve(name === 'dictation_glass');
 };
+const motionPreference = {matches:false};
 const sandbox = vm.createContext({
   window:{__TAURI__:{core:{invoke}}},
   document:{body,querySelector:id=>nodes[id],createElement:element},
-  matchMedia:()=>({matches:false}),
+  matchMedia:()=>motionPreference,
   requestAnimationFrame(){},setTimeout(){},performance:{now:()=>0},innerWidth:1440,innerHeight:900,devicePixelRatio:1, getComputedStyle:element=>({opacity:element===nodes["#dictation"]?overlayOpacity:"1",getPropertyValue:()=>"#303237"}),
 });
 vm.runInContext(readFileSync(new URL('../../src/dictation.js',import.meta.url),'utf8').replace('export function render','function render'),sandbox);
@@ -106,3 +108,31 @@ failGlass = false;
 await sandbox.syncGlass();
 assert.equal(calls.length,failedCalls+1,'an unsuccessful geometry update is retried even when the frame has stopped moving');
 console.log('PASS: native glass completion fade and failed-update recovery');
+
+// Measured layout, not painted word-animation overflow, drives one shared spring.
+sandbox.window.pulseDictationStart(10,28);
+sandbox.render({id:10,phase:'listening',text:'A partial wor'});
+const partial = nodes['#words'].children.at(-1);
+sandbox.render({id:10,phase:'listening',text:'A partial word'});
+assert.equal(nodes['#words'].children.at(-1),partial,'partial words retain their animation node');
+nodes['#words'].offsetHeight = 20;
+sandbox.layoutText(0);
+sandbox.layoutText(16);
+assert.ok(parseFloat(nodes['#text-viewport'].style.height)>0 && parseFloat(nodes['#text-viewport'].style.height)<20,'growth begins gradually');
+for(let time=32;time<=1000;time+=16)sandbox.layoutText(time);
+assert.equal(nodes['#text-viewport'].style.height,'20px');
+nodes['#words'].offsetHeight = 140;
+const heightBefore = nodes['#text-viewport'].style.height;
+sandbox.render({id:10,phase:'listening',text:'A partial word followed by many more lines'});
+assert.equal(nodes['#text-viewport'].style.height,heightBefore,'text updates cannot snap the current height');
+for(let time=1008;time<=2200;time+=16)sandbox.layoutText(time);
+assert.equal(nodes['#text-viewport'].style.height,'100px');
+assert.equal(nodes['#words'].style.transform,'translateY(-40px)','overflow and growth settle together');
+motionPreference.matches = true;
+nodes['#words'].offsetHeight = 40;
+sandbox.layoutText(2216);
+assert.equal(nodes['#text-viewport'].style.height,'40px');
+assert.equal(nodes['#words'].style.transform,'translateY(0px)','reduced motion settles both values immediately');
+sandbox.window.pulseDictationStart(11,28);
+assert.equal(nodes['#text-viewport'].style.height,'0px','fresh recording clears the previous height');
+console.log('PASS: partial-word identity, continuous growth, shared overflow, reduced motion and session layout reset');
