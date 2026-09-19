@@ -3,9 +3,20 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const css = readFileSync(new URL('../../src/dictation.css',import.meta.url),'utf8');
-assert.match(css, /#words\s*\{[^}]*white-space:\s*pre;/, 'transcript stays on a single line');
+assert.match(css, /#text-viewport\s*\{[^}]*max-height:\s*100px/, 'transcript viewport holds five 20px lines');
+assert.match(css, /#words\s*\{[^}]*line-height:\s*20px/, 'transcript line height matches the five-line limit');
 assert.match(css, /#dictation\s*\{[^}]*bottom:\s*var\(--bottom\)/, 'unanchored preview is at the screen bottom');
-const element = () => ({textContent:'',dataset:{},style:{setProperty(name,value){this[name]=value;}},append(){},scrollHeight:0,getBoundingClientRect(){return {x:400,y:600,width:64,height:28};}});
+const element = () => ({
+  children:[], value:'', dataset:{}, classList:{add(){}},
+  style:{setProperty(name,value){this[name]=value;}},
+  get textContent(){return this.value+this.children.map(node=>node.textContent).join('');},
+  set textContent(value){this.value=value;this.children=[];},
+  insertBefore(node,anchor){const index=anchor?this.children.indexOf(anchor):this.children.length;this.children.splice(index,0,node);node.parent=this;},
+  remove(){if(this.parent)this.parent.children.splice(this.parent.children.indexOf(this),1);},
+  append(node){this.insertBefore(node,null);}, scrollHeight:0,
+  scrollTo({top}){this.scrollTop=top;},
+  getBoundingClientRect(){return {x:400,y:600,width:64,height:28};},
+});
 const body = element(), nodes = Object.fromEntries(['#words','#transcript','#text-viewport','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
 const bars=[];
 let barStart;
@@ -24,7 +35,7 @@ const invoke = (name,args) => {
 };
 const sandbox = vm.createContext({
   window:{__TAURI__:{core:{invoke}}},
-  document:{body,querySelector:id=>nodes[id]},
+  document:{body,querySelector:id=>nodes[id],createElement:element},
   matchMedia:()=>({matches:false}),
   requestAnimationFrame(){},setTimeout(){},performance:{now:()=>0},innerWidth:1440,innerHeight:900,devicePixelRatio:1, getComputedStyle:element=>({opacity:element===nodes["#dictation"]?overlayOpacity:"1",getPropertyValue:()=>"#303237"}),
 });

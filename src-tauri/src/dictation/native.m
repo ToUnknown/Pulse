@@ -408,8 +408,7 @@ void pulse_dictation_position(void *pointer, double *bottom) {
     *bottom = MAX(20, NSMinY(chosen.visibleFrame) - NSMinY(chosen.frame) + 16);
 }
 
-// Blur the actual desktop beneath the transcript, with feathered edges instead
-// of a panel outline. CSS backdrop-filter alone cannot sample behind WKWebView.
+// Back the bordered transcript box with the native desktop material.
 void pulse_dictation_transcript_blur(void *pointer, double x, double y, double width, double height, double opacity) {
     NSWindow *window=(__bridge NSWindow *)pointer;
     NSView *host=window.contentView;
@@ -424,11 +423,6 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
         blur.wantsLayer=YES;
         blur.layer.cornerCurve=kCACornerCurveContinuous;
         blur.layer.masksToBounds=YES;
-        CAGradientLayer *edges=[CAGradientLayer layer];
-        edges.colors=@[(id)NSColor.clearColor.CGColor,(id)NSColor.blackColor.CGColor,(id)NSColor.blackColor.CGColor,(id)NSColor.clearColor.CGColor];
-        edges.locations=@[@0,@0.18,@0.82,@1];
-        edges.startPoint=CGPointMake(0,0.5); edges.endPoint=CGPointMake(1,0.5);
-        blur.layer.mask=edges;
         [host addSubview:blur positioned:NSWindowBelow relativeTo:nil];
         objc_setAssociatedObject(window,&blurKey,blur,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -437,8 +431,7 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     blur.frame=NSMakeRect(x,host.isFlipped ? y : NSHeight(host.bounds)-y-height,width,height);
     blur.alphaValue=opacity;
-    blur.layer.cornerRadius=4;
-    blur.layer.mask.frame=blur.bounds;
+    blur.layer.cornerRadius=14;
     [CATransaction commit];
 }
 

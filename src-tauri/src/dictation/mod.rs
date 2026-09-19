@@ -315,7 +315,7 @@ pub async fn dictation_glass(
     .iter()
     .all(|v| v.is_finite())
         || !(0.0..=400.0).contains(&transcript.width)
-        || !(0.0..=120.0).contains(&transcript.height)
+        || !(0.0..=140.0).contains(&transcript.height)
         || !(0.0..=1.0).contains(&transcript.opacity)
     {
         return Err("Invalid transcript frame.".into());

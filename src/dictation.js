@@ -10,7 +10,7 @@ const context = canvas.getContext("2d");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
 let shown = "", id, lastSamples = 0, waveTime = 0;
-let sliderLead = 0, sliderFollow = 0, sliderOffset = 0, lastSliderFrame = null;
+let wordTokens = [], wordNodes = [], lastTextHeight = 0;
 let generation = 0, shownSession, voice = 0, lastFrame = 0;
 let glassBusy = false, lastGlass = "";
 async function syncGlass() {
@@ -38,30 +38,45 @@ async function syncGlass() {
 function setText(value) {
   if (value === shown) return;
   shown = value;
-  // Arrival changes only the destination, never the current motion state.
-  words.textContent = value.replace(/\s+/gu, " ");
-}
-function moveSlider(now) {
-  const elapsed = lastSliderFrame === null ? 0 : Math.min(.05, Math.max(0, (now - lastSliderFrame) / 1000));
-  lastSliderFrame = now;
-  const target = Math.max(0, words.getBoundingClientRect().width - textViewport.clientWidth);
-  if (reducedMotion.matches) {
-    sliderLead = sliderFollow = sliderOffset = target;
-  } else {
-    // Three cascaded dampers, integrated exactly for this frame's duration.
-    // Position, velocity AND acceleration remain continuous when the target
-    // changes. A fresh burst starts softly; a pause settles without clamps,
-    // speed resets, a dead zone, or overshoot for an advancing transcript.
-    const t = elapsed * 5;
-    const decay = Math.exp(-t);
-    const lead = sliderLead - target;
-    const follow = sliderFollow - target;
-    const offset = sliderOffset - target;
-    sliderLead = target + lead * decay;
-    sliderFollow = target + (follow + lead * t) * decay;
-    sliderOffset = target + (offset + follow * t + lead * t * t / 2) * decay;
+  const tokens = value.match(/\s+|\S+/gu) || [];
+  let prefix = 0, suffix = 0;
+  while (prefix < tokens.length && prefix < wordTokens.length && tokens[prefix] === wordTokens[prefix]) prefix++;
+  // Keep a partially revealed word's existing node as more letters arrive.
+  if (prefix < tokens.length && prefix < wordTokens.length && /\S/u.test(wordTokens[prefix]) &&
+    tokens[prefix].startsWith(wordTokens[prefix])) {
+    wordNodes[prefix].textContent = tokens[prefix];
+    prefix++;
   }
-  words.style.transform = `translate3d(${-sliderOffset}px, 0, 0)`;
+  while (suffix < tokens.length - prefix && suffix < wordTokens.length - prefix &&
+    tokens[tokens.length - 1 - suffix] === wordTokens[wordTokens.length - 1 - suffix]) suffix++;
+  // Preserve unchanged words and their animations when a model corrects text.
+  const tail = wordNodes.slice(wordNodes.length - suffix);
+  const anchor = tail[0] || null;
+  for (const node of wordNodes.slice(prefix, wordNodes.length - suffix)) node.remove();
+  const added = [];
+  for (let i = prefix; i < tokens.length - suffix; i++) {
+    const token = tokens[i];
+    const node = document.createElement("span");
+    node.textContent = token;
+    if (/\S/u.test(token)) {
+      node.className = "word";
+      // Extending a partial word should not restart its entrance on every delta.
+      const extending = wordTokens[i] && token.startsWith(wordTokens[i]);
+      if (!extending && !reducedMotion.matches) {
+        node.classList.add("new-word");
+        node.style.animationDelay = `${Math.min(added.length, 5) * 25}ms`;
+      }
+    }
+    words.insertBefore(node, anchor);
+    added.push(node);
+  }
+  wordNodes = [...wordNodes.slice(0, prefix), ...added, ...tail];
+  wordTokens = tokens;
+  const height = textViewport.scrollHeight;
+  if (height !== lastTextHeight) {
+    textViewport.scrollTo({ top: height, behavior: reducedMotion.matches ? "instant" : "smooth" });
+    lastTextHeight = height;
+  }
 }
 export function render(next) {
   if (next.id !== undefined && id !== undefined && next.id < id) return;
@@ -70,8 +85,8 @@ export function render(next) {
     body.dataset.placing = "true";
     generation++;
     id = next.id; shown = ""; words.textContent = ""; lastSamples = 0;
-    sliderLead = sliderFollow = sliderOffset = 0; lastSliderFrame = null;
-    words.style.transform = "translate3d(0, 0, 0)";
+    wordTokens = []; wordNodes = []; lastTextHeight = 0;
+    textViewport.scrollTop = 0;
     body.dataset.expanded = "false"; voice = 0;
   }
   snapshot = next;
@@ -101,7 +116,6 @@ function frame(now) {
     glassBusy = true;
     syncGlass().finally(() => { glassBusy = false; });
   }
-  moveSlider(now);
   if (snapshot.phase === "listening") drawWave(now);
   requestAnimationFrame(frame);
 }
@@ -156,7 +170,7 @@ else if (new URLSearchParams(location.search).has("preview")) {
   window.previewDictation = render;
   const advance=()=>{render({id:1,bottom:32,samples:step+1,level:.09,...demo[Math.min(step++,demo.length-1)]});};
   const fixture = new URLSearchParams(location.search).get("preview");
-  if (fixture === "long") demo[1].text = "A thought flows into words. The ribbon picks up speed as I speak, then settles gently when I pause.";
+  if (fixture === "long") demo[1].text = "A thought becomes a sentence. New words appear gently while I speak, and the box keeps the latest five lines in view. I can keep talking without losing the full transcript, then send everything to the selected input when I finish.";
   const index = { pill: 0, expanded: 1, long: 1, finalizing: 2, sending: 3, done: 4 }[fixture];
   if (index !== undefined) { step = index; advance(); }
   else { advance(); setInterval(advance,3000); }
