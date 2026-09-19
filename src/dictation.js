@@ -5,10 +5,12 @@ const canvas = document.querySelector("#waveform");
 const shell = document.querySelector("#waveform-shell");
 const overlay = document.querySelector("#dictation");
 const transcript = document.querySelector("#transcript");
+const textViewport = document.querySelector("#text-viewport");
 const context = canvas.getContext("2d");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
-let shown = "", desired = "", id, lastTyping = 0, lastSamples = 0, waveTime = 0;
+let shown = "", id, lastSamples = 0, waveTime = 0;
+let sliderOffset = 0, sliderSpeed = 0, arrivalSpeed = 0, lastArrival = 0, lastSliderFrame = 0;
 let generation = 0, shownSession, voice = 0, lastFrame = 0;
 let glassBusy = false, lastGlass = "";
 async function syncGlass() {
@@ -33,10 +35,38 @@ async function syncGlass() {
     }
   } catch { /* Keep the CSS material if the native effect is unavailable. */ }
 }
-function setText(value, instant = false) {
-  desired = value;
-  // Final text is authoritative: corrected prefixes replace partials immediately.
-  if (instant || !desired.startsWith(shown) || reducedMotion.matches) { shown = desired; words.textContent = shown; words.scrollTop = words.scrollHeight; }
+function setText(value) {
+  if (value === shown) return;
+  const now = performance.now();
+  const previousWidth = words.getBoundingClientRect().width;
+  const appended = value.startsWith(shown);
+  shown = value;
+  // A single text node moves as a ribbon; no character-by-character replay.
+  words.textContent = value.replace(/\s+/gu, " ");
+  const addedWidth = Math.max(0, words.getBoundingClientRect().width - previousWidth);
+  if (appended && lastArrival) {
+    const rate = addedWidth / Math.max(.12, Math.min(2, (now - lastArrival) / 1000));
+    arrivalSpeed += (Math.min(500, rate) - arrivalSpeed) * .3;
+  }
+  lastArrival = now;
+}
+function moveSlider(now) {
+  const elapsed = Math.min(.05, Math.max(0, (now - (lastSliderFrame || now)) / 1000));
+  lastSliderFrame = now;
+  const target = Math.max(0, words.getBoundingClientRect().width - textViewport.clientWidth);
+  const distance = target - sliderOffset;
+  if (reducedMotion.matches) {
+    sliderOffset = target; sliderSpeed = 0;
+  } else {
+    // Backlog increases the pace; fresh text informs it, and pauses ease it down.
+    arrivalSpeed *= Math.exp(-elapsed / 1.2);
+    const desiredSpeed = Math.sign(distance) * Math.min(420, Math.abs(distance) * 3.5 + arrivalSpeed * .25);
+    sliderSpeed += (desiredSpeed - sliderSpeed) * (1 - Math.exp(-elapsed / .18));
+    const movement = sliderSpeed * elapsed;
+    if (Math.abs(distance) < .15) { sliderOffset = target; sliderSpeed = 0; }
+    else if (Math.sign(movement) === Math.sign(distance)) sliderOffset += Math.sign(distance) * Math.min(Math.abs(distance), Math.abs(movement));
+  }
+  words.style.transform = `translate3d(${-sliderOffset}px, 0, 0)`;
 }
 export function render(next) {
   if (next.id !== undefined && id !== undefined && next.id < id) return;
@@ -44,16 +74,17 @@ export function render(next) {
   if (freshSession) {
     body.dataset.placing = "true";
     generation++;
-    id = next.id; shown = desired = ""; words.textContent = ""; lastSamples = 0;
+    id = next.id; shown = ""; words.textContent = ""; lastSamples = 0;
+    sliderOffset = sliderSpeed = arrivalSpeed = lastArrival = lastSliderFrame = 0;
+    words.style.transform = "translate3d(0, 0, 0)";
     body.dataset.expanded = "false"; voice = 0;
   }
   snapshot = next;
   body.style.setProperty("--bottom", `${next.bottom || 28}px`);
   // All recording and delivery states stay in the same bottom-center overlay.
   if (next.samples !== lastSamples) { waveTime = performance.now(); lastSamples = next.samples; }
-  const final = ["sending", "done", "error"].includes(next.phase);
-  setText(next.text || "", final);
-  if (next.text) body.dataset.expanded = "true";
+  setText(next.text || "");
+  body.dataset.expanded = String(!!next.text);
   body.dataset.phase = next.phase;
   if (freshSession) {
     // Resolve the bottom position before revealing a reused overlay.
@@ -75,15 +106,7 @@ function frame(now) {
     glassBusy = true;
     syncGlass().finally(() => { glassBusy = false; });
   }
-  if (desired !== shown && now - lastTyping > 24) {
-    const remaining = Array.from(desired.slice(shown.length));
-    const chunk = remaining.slice(0, Math.max(1, Math.ceil(remaining.length / 12))).join("");
-    shown += chunk;
-    // Keep only the new fragment animated, with a bounded number of DOM nodes.
-    words.textContent = shown.slice(0, -chunk.length);
-    const span = document.createElement("span"); span.className = "fresh"; span.textContent = chunk; words.append(span);
-    words.scrollTop = words.scrollHeight; lastTyping = now;
-  }
+  moveSlider(now);
   if (snapshot.phase === "listening") drawWave(now);
   requestAnimationFrame(frame);
 }
@@ -138,7 +161,7 @@ else if (new URLSearchParams(location.search).has("preview")) {
   window.previewDictation = render;
   const advance=()=>{render({id:1,bottom:32,samples:step+1,level:.09,...demo[Math.min(step++,demo.length-1)]});};
   const fixture = new URLSearchParams(location.search).get("preview");
-  if (fixture === "long") demo[1].text = "This is a longer thought that keeps appearing as I speak. The older words quietly drift toward the top, leaving room for what comes next. I can move through my apps freely while dictation stays here. Only the newest line remains completely clear.";
+  if (fixture === "long") demo[1].text = "A thought flows into words. The ribbon picks up speed as I speak, then settles gently when I pause.";
   const index = { pill: 0, expanded: 1, long: 1, finalizing: 2, sending: 3, done: 4 }[fixture];
   if (index !== undefined) { step = index; advance(); }
   else { advance(); setInterval(advance,3000); }
