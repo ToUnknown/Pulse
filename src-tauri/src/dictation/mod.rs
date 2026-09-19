@@ -13,7 +13,6 @@ use std::{
     time::Duration,
 };
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tokio::{
     sync::mpsc,
     time::{timeout, Instant},
@@ -36,16 +35,18 @@ extern "C" {
     fn pulse_dictation_start(id: u64, callback: extern "C" fn(u64, *const u8, usize, f32)) -> bool;
     fn pulse_dictation_stop();
     fn pulse_dictation_clear_target();
-    fn pulse_dictation_live_begin() -> i32;
-    fn pulse_dictation_live_bounds(
-        x: *mut f64,
-        y: *mut f64,
-        width: *mut f64,
-        height: *mut f64,
-    ) -> bool;
-    fn pulse_dictation_live_step(text: *const c_char) -> i32;
+    fn pulse_dictation_delivery_begin() -> i32;
+    fn pulse_dictation_final_step(text: *const c_char) -> i32;
     fn pulse_dictation_copy(text: *const c_char) -> bool;
-    fn pulse_dictation_position(window: *mut c_void, x: *mut f64, y: *mut f64, bottom: *mut f64);
+    fn pulse_dictation_position(window: *mut c_void, bottom: *mut f64);
+    fn pulse_dictation_transcript_blur(
+        window: *mut c_void,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        opacity: f64,
+    );
     fn pulse_dictation_glass(
         window: *mut c_void,
         x: f64,
@@ -64,16 +65,10 @@ struct Session {
     text: String,
     level: f32,
     samples: u64,
-    origin: (f64, f64),
     bottom: f64,
-    target: Option<Value>,
-    inline: bool,
-    inline_synced: bool,
-    inline_paused: bool,
-    withdrawal_pending: bool,
-    message: String,
+    delivery: FinalDelivery,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinalDelivery {
     Pending,
     Input,
@@ -83,60 +78,21 @@ enum FinalDelivery {
 impl Session {
     fn final_delivery(&self, expired: bool) -> FinalDelivery {
         if self.cancel.is_cancelled() {
-            return FinalDelivery::Discard;
-        }
-        if self.withdrawal_pending && !expired {
-            return FinalDelivery::Pending;
-        }
-        if self.inline && !self.inline_paused {
-            if self.inline_synced {
-                return FinalDelivery::Input;
-            }
-            if !expired {
-                return FinalDelivery::Pending;
-            }
-        }
-        FinalDelivery::Clipboard
-    }
-
-    fn use_preview(&mut self) {
-        self.inline = false;
-        self.inline_synced = false;
-        self.inline_paused = false;
-        self.withdrawal_pending = false;
-        self.target = None;
-        // Capture continues. Clipboard is written only once, at final delivery.
-    }
-
-    fn apply_live_update(&mut self, outcome: i32, target: Option<Value>, current_text: bool) {
-        match outcome {
-            0 | 1 => {
-                self.inline = true;
-                self.inline_synced = outcome == 1 && current_text;
-                self.inline_paused = false;
-                self.withdrawal_pending = false;
-                if target.is_some() {
-                    self.target = target;
-                }
-            }
-            2 | 3 => {
-                self.inline = false;
-                self.withdrawal_pending = outcome == 3;
-                self.inline_synced = false;
-                self.inline_paused = true;
-                self.target = None;
-            }
-            _ => self.use_preview(),
+            FinalDelivery::Discard
+        } else if expired && self.delivery == FinalDelivery::Pending {
+            FinalDelivery::Clipboard
+        } else {
+            self.delivery
         }
     }
 }
+
 struct Dictation {
     hold_shortcut: Mutex<shortcut::HoldShortcut>,
     enabled: AtomicBool,
     next_id: AtomicU64,
     session: Mutex<Option<Session>>,
     startup_error: Mutex<Option<String>>,
-    escape_registered: AtomicBool,
     last_transcript: Mutex<String>,
 }
 async fn on_main<T: Send + 'static>(
@@ -203,7 +159,6 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
         next_id: AtomicU64::new(1),
         session: Mutex::new(None),
         startup_error: Mutex::new(None),
-        escape_registered: AtomicBool::new(false),
         last_transcript: Mutex::new(String::new()),
     });
     if enabled {
@@ -336,6 +291,7 @@ pub async fn dictation_glass(
     window: WebviewWindow,
     session_id: u64,
     frame: GlassFrame,
+    transcript: GlassFrame,
 ) -> Result<bool, String> {
     if window.label() != WINDOW {
         return Err("This is only available to the dictation overlay.".into());
@@ -348,6 +304,21 @@ pub async fn dictation_glass(
         || !(0.0..=1.0).contains(&frame.opacity)
     {
         return Err("Invalid glass frame.".into());
+    }
+    if ![
+        transcript.x,
+        transcript.y,
+        transcript.width,
+        transcript.height,
+        transcript.opacity,
+    ]
+    .iter()
+    .all(|v| v.is_finite())
+        || !(0.0..=400.0).contains(&transcript.width)
+        || !(0.0..=120.0).contains(&transcript.height)
+        || !(0.0..=1.0).contains(&transcript.opacity)
+    {
+        return Err("Invalid transcript frame.".into());
     }
     let handle = app.clone();
     on_main(&app, move || {
@@ -365,6 +336,14 @@ pub async fn dictation_glass(
             .ns_window()
             .map_err(|_| "Could not access the dictation overlay.")?;
         Ok(unsafe {
+            pulse_dictation_transcript_blur(
+                pointer,
+                transcript.x,
+                transcript.y,
+                transcript.width,
+                transcript.height,
+                transcript.opacity,
+            );
             pulse_dictation_glass(
                 pointer,
                 frame.x,
@@ -407,7 +386,7 @@ pub fn dictation_snapshot(app: tauri::AppHandle, window: WebviewWindow) -> Resul
     let guard = state.session.lock().unwrap();
     Ok(match guard.as_ref() {
         Some(s) => {
-            json!({"id":s.id,"phase":s.phase,"text":s.text,"level":s.level,"samples":s.samples,"bottom":s.bottom,"target":s.target,"inline":s.inline && !s.inline_paused,"message":s.message})
+            json!({"id":s.id,"phase":s.phase,"text":s.text,"level":s.level,"samples":s.samples,"bottom":s.bottom})
         }
         None => json!({"phase":"idle"}),
     })
@@ -441,40 +420,25 @@ extern "C" fn audio_callback(id: u64, bytes: *const u8, length: usize, level: f3
     s.samples += (length / 2) as u64;
     s.level = level;
 }
-fn live_bounds(origin: (f64, f64)) -> Option<Value> {
-    let (mut x, mut y, mut width, mut height) = (0.0, 0.0, 0.0, 0.0);
-    unsafe { pulse_dictation_live_bounds(&mut x, &mut y, &mut width, &mut height) }
-        .then(|| json!({"x":x-origin.0,"y":y-origin.1,"width":width,"height":height}))
-}
-// One main-thread writer, coalescing incoming model deltas into small edits.
-fn live_tick(app: &tauri::AppHandle, id: u64) -> bool {
+// Input is captured once after transcription finishes. No field is read or
+// edited by this writer while recording or waiting for the final transcript.
+fn delivery_tick(app: &tauri::AppHandle, id: u64) {
     let state = app.state::<Dictation>();
-    let (origin, text) = {
-        let guard = state.session.lock().unwrap();
-        let Some(s) = guard.as_ref().filter(|s| {
-            s.id == id
-                && matches!(s.phase, "listening" | "finalizing" | "sending")
-                && !s.cancel.is_cancelled()
-        }) else {
-            return false;
-        };
-        (s.origin, s.text.clone())
-    };
-    // The native transaction withdraws the old edit before adopting the user's
-    // current field. Poll even in preview so selecting a new field resumes live.
-    let utf8 = CString::new(text.replace('\0', "")).unwrap();
-    let outcome = unsafe { pulse_dictation_live_step(utf8.as_ptr()) };
-    let target = if matches!(outcome, 0 | 1) {
-        live_bounds(origin)
-    } else {
-        None
-    };
     let mut guard = state.session.lock().unwrap();
-    let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
-        return false;
+    let Some(s) = guard.as_mut().filter(|s| {
+        s.id == id
+            && s.phase == "sending"
+            && !s.cancel.is_cancelled()
+            && s.delivery == FinalDelivery::Pending
+    }) else {
+        return;
     };
-    s.apply_live_update(outcome, target, s.text == text);
-    true
+    let text = CString::new(s.text.replace('\0', "")).unwrap();
+    s.delivery = match unsafe { pulse_dictation_final_step(text.as_ptr()) } {
+        0 => FinalDelivery::Pending,
+        1 => FinalDelivery::Input,
+        _ => FinalDelivery::Clipboard,
+    };
 }
 
 fn start(app: &tauri::AppHandle) {
@@ -496,9 +460,6 @@ fn start(app: &tauri::AppHandle) {
             previous.cancel.cancel();
         }
     }
-    if state.escape_registered.swap(false, Ordering::AcqRel) {
-        let _ = app.global_shortcut().unregister("Escape");
-    }
     unsafe {
         pulse_dictation_clear_target();
     }
@@ -511,23 +472,10 @@ fn start(app: &tauri::AppHandle) {
             return;
         }
     };
-    let mut x = 0.0;
-    let mut y = 0.0;
     let mut bottom = 24.0;
     if let Ok(pointer) = window.ns_window() {
         unsafe {
-            pulse_dictation_position(pointer, &mut x, &mut y, &mut bottom);
-        }
-    }
-    let input_mode = unsafe { pulse_dictation_live_begin() };
-    let target = if input_mode == 1 {
-        live_bounds((x, y))
-    } else {
-        None
-    };
-    if input_mode != 1 {
-        unsafe {
-            pulse_dictation_clear_target();
+            pulse_dictation_position(pointer, &mut bottom);
         }
     }
     let (tx, rx) = mpsc::channel(256); // Bounded startup/network backlog, about 10 seconds.
@@ -542,48 +490,13 @@ fn start(app: &tauri::AppHandle) {
         text: String::new(),
         level: 0.0,
         samples: 0,
-        origin: (x, y),
         bottom,
-        target: target.clone(),
-        inline: input_mode == 1,
-        inline_synced: true,
-        inline_paused: false,
-        withdrawal_pending: false,
-        message: String::new(),
+        delivery: FinalDelivery::Pending,
     });
-    let _ = window.eval(format!(
-        "window.pulseDictationStart?.({id}, {bottom}, {}, {});",
-        json!(target),
-        input_mode == 1
-    ));
+    let _ = window.eval(format!("window.pulseDictationStart?.({id}, {bottom});"));
     let _ = window.set_ignore_cursor_events(true);
     let mic = unsafe { pulse_dictation_mic_allowed() };
     let started = mic && unsafe { pulse_dictation_start(id, audio_callback) };
-    let escape_registered = app
-        .global_shortcut()
-        .on_shortcut("Escape", |app, _, event| {
-            if event.state() == ShortcutState::Pressed {
-                let app = app.clone();
-                let handle = app.clone();
-                let _ = handle.run_on_main_thread(move || cancel(&app));
-            }
-        });
-    state
-        .escape_registered
-        .store(escape_registered.is_ok(), Ordering::Release);
-    let writer = app.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let handle = writer.clone();
-            if !on_main(&writer, move || Ok(live_tick(&handle, id)))
-                .await
-                .unwrap_or(false)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(40)).await;
-        }
-    });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = if !mic {
@@ -647,7 +560,6 @@ fn update_text(app: &tauri::AppHandle, id: u64, text: &str) {
         .filter(|s| s.id == id && !s.cancel.is_cancelled())
     {
         s.text = text.to_owned();
-        s.inline_synced = false;
     }
 }
 async fn transcribe(
@@ -697,11 +609,11 @@ async fn stream_transcription(
     let mut transcript = protocol::Transcript::default();
     let mut committed = false;
     let mut samples = 0usize;
-    let mut deadline = Instant::now() + Duration::from_secs(300);
+    let mut deadline = Instant::now();
     let mut microphone_deadline = Instant::now() + Duration::from_secs(4);
     loop {
         tokio::select! {
-            _ = tokio::time::sleep_until(deadline) => return Err(if committed { "OpenAI did not finish the transcript in time." } else { "Dictation reached its five-minute limit." }.into()),
+            _ = tokio::time::sleep_until(deadline), if committed => return Err("OpenAI did not finish the transcript in time.".into()),
             _ = tokio::time::sleep_until(microphone_deadline), if !committed => return Err("The microphone stopped producing audio. Check your input device.".into()),
             chunk = audio.recv(), if !committed => {
                 if let Some(bytes) = chunk {
@@ -802,10 +714,16 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         }
         *state.last_transcript.lock().unwrap() = text.clone();
         s.text = text.clone();
-        s.inline_synced = false;
         s.phase = "sending";
+        // Capture the input selected now, never the one selected at recording
+        // start. Keep the overlay at bottom center during verified delivery.
+        s.delivery = if unsafe { pulse_dictation_delivery_begin() } == 1 {
+            FinalDelivery::Pending
+        } else {
+            FinalDelivery::Clipboard
+        };
         // Capture failures may cancel the network but should still deliver the
-        // partial words. Escape was handled above and never delivers anything.
+        // partial words. Explicit cancellation never delivers anything.
         s.cancel = CancellationToken::new();
         Ok(Some(text))
     })
@@ -816,10 +734,9 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             let expired = Instant::now() >= deadline;
             let handle = app.clone();
             let complete = on_main(&app, move || {
-                // Refresh ownership and decide delivery in the same main-thread
-                // turn. Selecting a new field cannot race a separate
-                // clipboard decision, and pending edits must be acknowledged.
-                live_tick(&handle, id);
+                // Deliver only to the captured final input. Losing focus falls
+                // back to clipboard without following or editing another field.
+                delivery_tick(&handle, id);
                 let state = handle.state::<Dictation>();
                 let mut guard = state.session.lock().unwrap();
                 let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
@@ -836,7 +753,6 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                     FinalDelivery::Input | FinalDelivery::Discard => {}
                 }
                 s.phase = "done";
-                s.message.clear();
                 unsafe {
                     pulse_dictation_clear_target();
                 }
@@ -866,9 +782,6 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         let mut guard = state.session.lock().unwrap();
         if guard.as_ref().is_some_and(|s| s.id == id) {
             *guard = None;
-            if state.escape_registered.swap(false, Ordering::AcqRel) {
-                let _ = handle.global_shortcut().unregister("Escape");
-            }
             unsafe {
                 pulse_dictation_clear_target();
             }
@@ -896,61 +809,23 @@ mod tests {
             text: "Keep these words".into(),
             level: 0.1,
             samples: 10,
-            origin: (0.0, 0.0),
             bottom: 28.0,
-            target: Some(json!({"x":100})),
-            inline: true,
-            inline_synced: false,
-            inline_paused: false,
-            withdrawal_pending: false,
-            message: String::new(),
+            delivery: FinalDelivery::Pending,
         }
     }
 
     #[test]
-    fn final_delivery_is_exclusive_and_waits_for_verified_input() {
+    fn final_delivery_waits_for_verified_input_or_copies_once() {
         let mut session = test_session();
         assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
-        session.apply_live_update(3, None, true);
-        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
-        session.apply_live_update(2, None, true);
-        assert_eq!(session.final_delivery(false), FinalDelivery::Clipboard);
-        session.apply_live_update(0, None, true);
-        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
-        session.apply_live_update(1, None, true);
+        session.delivery = FinalDelivery::Input;
         assert_eq!(session.final_delivery(false), FinalDelivery::Input);
-        // A changed transcript invalidates an earlier successful read-back.
-        session.apply_live_update(1, None, false);
-        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
+        session.delivery = FinalDelivery::Clipboard;
+        assert_eq!(session.final_delivery(false), FinalDelivery::Clipboard);
+        session.delivery = FinalDelivery::Pending;
         assert_eq!(session.final_delivery(true), FinalDelivery::Clipboard);
         session.cancel.cancel();
-        assert_eq!(session.final_delivery(true), FinalDelivery::Discard);
-    }
-
-    #[test]
-    fn focus_loss_previews_and_return_resumes_without_cancelling_capture() {
-        let mut session = test_session();
-        session.apply_live_update(2, None, true);
-        assert!(!session.inline && session.inline_paused);
-        assert!(session.target.is_none());
-        assert!(session.audio.is_some() && !session.cancel.is_cancelled());
-        assert_eq!(session.phase, "listening");
-        session.apply_live_update(1, Some(json!({"x":200})), true);
-        assert!(session.inline_synced && !session.inline_paused);
-        assert_eq!(session.target, Some(json!({"x":200})));
-        assert!(session.message.is_empty());
-    }
-
-    #[test]
-    fn unusable_field_falls_back_without_an_error_or_stopping_capture() {
-        let mut session = test_session();
-        session.apply_live_update(-1, None, false);
-        assert!(!session.inline && !session.inline_synced);
-        assert!(session.target.is_none());
-        assert!(session.audio.is_some() && !session.cancel.is_cancelled());
-        assert_eq!(session.text, "Keep these words");
-        assert_eq!(session.phase, "listening");
-        assert!(session.message.is_empty() && session.error.is_none());
+        assert_eq!(session.final_delivery(false), FinalDelivery::Discard);
     }
 
     use tokio::net::TcpListener;

@@ -80,29 +80,8 @@ static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *
 }
 static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=!missingEditability && (CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true); return kAXErrorSuccess; }
 static AXError writeAttribute(AXUIElementRef e,CFStringRef name,CFTypeRef value) {
-    if (CFEqual(name,kAXFocusedAttribute)) { if(!CFEqual(e,fakeElement)) abort(); focusRequests++; if(acceptFocus){focused=true;selectedElement=fakeElement;} return kAXErrorSuccess; }
-    // Only withdrawal may use a direct AX text write, and only on the pinned
-    // field; it must never send deletion keys into the newly focused control.
-    if (CFEqual(name,kAXSelectedTextAttribute)) {
-        if(!CFEqual(e,fakeElement) && e!=secondElement && !stableIdentity)abort();
-        withdrawalWrites++;
-        if(acceptWithdrawal) {
-            NSString *text=(__bridge NSString *)value;
-            if(e==secondElement) {
-                secondEditor=[secondEditor stringByReplacingCharactersInRange:secondCaret withString:text];
-                secondCaret=NSMakeRange(secondCaret.location+text.length,0);
-            } else {
-                editor=[editor stringByReplacingCharactersInRange:caret withString:text];
-                caret=NSMakeRange(caret.location+text.length,0);
-            }
-        }
-        return kAXErrorSuccess;
-    }
-    // Whole-field value writes must never be used.
-    if (!CFEqual(name,kAXSelectedTextRangeAttribute)) abort();
-    CFRange r;
-    if (acceptSelection && AXValueGetValue(value,kAXValueCFRangeType,&r)) { if(e==secondElement)secondCaret=NSMakeRange(r.location,r.length);else caret=NSMakeRange(r.location,r.length); }
-    return kAXErrorSuccess;
+    // Final delivery never changes focus, selection, or a whole field through AX.
+    abort();
 }
 static void post(pid_t pid,CGEventRef event) {
     if (pid!=(selectedElement==secondElement ? secondPID : 1000) || CGEventGetFlags(event)!=0 || !CGEventGetIntegerValueField(event,kCGEventSourceUserData)) abort();
@@ -147,25 +126,19 @@ static void expect(bool ok,const char *message) { if (!ok) { fprintf(stderr,"FAI
 static void observeOwnEvent(CGEventRef event) { PulseDictationShortcutEvent([NSEvent eventWithCGEvent:event]); }
 static void shortcutAction(bool down,bool chord,bool interrupted,double time) { shortcutActions++; }
 static void begin(void) {
-    acceptWithdrawal=true;
     stableIdentity=wrongIdentity=wrongParent=caretBounds=false;
     acceptFocus=true; targetGone=false; foregroundPID=1000; secondPID=1000; focusedWindow=fakeWindow;
     missingSystemFocus=missingText=missingSelection=missingEditability=false; emptyCaretOffset=0; characterCountOverride=-1;
     selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false;
     focused=supportsRange=acceptTyping=acceptSelection=true;
     editor=@"Before SELECT after"; caret=NSMakeRange(7,6);
-    expect(pulse_dictation_live_begin()==1,"readable input supports live insertion");
+    expect(pulse_dictation_delivery_begin()==1,"capture selected input only at final delivery");
 }
-static void withdraw(void) {
-    int result=3;
-    for(int i=0;i<30 && result==3;i++)result=pulse_dictation_live_step("hello more");
-    expect(result==2,"withdrawal completes into preview");
-}
-static void syncText(const char *text) {
+static void insert(const char *text) {
     int result=0;
-    for(int i=0;i<100 && result==0;i++) result=pulse_dictation_live_step(text);
-    if(result!=1)fprintf(stderr,"sync %s result=%d editor=%s\n",text,result,editor.UTF8String);
-    expect(result==1,"writer must read back every completed update");
+    for(int i=0;i<100 && result==0;i++) result=pulse_dictation_final_step(text);
+    if(result!=1)fprintf(stderr,"insert %s result %d value %s expected %s range %lu,%lu expected %lu,%lu\n",text,result,editor.UTF8String,expectedValue.UTF8String,caret.location,caret.length,expectedSelection.location,expectedSelection.length);
+    expect(result==1,"final insertion is verified by read-back");
 }
 int main(void) {
     @autoreleasepool {
@@ -174,207 +147,63 @@ int main(void) {
         fakeWindow=AXUIElementCreateApplication(getpid()+9);
         fakeParent=AXUIElementCreateApplication(getpid()+11);
         secondElement=AXUIElementCreateApplication(getpid()+12);
-        begin();
-        shortcutCallback=shortcutAction; observePosted=observeOwnEvent;
-        syncText("hello wonderful world");
-        expect(shortcutActions==0 && !liveInterrupted,"own Unicode events must not cancel held dictation");
-        expect([editor isEqualToString:@"Before hello wonderful world after"],"replace selection, preserve surrounding text");
-        syncText("hello corrected 🌍 café 👨‍👩‍👧‍👦 中文");
-        expect([editor isEqualToString:@"Before hello corrected 🌍 café 👨‍👩‍👧‍👦 中文 after"],"correct only owned text and preserve Unicode");
-        syncText("this sentence is already written in the field");
-        editFrames=[NSMutableArray new];
-        syncText("This sentence is already written in the field.");
-        for (NSString *frame in editFrames) expect([frame containsString:@" sentence is already written in the field"],"final capitalization and punctuation must never erase and replay unchanged text");
-        expect([editor isEqualToString:@"Before This sentence is already written in the field. after"],"final corrections preserve surrounding content");
-        expect(NSEqualRanges(caret,NSMakeRange(7+[@"This sentence is already written in the field." length],0)),"caret returns to the end of dictation after corrections");
-        unsigned unchangedEvents=keyboardEvents;
-        syncText("This sentence is already written in the field.");
-        expect(keyboardEvents==unchangedEvents,"identical final transcript never retypes text");
-        editFrames=nil;
-        syncText("the cat is resting beside the window");
-        editFrames=[NSMutableArray new];
-        syncText("The dog is resting beside the window.");
-        for (NSString *frame in editFrames) expect([frame containsString:@" is resting beside the window"],"separate corrections preserve unchanged trailing words");
-        editFrames=nil;
-        syncText("🌍 é 👨‍👩‍👧‍👦 suffix");
-        syncText("🌎 é 👨‍👩‍👦 suffix!");
-        expect([editor isEqualToString:@"Before 🌎 é 👨‍👩‍👦 suffix! after"],"corrections never split composed Unicode characters");
-        syncText(""); syncText("new");
-        expect([editor isEqualToString:@"Before new after"],"empty correction must not restore original replacement range");
-        unsigned posted=keyboardEvents;
-        caret=NSMakeRange(0,0);
-        expect(pulse_dictation_live_step("new words")==-1 && keyboardEvents==posted,"cursor movement stops insertion");
-        begin(); syncText("dictated"); editor=[editor stringByAppendingString:@" user edit"];
-        expect(pulse_dictation_live_step("correction")==-1,"user edits stop replacement");
-        begin(); syncText("hello");
-        unsigned beforePreview=keyboardEvents, beforeWithdrawal=withdrawalWrites;
-        focused=false;
-        expect(pulse_dictation_live_step("hello more")==3,"blur starts withdrawal into preview");
-        withdraw();
-        expect([editor isEqualToString:@"Before SELECT after"] && keyboardEvents==beforePreview,"withdraw only dictated text, restore replaced selection, never type into unfocused control");
-        expect(withdrawalWrites==beforeWithdrawal+1,"withdrawal is posted once");
-        for(int i=0;i<5;i++)expect(pulse_dictation_live_step("hello more")==2,"bottom preview continues without a field");
-        secondEditor=@"Other REPLACE end"; secondCaret=NSMakeRange(6,7); selectedElement=secondElement; focused=true; secondPID=foregroundPID=2000;
-        syncText("hello more");
-        expect([secondEditor isEqualToString:@"Other hello more end"] && [editor isEqualToString:@"Before SELECT after"],"new field receives the complete transcript and preserves its surrounding content");
-        syncText("Hello more words.");
-        expect([secondEditor isEqualToString:@"Other Hello more words. end"],"live corrections continue in the new field");
-        selectedElement=fakeElement; foregroundPID=1000; caret=NSMakeRange(7,6);
-        int handoff=3;
-        for(int i=0;i<100 && handoff!=1;i++)handoff=pulse_dictation_live_step("Hello more words.");
-        expect(handoff==1 && [secondEditor isEqualToString:@"Other REPLACE end"] && [editor isEqualToString:@"Before Hello more words. after"],"direct field-to-field handoff restores the old field and inserts once into the selected range");
-        expect(!focusRequests && !raiseRequests,"handoffs never focus or raise windows");
-        begin(); syncText("hello"); focused=false; acceptWithdrawal=false;
-        expect(pulse_dictation_live_step("hello")==3,"start unacknowledged withdrawal");
-        pulse_dictation_live_step("hello"); withdrawalSince-=1;
-        expect(pulse_dictation_live_step("hello")==-1 && [editor isEqualToString:@"Before hello after"],"refused withdrawal never reports success or sends deletion keys");
-        focused=true;
-        unsigned failedEvents=keyboardEvents;
-        for(int i=0;i<5;i++)expect(pulse_dictation_live_step("hello")==2,"failed cleanup cannot recapture the same input");
-        expect([editor isEqualToString:@"Before hello after"] && keyboardEvents==failedEvents,"refused withdrawal never duplicates text on return");
-        begin(); focused=false; pulse_dictation_clear_target();
-        expect(pulse_dictation_live_step("from preview")==2,"recording can start without a field");
-        focused=true; syncText("from preview");
-        expect([editor isEqualToString:@"Before from preview after"],"selecting a field adopts the full preview transcript");
-        begin(); syncText("hello"); focusedWindow=secondElement;
-        expect(pulse_dictation_live_step("hello")==3,"stale focus in another window starts withdrawal");
-        withdraw();
-        expect([editor isEqualToString:@"Before SELECT after"],"stale AX focus never recaptures an inactive window");
+        begin(); shortcutCallback=shortcutAction; observePosted=observeOwnEvent;
+        unsigned before=keyboardEvents;
+        expect([editor isEqualToString:@"Before SELECT after"] && !before,"capturing input never types");
+        insert("Final words 🌍 café 👨‍👩‍👧‍👦 中文.");
+        expect([editor isEqualToString:@"Before Final words 🌍 café 👨‍👩‍👧‍👦 中文. after"],"replace only current selection and preserve Unicode and surroundings");
+        expect(!shortcutActions && !deliveryInterrupted,"own insertion events never activate shortcuts");
+        before=keyboardEvents; insert("Final words 🌍 café 👨‍👩‍👧‍👦 中文.");
+        expect(keyboardEvents==before,"verified delivery never inserts twice");
+        // A field selected at completion receives the result, regardless of
+        // which field was selected while the microphone was recording.
+        begin(); pulse_dictation_clear_target();
+        selectedElement=secondElement; secondPID=foregroundPID=2000;
+        secondEditor=@"Other REPLACE end"; secondCaret=NSMakeRange(6,7);
+        expect(pulse_dictation_delivery_begin()==1,"capture the field selected at completion");
+        insert("finished transcript");
+        expect([secondEditor isEqualToString:@"Other finished transcript end"] && [editor isEqualToString:@"Before SELECT after"],"only final selected field changes");
+        begin(); focused=false;
+        before=keyboardEvents;
+        expect(pulse_dictation_final_step("words")==-1 && keyboardEvents==before,"focus loss during delivery falls back without typing");
+        begin(); selectedElement=secondElement;
+        expect(pulse_dictation_final_step("words")==-1,"never retarget during an insertion");
+        begin(); focusedWindow=secondElement;
+        expect(pulse_dictation_final_step("words")==-1,"stale focus in another window is rejected");
+        begin(); caret=NSMakeRange(0,0);
+        expect(pulse_dictation_final_step("words")==-1,"caret changes never overwrite an unintended range");
+        begin(); editor=@"User edited";
+        expect(pulse_dictation_final_step("words")==-1,"user edits are preserved");
         begin(); acceptTyping=false;
-        expect(pulse_dictation_live_step("hello")==0,"start asynchronous write before blur");
-        focused=false;
-        expect(pulse_dictation_live_step("hello")==3,"blur waits for pending text");
-        editor=@"Before he after";
-        expect(pulse_dictation_live_step("hello")==3,"partial write settles before withdrawal");
-        editor=pendingValue; caret=pendingSelection;
-        withdraw();
-        expect([editor isEqualToString:@"Before SELECT after"],"acknowledged in-flight insertion is withdrawn before switching");
-        begin(); syncText("hello"); focused=false;
-        expect(pulse_dictation_live_step("hello")==3,"start withdrawal before external edit");
-        editor=@"a different document";
-        expect(pulse_dictation_live_step("hello")==-1 && [editor isEqualToString:@"a different document"],"external changes are never overwritten during withdrawal");
-        // Stable identity preserves a recreated control's existing owned range.
-        begin(); stableIdentity=true; pulse_dictation_live_begin(); syncText("hello");
-        AXUIElementRef clicked=AXUIElementCreateApplication(getpid()+10);
-        selectedElement=clicked; targetGone=true;
-        syncText("hello more");
-        expect(CFEqual(deliveryElement,clicked) && [editor isEqualToString:@"Before hello more after"],"recreated control continues without duplicating existing dictation");
-        CFRelease(clicked);
-        begin(); caretBounds=true; editor=@"a long sentence with wrapping text"; caret=NSMakeRange(12,0); pulse_dictation_live_begin();
-        double x,y,w,h;
-        expect(pulse_dictation_live_bounds(&x,&y,&w,&h) && x==184 && y==200 && w==1,"pill tracks the caret rather than field center");
-        caret=NSMakeRange(25,0);
-        expect(pulse_dictation_live_bounds(&x,&y,&w,&h) && x==135 && y==218,"caret anchor follows a wrapped line");
-        // Chromium can expose an in-flight Unicode insertion a few characters
-        // at a time. It is still the same field; do not fail or post it again.
+        expect(pulse_dictation_final_step("hello")==0,"posting input is not success");
+        before=keyboardEvents; editor=@"Before he after"; caret=NSMakeRange(9,0);
+        expect(pulse_dictation_final_step("hello")==0 && keyboardEvents==before,"partial readback waits without replay");
+        editor=pendingValue; caret=pendingSelection; acceptTyping=true;
+        insert("hello");
+        expect(keyboardEvents==before,"acknowledged input was posted only once");
         begin(); acceptTyping=false;
-        expect(pulse_dictation_live_step("hello")==0,"start asynchronous insertion");
-        unsigned inFlightEvents=keyboardEvents;
-        editor=@"Before he after"; caret=NSMakeRange(9,0);
-        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"partial insertion must wait without losing the field or duplicating text");
-        missingText=true;
-        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"temporary missing text must not lose the field");
-        missingText=false; missingSelection=true;
-        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"temporary missing selection must not lose the field");
-        missingSelection=false; editor=pendingValue; caret=NSMakeRange(9,0);
-        expect(pulse_dictation_live_step("hello world")==0 && keyboardEvents==inFlightEvents,"text can finish before the caret catches up");
-        caret=pendingSelection; acceptTyping=true;
-        syncText("hello world");
-        expect([editor isEqualToString:@"Before hello world after"],"partial readbacks converge without replay");
-        begin(); missingEditability=true;
-        unsigned capabilityEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello")==0 && keyboardEvents==capabilityEvents,"temporarily missing editability must wait, not report lost focus");
-        missingEditability=false; syncText("hello");
-        expect([editor isEqualToString:@"Before hello after"],"same pinned input resumes when capabilities recover");
+        expect(pulse_dictation_final_step("ignored")==0,"start ignored insertion"); pendingSince-=1;
+        expect(pulse_dictation_final_step("ignored")==-1,"ignored insertion falls back after bounded wait");
         begin(); missingText=true;
-        expect(pulse_dictation_live_step("hello")==0,"missing initial readback waits");
-        unreadableSince-=1;
-        expect(pulse_dictation_live_step("hello")==-1,"unreadable input has a bounded timeout");
-        begin(); acceptTyping=false;
-        expect(pulse_dictation_live_step("hello")==0,"start insertion before user key");
-        CGEventRef userKey=CGEventCreateKeyboardEvent(NULL,0,true);
-        PulseDictationShortcutEvent([NSEvent eventWithCGEvent:userKey]); CFRelease(userKey);
-        unsigned userEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==userEvents,"real typing interrupts even while readback is pending");
-        begin(); acceptTyping=false;
-        expect(pulse_dictation_live_step("hello")==0,"start rejected insertion");
-        editor=@"Before unrelated after"; caret=NSMakeRange(16,0);
-        unsigned rejectedEvents=keyboardEvents;
-        expect(pulse_dictation_live_step("hello")==0,"unexpected in-flight result gets bounded settling time");
-        pendingSince-=1;
-        expect(pulse_dictation_live_step("hello")==-1 && keyboardEvents==rejectedEvents,"unconfirmed text is never adopted or overwritten");
-        begin(); acceptTyping=false;
-        expect(pulse_dictation_live_step("ignored")==0,"posting is not success");
-        pendingSince-=1;
-        expect(pulse_dictation_live_step("ignored")==-1,"unacknowledged typing stops without duplicate retries");
-        begin(); syncText("old"); acceptSelection=false;
-        expect(pulse_dictation_live_step("new")==0,"wait for asynchronous selection acknowledgement");
-        selectionSince-=1;
-        expect(pulse_dictation_live_step("new")==-1,"ignored range selection never overwrites unrelated text");
-        begin(); syncText("old"); acceptSelection=false;
-        unsigned beforeSelection=keyboardEvents;
-        expect(pulse_dictation_live_step("new")==0 && keyboardEvents==beforeSelection,"no text posted before selection acknowledgement");
-        caret=requestedSelection; acceptSelection=true;
-        syncText("new");
-        expect([editor isEqualToString:@"Before new after"],"deferred selection completes safely");
-        begin(); supportsRange=false;
-        expect(pulse_dictation_live_begin()==2,"unsupported input uses preview");
-        begin(); exposesPlaceholder=true; editor=@""; caret=NSMakeRange(0,0);
-        expect(pulse_dictation_live_begin()==1,"placeholder editor supports live insertion");
-        syncText("hello placeholder editor");
-        expect([editor isEqualToString:@"hello placeholder editor"] && livePlaceholderConfirmed,"placeholder disappearance is not a user edit");
-        syncText("corrected 🌍"); emptyParagraph=true; syncText(""); syncText("again");
-        syncText("\nType here");
-        expect([editor isEqualToString:@"\nType here"],"dictated text matching placeholder must remain real text");
-        syncText("again");
-        expect([editor isEqualToString:@"again"],"empty corrections and placeholder reappearance are supported");
+        expect(pulse_dictation_final_step("words")==0,"temporarily missing text waits");
+        missingText=false; insert("words");
         begin(); exposesPlaceholder=phantomPlaceholderCaret=true; editor=@""; caret=NSMakeRange(0,0);
-        expect(pulse_dictation_live_begin()==1,"phantom placeholder caret remains readable");
-        syncText("rich editor"); syncText(""); syncText("again");
-        expect([editor isEqualToString:@"again"],"placeholder caret offsets do not break rich editors");
-        begin(); exposesPlaceholder=true; editor=@"\nType here"; caret=NSMakeRange(0,0);
-        expect(pulse_dictation_live_begin()==1,"label-like real text is a candidate only");
-        syncText("prefix ");
-        expect([editor isEqualToString:@"prefix \nType here"] && !livePlaceholderConfirmed,"never discard real text matching an input label");
-        begin(); missingSystemFocus=true;
-        expect(pulse_dictation_live_begin()==1,"application focus fallback supports embedded editors");
-        syncText("app focused");
-        expect([editor isEqualToString:@"Before app focused after"],"fallback retains verified insertion");
+        expect(pulse_dictation_delivery_begin()==1,"web placeholder is readable");
+        insert("A complete sentence with a placeholder.");
+        expect([editor isEqualToString:@"A complete sentence with a placeholder."],"placeholder disappears without losing delivery");
         begin(); editor=@""; caret=NSMakeRange(0,0); emptyCaretOffset=1;
-        expect(pulse_dictation_live_begin()==1,"empty editor's synthetic position one is normalized");
-        syncText("empty editor"); syncText("Empty editor."); syncText(""); syncText("again");
-        expect([editor isEqualToString:@"again"],"synthetic empty caret works through insertion and corrections");
-        begin(); editor=@""; caret=NSMakeRange(0,0); emptyCaretOffset=2;
-        expect(pulse_dictation_live_begin()==2,"other out-of-range positions remain unsupported");
-        emptyCaretOffset=1; characterCountOverride=1;
-        expect(pulse_dictation_live_begin()==2,"inconsistent character counts cannot authorize empty-caret normalization");
-        // Exercise the actual edit planner on deterministic, varied Unicode
-        // sequences, including insertions longer than its alignment window.
-        NSArray<NSString *> *tokens=@[@"a",@"b",@" ",@".",@"🌍",@"é",@"👨‍👩‍👧‍👦",@"中文"];
-        uint32_t seed=42;
-        for (unsigned trial=0;trial<500;trial++) {
-            NSMutableString *from=[NSMutableString new], *to=[NSMutableString new];
-            for (unsigned k=0;k<80;k++) {
-                seed=seed*1664525u+1013904223u;
-                if (seed&1) [from appendString:tokens[(seed>>16)%tokens.count]];
-                seed=seed*1664525u+1013904223u;
-                if (seed&4) [to appendString:tokens[(seed>>16)%tokens.count]];
-            }
-            NSString *value=from;
-            for (unsigned step=0;step<250 && ![value isEqualToString:to];step++) {
-                NSRange change; NSString *fragment;
-                nextLiveEdit(value,to,&change,&fragment);
-                expect(change.length || fragment.length,"each correction makes progress");
-                expect(!change.length || NSEqualRanges(change,[value rangeOfComposedCharacterSequencesForRange:change]),"replacement stays on composed-character boundaries");
-                value=[value stringByReplacingCharactersInRange:change withString:fragment];
-            }
-            expect([value isEqualToString:to],"bounded corrections converge to the authoritative transcript");
-        }
-        expect(clipboardWrites==0,"ALL input paths preserve clipboard");
+        expect(pulse_dictation_delivery_begin()==1,"synthetic empty caret is normalized");
+        insert("Empty editor."); expect([editor isEqualToString:@"Empty editor."],"empty contenteditable receives final text");
+        begin(); missingSystemFocus=true;
+        expect(pulse_dictation_delivery_begin()==1,"app focus fallback supports embedded editors"); insert("embedded editor");
+        begin(); supportsRange=false;
+        expect(pulse_dictation_delivery_begin()==1,"insertion needs no AX range setter"); insert("native input");
+        expect(clipboardWrites==0 && !focusRequests && !raiseRequests,"input delivery preserves clipboard and never steals focus");
         focused=false;
-        expect(pulse_dictation_live_begin()==0,"no selected input uses bottom preview");
-        expect(pulse_dictation_copy("clipboard result") && clipboardWrites==2,"clipboard only written by explicit no-input path");
-        pulse_dictation_clear_target(); CFRelease(fakeElement); CFRelease(fakeSystem); CFRelease(fakeWindow); CFRelease(fakeParent); CFRelease(secondElement);
-        puts("PASS: bottom preview, transactional field handoff, recreated control identity, caret tracking, partial and missing AX readbacks, pinned transaction recovery, real user interruption, application focus fallback, synthetic empty caret, pinned input, final corrections without replay, Unicode, read-back failures, clipboard preservation");
+        expect(pulse_dictation_delivery_begin()==0,"no selected input uses clipboard");
+        expect(pulse_dictation_copy("clipboard result") && clipboardWrites==2,"explicit fallback copies the full transcript once");
+        pulse_dictation_clear_target();
+        CFRelease(fakeElement); CFRelease(fakeSystem); CFRelease(fakeWindow); CFRelease(fakeParent); CFRelease(secondElement);
+        puts("PASS: final-only insertion, final selected field, Unicode, placeholders, delayed readbacks, focus and edit guards, clipboard preservation");
     }
 }

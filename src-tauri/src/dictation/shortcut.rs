@@ -78,6 +78,20 @@ mod tests {
     }
 
     #[test]
+    fn hands_free_ignores_typing_and_modifiers_until_right_option() {
+        let mut key = HoldShortcut::default();
+        assert_eq!(key.update(true, false, 0.0), Some(Action::Start));
+        assert_eq!(key.update(false, false, 0.1), None);
+        // Includes Escape, typing, Cmd-Tab and modifier changes. None are a
+        // physical Right Option press, so none may stop hands-free recording.
+        for i in 1..500 {
+            assert_eq!(key.update(false, i % 2 == 0, i as f64), None);
+        }
+        assert_eq!(key.update(true, true, 501.0), Some(Action::Release));
+        assert_eq!(key.update(false, false, 501.1), None);
+    }
+
+    #[test]
     fn holds_finish_at_or_above_half_a_second() {
         for duration in [0.5, 0.501, 60.0] {
             let mut key = HoldShortcut::default();

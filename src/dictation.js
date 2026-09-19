@@ -4,6 +4,7 @@ const words = document.querySelector("#words");
 const canvas = document.querySelector("#waveform");
 const shell = document.querySelector("#waveform-shell");
 const overlay = document.querySelector("#dictation");
+const transcript = document.querySelector("#transcript");
 const context = canvas.getContext("2d");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let snapshot = { phase: "idle", levels: [], text: "" };
@@ -19,10 +20,13 @@ async function syncGlass() {
   const visible = ["listening", "finalizing", "sending", "done"].includes(snapshot.phase);
   const frame = { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
     opacity: visible ? Number(getComputedStyle(shell).opacity) * Number(getComputedStyle(overlay).opacity) : 0 };
-  const signature = JSON.stringify([sessionId, ...Object.values(frame).map(value => Math.round(value * 100) / 100)]);
+  const textRect = transcript.getBoundingClientRect();
+  const textFrame = { x: textRect.x, y: textRect.y, width: textRect.width, height: textRect.height,
+    opacity: visible ? Number(getComputedStyle(transcript).opacity) * Number(getComputedStyle(overlay).opacity) : 0 };
+  const signature = JSON.stringify([sessionId, ...[...Object.values(frame), ...Object.values(textFrame)].map(value => Math.round(value * 100) / 100)]);
   if (signature === lastGlass) return;
   try {
-    const available = await invoke("dictation_glass", { sessionId, frame });
+    const available = await invoke("dictation_glass", { sessionId, frame, transcript: textFrame });
     if (id === sessionId) {
       lastGlass = signature;
       body.dataset.nativeGlass = String(!!available);
@@ -45,27 +49,14 @@ export function render(next) {
   }
   snapshot = next;
   body.style.setProperty("--bottom", `${next.bottom || 28}px`);
-  body.dataset.inline = String(!!next.inline);
-  body.dataset.anchored = String(!!next.target);
-  if (next.target) {
-    const field = next.target;
-    const halfWidth = next.inline ? 32 : Math.min(160, (innerWidth - 32) / 2);
-    const x = Math.max(halfWidth + 16, Math.min(innerWidth - halfWidth - 16, field.x + field.width / 2));
-    const maxHeight = next.inline || !next.text ? 28 : 164;
-    let bottom = innerHeight - field.y + 6;
-    if (field.y < maxHeight + 24) bottom = innerHeight - field.y - field.height - 8 - maxHeight;
-    bottom = Math.max(16, Math.min(innerHeight - maxHeight - 16, bottom));
-    body.style.setProperty("--anchor-x", `${x}px`);
-    body.style.setProperty("--anchor-bottom", `${bottom}px`);
-  }
+  // All recording and delivery states stay in the same bottom-center overlay.
   if (next.samples !== lastSamples) { waveTime = performance.now(); lastSamples = next.samples; }
   const final = ["sending", "done", "error"].includes(next.phase);
   setText(next.text || "", final);
   if (next.text) body.dataset.expanded = "true";
   body.dataset.phase = next.phase;
   if (freshSession) {
-    // Resolve the new field position with movement disabled before showing.
-    // Subsequent bounds changes may animate, but a session never flies in.
+    // Resolve the bottom position before revealing a reused overlay.
     void body.offsetHeight;
     body.dataset.placing = "false";
   }
@@ -130,7 +121,7 @@ async function poll() {
 }
 requestAnimationFrame(frame);
 if (invoke) {
-  window.pulseDictationStart = (sessionId, bottom, target = null, inline = false) => render({ id: sessionId, bottom, target, inline, phase: "listening", text: "", levels: [] });
+  window.pulseDictationStart = (sessionId, bottom) => render({ id: sessionId, bottom, phase: "listening", text: "", levels: [] });
   poll();
 }
 // Browser-only visual fixture. Native sessions never accept URL-driven state.
@@ -141,38 +132,15 @@ else if (new URLSearchParams(location.search).has("preview")) {
     {phase:"listening",text:"",levels:levels.slice(-14)},
     {phase:"listening",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
     {phase:"finalizing",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
-    {phase:"sending",text:"A little thought becomes a sentence. Every word appears while I speak.",target:{x:innerWidth*.35,y:innerHeight*.65,width:innerWidth*.3,height:60},levels},
-    {phase:"done",text:"A little thought becomes a sentence. Every word appears while I speak.",message:"Inserted",levels}
+    {phase:"sending",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
+    {phase:"done",text:"A little thought becomes a sentence. Every word appears while I speak.",levels}
   ];
   window.previewDictation = render;
   const advance=()=>{render({id:1,bottom:32,samples:step+1,level:.09,...demo[Math.min(step++,demo.length-1)]});};
   const fixture = new URLSearchParams(location.search).get("preview");
-  const index = { pill: 0, expanded: 1, finalizing: 2, sending: 3, done: 4 }[fixture];
-  if (fixture === "handoff") {
-    let session = 0;
-    const cycle = () => {
-      const base = {id:++session,inline:true,target:{x:innerWidth*.2,y:innerHeight*.65,width:1,height:18},text:"A thought becomes a sentence.",level:.12,samples:1};
-      render({...base,phase:"listening"});
-      setTimeout(()=>render({...base,phase:"listening",target:{...base.target,x:innerWidth*.4}}),800);
-      setTimeout(()=>render({...base,phase:"listening",inline:false,target:null}),1600);
-      setTimeout(()=>render({...base,phase:"listening",target:{...base.target,x:innerWidth*.3,y:innerHeight*.7}}),3000);
-      setTimeout(()=>render({...base,phase:"finalizing",inline:false,target:null}),4000);
-      setTimeout(()=>render({...base,phase:"done",inline:false,target:null}),4650);
-    };
-    cycle(); setInterval(cycle,5400);
-  }
-  else if (fixture === "motion") {
-    let session = 0;
-    const cycle = () => {
-      const base = {id:++session,inline:true,target:{x:innerWidth*.2,y:innerHeight*.65,width:innerWidth*.6,height:90},level:.12,samples:1};
-      render({...base,phase:"listening"});
-      setTimeout(()=>render({...base,phase:"finalizing"}),1800);
-      setTimeout(()=>render({...base,phase:"done"}),2450);
-    };
-    cycle(); setInterval(cycle,3200);
-  }
-  else if (index !== undefined) { step = index; advance(); }
-  else if (fixture === "inline") render({id:1,phase:"listening",inline:true,target:{x:innerWidth*.2,y:innerHeight*.65,width:innerWidth*.6,height:90},level:.12,samples:1});
+  if (fixture === "long") demo[1].text = "This is a longer thought that keeps appearing as I speak. The older words quietly drift toward the top, leaving room for what comes next. I can move through my apps freely while dictation stays here. Only the newest line remains completely clear.";
+  const index = { pill: 0, expanded: 1, long: 1, finalizing: 2, sending: 3, done: 4 }[fixture];
+  if (index !== undefined) { step = index; advance(); }
   else { advance(); setInterval(advance,3000); }
   setInterval(() => { if (snapshot.phase === "listening") render({...snapshot, samples:(snapshot.samples || 0)+1, level:.025 + .07 * (1+Math.sin(performance.now()/450))/2}); }, 70);
 }

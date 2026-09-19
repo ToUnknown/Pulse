@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const css = readFileSync(new URL('../../src/dictation.css',import.meta.url),'utf8');
+assert.match(css, /#words\s*\{[^}]*max-height:\s*80px[^}]*line-height:\s*20px/, 'transcript is limited to four rows');
 assert.match(css, /#dictation\s*\{[^}]*bottom:\s*var\(--bottom\)/, 'unanchored preview is at the screen bottom');
 const element = () => ({textContent:'',dataset:{},style:{setProperty(name,value){this[name]=value;}},append(){},scrollHeight:0,getBoundingClientRect(){return {x:400,y:600,width:64,height:28};}});
-const body = element(), nodes = Object.fromEntries(['#words','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
+const body = element(), nodes = Object.fromEntries(['#words','#transcript','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
 const bars=[];
 let barStart;
 const drawing={setTransform(){},clearRect(){bars.length=0;},beginPath(){},moveTo(x,y){barStart=y;},lineTo(x,y){this.amplitude=y-barStart;},stroke(){bars.push({height:this.amplitude,alpha:this.globalAlpha});}};
@@ -47,24 +48,16 @@ sandbox.render({id:2,phase:'done',message:'Inserted'});
 assert.equal(body.dataset.phase,'listening','stale session cannot flash completion');
 console.log('PASS: fresh-session reset, stale snapshot rejection, hidden-webview readiness, no success tip');
 
-sandbox.render({id:4,phase:'listening',inline:true,text:'Live words',target:{x:200,y:650,width:1,height:18}});
-assert.equal(body.style['--anchor-x'],'200.5px','pill centered above the insertion point');
-assert.equal(body.style['--anchor-bottom'],'256px');
-assert.equal(body.dataset.inline,'true');
-assert.equal(body.dataset.placing,'false','initial positioning completes before showing the overlay');
-sandbox.render({id:4,phase:'listening',inline:true,text:'More words',target:{x:120,y:668,width:1,height:18}});
-assert.equal(body.style['--anchor-x'],'120.5px');
-assert.equal(body.style['--anchor-bottom'],'238px','pill follows the caret onto the next line');
-sandbox.render({id:5,phase:'listening',inline:false,text:'Standalone words',target:null});
-assert.equal(body.dataset.anchored,'false','no input uses bottom-center output');
-assert.equal(body.dataset.inline,'false');
-sandbox.render({id:5,phase:'listening',inline:true,text:'Standalone words',target:{x:700,y:450,width:1,height:18}});
-assert.equal(body.dataset.anchored,'true','same recording can enter a new input from preview');
-assert.equal(body.style['--anchor-x'],'700.5px');
-assert.equal(body.dataset.placing,'false','handoff keeps smooth position transitions enabled');
+// Even stale field metadata cannot move the simplified overlay or hide text.
+for (const phase of ['listening','finalizing','sending']) {
+  sandbox.render({id:4,phase,inline:true,text:'Complete words',target:{x:200,y:650,width:1,height:18}});
+  assert.equal(body.dataset.anchored,undefined,'overlay always stays at bottom center');
+  assert.equal(body.dataset.inline,undefined,'transcript remains visible above the pill');
+  assert.equal(body.style['--anchor-x'],undefined,'input geometry is ignored');
+}
 sandbox.render({id:5,phase:'error',message:'Do not show this',text:''});
 assert.equal(nodes['#status'].textContent,'','errors never appear in the overlay');
-console.log('PASS: caret anchoring, wrapped-line positioning, standalone preview, silent errors');
+console.log('PASS: bottom-center recording and delivery, visible transcript, silent errors');
 
 sandbox.render({id:6,phase:'listening',samples:1,level:.12});
 sandbox.drawWave(100);
