@@ -10,11 +10,7 @@
 // AX and window operations run on AppKit's main thread. Audio lifecycle runs
 // on a dedicated serial queue; tap buffers are copied before returning.
 static AVAudioEngine *engine;
-static AXUIElementRef deliveryElement, deliveryWindow;
 static const int64_t PulseDictationEventTag = 0x50554c5345444943;
-static bool deliveryInterrupted;
-static bool sameInput(void);
-static pid_t deliveryPID;
 static bool tapInstalled;
 typedef void (*PulseAudio)(uint64_t, const uint8_t *, size_t, float);
 
@@ -35,7 +31,6 @@ static void PulseDictationShortcutEvent(NSEvent *event) {
     if (!shortcutCallback) return;
     CGEventRef cgEvent = event.CGEvent;
     if (cgEvent && CGEventGetIntegerValueField(cgEvent,kCGEventSourceUserData) == PulseDictationEventTag) return;
-    if (deliveryElement && event.type == NSEventTypeKeyDown && sameInput()) deliveryInterrupted = true;
     NSEventModifierFlags flags = event.modifierFlags;
     // Device-specific bits distinguish the two Option keys, including when
     // both are held. The ordinary Option flag merges them and is insufficient.
@@ -186,24 +181,20 @@ static CFTypeRef attribute(AXUIElementRef element, CFStringRef name) {
 }
 static AXUIElementRef focusedElement(void) {
     if (!AXIsProcessTrusted()) return NULL;
-    AXUIElementRef system = AXUIElementCreateSystemWide();
-    AXUIElementSetMessagingTimeout(system, 0.25);
-    CFTypeRef value = attribute(system, kAXFocusedUIElementAttribute);
-    CFRelease(system);
-    if (value && CFGetTypeID(value) == AXUIElementGetTypeID()) return (AXUIElementRef)value;
-    if (value) CFRelease(value);
-    // Embedded browser editors can be absent from system-wide focus while the
-    // active application still exposes the precise focused element. Query only
-    // that app; never search other windows or follow an unrelated editor.
+    // Prefer the active app's current focus over a stale system-wide element.
     pid_t pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
     if (pid<=0) return NULL;
-    AXUIElementRef app=AXUIElementCreateApplication(pid);
-    AXUIElementSetMessagingTimeout(app,0.25);
-    value=attribute(app,kAXFocusedUIElementAttribute);
-    CFRelease(app);
-    if (value && CFGetTypeID(value)==AXUIElementGetTypeID() &&
-        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier==pid) return (AXUIElementRef)value;
-    if (value) CFRelease(value);
+    for (int attempt=0; attempt<2; attempt++) {
+        AXUIElementRef root=attempt ? AXUIElementCreateSystemWide() : AXUIElementCreateApplication(pid);
+        AXUIElementSetMessagingTimeout(root,0.25);
+        CFTypeRef value=attribute(root,kAXFocusedUIElementAttribute);
+        CFRelease(root);
+        pid_t owner=0;
+        if (value && CFGetTypeID(value)==AXUIElementGetTypeID() &&
+            AXUIElementGetPid((AXUIElementRef)value,&owner)==kAXErrorSuccess && owner==pid &&
+            NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier==pid) return (AXUIElementRef)value;
+        if (value) CFRelease(value);
+    }
     return NULL;
 }
 static bool editable(AXUIElementRef element) {
@@ -211,11 +202,10 @@ static bool editable(AXUIElementRef element) {
     CFTypeRef subrole = attribute(element, kAXSubroleAttribute);
     CFTypeRef enabled = attribute(element, kAXEnabledAttribute);
     CFTypeRef readOnly = attribute(element, CFSTR("AXEditable"));
-    Boolean selectedSettable = false, valueSettable = false;
+    Boolean selectedSettable = false;
     AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute, &selectedSettable);
-    AXUIElementIsAttributeSettable(element, kAXValueAttribute, &valueSettable);
     bool textRole = role && (CFEqual(role, kAXTextFieldRole) || CFEqual(role, kAXTextAreaRole) || CFEqual(role, kAXComboBoxRole));
-    bool valid = (selectedSettable || (textRole && valueSettable) || (textRole && readOnly && CFEqual(readOnly, kCFBooleanTrue)))
+    bool valid = (textRole || selectedSettable || (readOnly && CFEqual(readOnly, kCFBooleanTrue)))
         && !(subrole && CFEqual(subrole, kAXSecureTextFieldSubrole))
         && !(enabled && CFEqual(enabled, kCFBooleanFalse))
         && !(readOnly && CFEqual(readOnly, kCFBooleanFalse));
@@ -225,224 +215,59 @@ static bool editable(AXUIElementRef element) {
     if (readOnly) CFRelease(readOnly);
     return valid;
 }
-// One capability-based path for all apps: replace the current selection when
-// supported, otherwise use normal Unicode input. Never set an entire field or
-// borrow the pasteboard. Read back the result before reporting delivery.
-static NSString *insertionBase, *insertedText, *expectedValue, *pendingText, *pendingValue;
-static NSRange originalSelection, expectedSelection, pendingSelection;
-static CFTimeInterval pendingSince, unreadableSince;
-static bool insertionUsable, insertionStarted;
-static NSString *placeholderCandidate;
-static bool textLength(AXUIElementRef element, CFIndex *length) {
-    CFTypeRef value = attribute(element,kAXNumberOfCharactersAttribute);
-    bool ok = value && CFGetTypeID(value)==CFNumberGetTypeID() &&
-        CFNumberGetValue(value,kCFNumberCFIndexType,length) && *length>=0;
-    if (value) CFRelease(value);
-    return ok;
+static bool modifiersDown(void) {
+    CGEventFlags flags=CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
+    return (flags & (kCGEventFlagMaskAlternate | kCGEventFlagMaskCommand |
+                     kCGEventFlagMaskControl | kCGEventFlagMaskShift)) != 0;
 }
-static bool readSelection(AXUIElementRef element, NSRange *range) {
-    CFTypeRef value = attribute(element, kAXSelectedTextRangeAttribute);
-    CFRange selected;
-    bool ok = value && CFGetTypeID(value) == AXValueGetTypeID() &&
-        AXValueGetValue(value, kAXValueCFRangeType, &selected) && selected.location >= 0 && selected.length >= 0;
-    if (ok) {
-        *range = NSMakeRange((NSUInteger)selected.location, (NSUInteger)selected.length);
-        if (!range->length) {
-            CFTypeRef raw=attribute(element,kAXValueAttribute);
-            // Some empty contenteditable fields expose a synthetic paragraph
-            // position at 1 despite AXValue and AXNumberOfCharacters being empty.
-            // Normalize only this verified empty state, never nonempty ranges.
-            if (range->location==1 && raw && CFGetTypeID(raw)==CFStringGetTypeID() && CFStringGetLength(raw)==0) {
-                CFTypeRef count=attribute(element,kAXNumberOfCharactersAttribute);
-                long length=-1;
-                if (count && CFGetTypeID(count)==CFNumberGetTypeID() &&
-                    CFNumberGetValue(count,kCFNumberLongType,&length) && length==0) range->location=0;
-                if (count) CFRelease(count);
-            }
-            if (raw) CFRelease(raw);
+// 0 = wait for physical modifiers; 1 = submitted once; -1 = copy instead.
+int pulse_dictation_final_step(const char *utf8) {
+    if (modifiersDown()) return 0;
+    NSString *text=[NSString stringWithUTF8String:utf8];
+    if (!text.length) return -1;
+    pid_t pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+    AXUIElementRef element=focusedElement();
+    if (!element) return -1;
+    AXUIElementSetMessagingTimeout(element,0.08);
+    bool input=editable(element);
+    CFRelease(element);
+    if (pid!=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) return 0;
+    if (!input || pid<=0) return -1;
+    CGEventSourceRef source=CGEventSourceCreate(kCGEventSourceStatePrivate);
+    CGEventRef down=source ? CGEventCreateKeyboardEvent(source,0,true) : NULL;
+    CGEventRef up=source ? CGEventCreateKeyboardEvent(source,0,false) : NULL;
+    if (!down || !up) {
+        if (down) CFRelease(down);
+        if (up) CFRelease(up);
+        if (source) CFRelease(source);
+        return -1;
+    }
+    CGEventSetFlags(down,0); CGEventSetFlags(up,0);
+    CGEventSetIntegerValueField(down,kCGEventSourceUserData,PulseDictationEventTag);
+    CGEventSetIntegerValueField(up,kCGEventSourceUserData,PulseDictationEventTag);
+    int result=0;
+    if (!modifiersDown() && pid==NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) {
+        // Small UTF-16 packets avoid Quartz's long-string truncation. Submit
+        // immediately, without paced typing, and never split a surrogate pair.
+        for (NSUInteger offset=0; offset<text.length;) {
+            UniChar characters[20];
+            NSUInteger length=MIN((NSUInteger)20,text.length-offset);
+            // Keep line separators inside a packet rather than at its start.
+            while (length>1 && offset+length<text.length &&
+                   [[NSCharacterSet newlineCharacterSet] characterIsMember:[text characterAtIndex:offset+length]]) length--;
+            [text getCharacters:characters range:NSMakeRange(offset,length)];
+            if (offset+length<text.length && (characters[length-1]&0xfc00)==0xd800) length--;
+            CGEventKeyboardSetUnicodeString(down,length,characters);
+            CGEventKeyboardSetUnicodeString(up,length,characters);
+            CGEventPost(kCGHIDEventTap,down); CGEventPost(kCGHIDEventTap,up);
+            offset+=length;
         }
+        result=1;
     }
-    if (value) CFRelease(value);
-    return ok;
-}
-static NSString *readText(AXUIElementRef element) {
-    CFTypeRef value = NULL;
-    AXError error = AXUIElementCopyAttributeValue(element,kAXValueAttribute,&value);
-    if (value && CFGetTypeID(value) == CFStringGetTypeID()) {
-        return CFBridgingRelease(value);
-    }
-    if (value) CFRelease(value);
-    // Empty native composers (including Messages) omit AXValue. Other editors
-    // expose their document only through the text-range API. Missing is not
-    // empty: require an explicit character count, never a timed-out AX query.
-    CFIndex length;
-    if ((error==kAXErrorNoValue || error==kAXErrorAttributeUnsupported) && textLength(element,&length)) {
-        if (length==0) return @"";
-        CFRange all = CFRangeMake(0,length);
-        AXValueRef range = AXValueCreate(kAXValueCFRangeType,&all);
-        value = NULL;
-        AXError read = AXUIElementCopyParameterizedAttributeValue(element,kAXStringForRangeParameterizedAttribute,range,&value);
-        CFRelease(range);
-        if (read==kAXErrorSuccess && value && CFGetTypeID(value)==CFStringGetTypeID() && CFStringGetLength(value)==length)
-            return CFBridgingRelease(value);
-        if (value) CFRelease(value);
-    }
-    return nil;
-}
-static bool textInput(AXUIElementRef element) {
-    CFTypeRef role = attribute(element, kAXRoleAttribute);
-    bool result = role && (CFEqual(role,kAXTextFieldRole) || CFEqual(role,kAXTextAreaRole) || CFEqual(role,kAXComboBoxRole));
-    if (role) CFRelease(role);
+    CFRelease(down); CFRelease(up); CFRelease(source);
     return result;
 }
-void pulse_dictation_clear_target(void) {
-    if (deliveryElement) CFRelease(deliveryElement);
-    if (deliveryWindow) CFRelease(deliveryWindow);
-    deliveryWindow=NULL;
-    deliveryElement = NULL; deliveryPID = 0;
-    insertionBase = insertedText = expectedValue = pendingText = pendingValue = nil;
-    insertionUsable = false; insertionStarted = false; deliveryInterrupted = false;
-    placeholderCandidate=nil; unreadableSince=0;
-}
-// 0 = no input, 1 = safely readable/replaceable input, 2 = unsupported input.
-int pulse_dictation_delivery_begin(void) {
-    pulse_dictation_clear_target();
-    AXUIElementRef element = focusedElement();
-    if (!element) return 0;
-    bool isInput = textInput(element) || editable(element);
-    if (!isInput) { CFRelease(element); return 0; }
-    deliveryElement = element;
-    AXUIElementSetMessagingTimeout(element, 0.08);
-    if (AXUIElementGetPid(element, &deliveryPID)!=kAXErrorSuccess || deliveryPID<=0) return 2;
-    CFTypeRef window=attribute(element,kAXWindowAttribute);
-    if (window && CFGetTypeID(window)==AXUIElementGetTypeID()) deliveryWindow=(AXUIElementRef)window;
-    else if (window) CFRelease(window);
-    if (deliveryWindow) AXUIElementSetMessagingTimeout(deliveryWindow,0.08);
-    if (!editable(element)) return 2;
-    insertionBase = readText(element);
-    insertionUsable = insertionBase && readSelection(element,&originalSelection) &&
-        originalSelection.location <= insertionBase.length && originalSelection.length <= insertionBase.length-originalSelection.location;
-    if (!insertionUsable) return 2;
-    // Web placeholders can be included in AXValue AND AX caret offsets.
-    // Keep the original content until a real edit proves it was display-only:
-    // the entire resulting document must equal precisely our inserted text.
-    if (insertionBase.length && !originalSelection.length) placeholderCandidate=insertionBase;
-    expectedValue = insertionBase; insertedText = @""; expectedSelection = originalSelection;
-    return 1;
-}
-// Identity is pinned for final delivery. Capability reads may temporarily
-// fail while an editor updates; check them before mutations, not as identity.
-static bool sameInput(void) {
-    AXUIElementRef focused = focusedElement();
-    bool owner = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == deliveryPID;
-    bool same = owner && focused && deliveryElement && CFEqual(focused,deliveryElement);
-    if (same && deliveryWindow) {
-        // Some apps keep reporting their last focused control after a different
-        // window becomes key. Verify window ownership as well as element/PID.
-        AXUIElementRef app=AXUIElementCreateApplication(deliveryPID);
-        AXUIElementSetMessagingTimeout(app,0.08);
-        CFTypeRef window=attribute(app,kAXFocusedWindowAttribute);
-        if (window) { same=CFEqual(window,deliveryWindow); CFRelease(window); }
-        CFRelease(app);
-    }
-    if (focused) CFRelease(focused);
-    return same;
-}
-static bool typeUnicode(NSString *text) {
-    if (!text.length) return false;
-    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStatePrivate);
-    CGKeyCode key = 0;
-    CGEventRef down = source ? CGEventCreateKeyboardEvent(source,key,true) : NULL;
-    CGEventRef up = source ? CGEventCreateKeyboardEvent(source,key,false) : NULL;
-    if (down && up) {
-        if (text.length) {
-            NSMutableData *characters=[NSMutableData dataWithLength:text.length*sizeof(UniChar)];
-            [text getCharacters:characters.mutableBytes range:NSMakeRange(0,text.length)];
-            CGEventKeyboardSetUnicodeString(down,text.length,characters.bytes);
-            CGEventKeyboardSetUnicodeString(up,text.length,characters.bytes);
-        }
-        CGEventSetFlags(down,0); CGEventSetFlags(up,0);
-        CGEventSetIntegerValueField(down,kCGEventSourceUserData,PulseDictationEventTag);
-        CGEventSetIntegerValueField(up,kCGEventSourceUserData,PulseDictationEventTag);
-        // Constrain delivery to the pinned process even if another app becomes
-        // active between the last AX focus check and event dispatch.
-        CGEventPostToPid(deliveryPID,down); CGEventPostToPid(deliveryPID,up);
-    }
-    bool sent = down && up;
-    if (down) CFRelease(down);
-    if (up) CFRelease(up);
-    if (source) CFRelease(source);
-    return sent;
-}
-static bool replaceSelection(NSString *text) {
-    Boolean selectionWritable=false;
-    if (AXUIElementIsAttributeSettable(deliveryElement,kAXSelectedTextAttribute,&selectionWritable)==kAXErrorSuccess && selectionWritable) {
-        AXError result=AXUIElementSetAttributeValue(deliveryElement,kAXSelectedTextAttribute,(__bridge CFStringRef)text);
-        // Success, timeout, and other ambiguous outcomes all require readback.
-        // Never retry a write that may already have reached the editor.
-        if (result!=kAXErrorAttributeUnsupported && result!=kAXErrorNotImplemented) return true;
-        NSRange selection;
-        if (deliveryInterrupted || !sameInput() || !editable(deliveryElement) ||
-            ![readText(deliveryElement) isEqualToString:expectedValue] ||
-            !readSelection(deliveryElement,&selection) || !NSEqualRanges(selection,expectedSelection)) return false;
-    }
-    return typeUnicode(text);
-}
-// AX value and selection are independent, asynchronous observations. A Unicode
-// event can also be applied in several input events by the receiving editor.
-// While waiting, never resend, adopt partial content, or write to another field.
-// The exact expected document acknowledges delivery. Caret reporting may lag
-// or disappear after a successful edit and must not trigger a clipboard copy.
-static int awaitInsertionReadback(void) {
-    CFTimeInterval now=CFAbsoluteTimeGetCurrent();
-    if (!unreadableSince) unreadableSince=now;
-    CFTimeInterval since=pendingValue ? pendingSince : unreadableSince;
-    if (now-since < 0.8) return 0;
-    insertionUsable=false;
-    return -1;
-}
-// Called only after recording finishes: -1 = clipboard fallback, 0 = pending, 1 = inserted.
-int pulse_dictation_final_step(const char *utf8) {
-    if (!insertionUsable || deliveryInterrupted) { insertionUsable=false; return -1; }
-    if (!sameInput()) { insertionUsable=false; return -1; }
-    NSString *actual = readText(deliveryElement);
-    if (!actual) return awaitInsertionReadback();
-    if (pendingValue) {
-        if (!insertionStarted && placeholderCandidate && ![actual isEqualToString:insertionBase] && [actual isEqualToString:pendingText]) {
-            // The editor removed its placeholder, not user content. Rebase the
-            // owned range to the verified empty document without typing twice.
-            insertionBase=@""; expectedValue=@""; pendingValue=pendingText;
-            originalSelection=NSMakeRange(0,0); pendingSelection=NSMakeRange(pendingText.length,0);
-        }
-        if ([actual isEqualToString:pendingValue]) {
-            insertedText=pendingText; expectedValue=pendingValue; expectedSelection=pendingSelection; insertionStarted=true;
-            pendingText=pendingValue=nil;
-        } else return awaitInsertionReadback();
-    }
-    NSString *desired = [NSString stringWithUTF8String:utf8];
-    if (!desired) { insertionUsable=false; return -1; }
-    if (![actual isEqualToString:expectedValue]) { insertionUsable=false; return -1; }
-    if ([desired isEqualToString:insertedText]) { unreadableSince=0; return 1; }
-    if (insertionStarted) { insertionUsable=false; return -1; }
-    NSRange selection;
-    if (!readSelection(deliveryElement,&selection)) return awaitInsertionReadback();
-    if (!NSEqualRanges(selection,expectedSelection)) { insertionUsable=false; return -1; }
-    if (!editable(deliveryElement)) return awaitInsertionReadback();
-    // Revalidate content and focus immediately before posting input.
-    if (deliveryInterrupted) { insertionUsable=false; return -1; }
-    if (!sameInput()) { insertionUsable=false; return -1; }
-    if (![readText(deliveryElement) isEqualToString:expectedValue]) return awaitInsertionReadback();
-    // Replace only the selected range with the complete final transcript.
-    if (!replaceSelection(desired)) { insertionUsable=false; return -1; }
-    pendingText=desired;
-    pendingValue=[insertionBase stringByReplacingCharactersInRange:originalSelection withString:desired];
-    pendingSelection=NSMakeRange(selection.location+desired.length,0);
-    pendingSince=CFAbsoluteTimeGetCurrent();
-    unreadableSince=0;
-    return 0;
-}
-// Final clipboard delivery when the selected input is not verified and synced.
-
+// The input path never accesses the clipboard. Only fallback writes here.
 bool pulse_dictation_copy(const char *utf8) {
     NSString *text=[NSString stringWithUTF8String:utf8];
     if (!text.length) return false;

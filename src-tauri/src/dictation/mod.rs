@@ -59,8 +59,6 @@ extern "C" {
         context: *mut c_void,
     );
     fn pulse_dictation_stop();
-    fn pulse_dictation_clear_target();
-    fn pulse_dictation_delivery_begin() -> i32;
     fn pulse_dictation_final_step(text: *const c_char) -> i32;
     fn pulse_dictation_copy(text: *const c_char) -> bool;
     fn pulse_dictation_position(window: *mut c_void, bottom: *mut f64);
@@ -98,11 +96,8 @@ struct Session {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinalDelivery {
     Pending,
-    // Windows accepted input events; readback is now advisory. This state can
-    // never fall back to clipboard, even on focus loss or the outer deadline.
-    SubmittedPending,
+    // Input events were submitted; apps do not provide a universal receipt.
     Submitted,
-    Input,
     Clipboard,
     Discard,
 }
@@ -112,8 +107,6 @@ impl Session {
             FinalDelivery::Discard
         } else if expired && self.delivery == FinalDelivery::Pending {
             FinalDelivery::Clipboard
-        } else if expired && self.delivery == FinalDelivery::SubmittedPending {
-            FinalDelivery::Submitted
         } else {
             self.delivery
         }
@@ -218,7 +211,6 @@ pub fn shutdown() {
     unsafe {
         pulse_dictation_unregister_shortcut();
         pulse_dictation_stop();
-        pulse_dictation_clear_target();
     }
 }
 fn create_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
@@ -454,8 +446,8 @@ extern "C" fn audio_callback(id: u64, bytes: *const u8, length: usize, level: f3
     s.samples += (length / 2) as u64;
     s.level = level;
 }
-// Input is captured once after transcription finishes. No field is read or
-// edited by this writer while recording or waiting for the final transcript.
+// Resolve the current input only at dispatch, after physical modifiers rise.
+// Recording never reads, locks, or edits a field.
 fn delivery_tick(app: &tauri::AppHandle, id: u64) {
     let state = app.state::<Dictation>();
     let mut guard = state.session.lock().unwrap();
@@ -463,20 +455,14 @@ fn delivery_tick(app: &tauri::AppHandle, id: u64) {
         s.id == id
             && s.phase == "sending"
             && !s.cancel.is_cancelled()
-            && matches!(
-                s.delivery,
-                FinalDelivery::Pending | FinalDelivery::SubmittedPending
-            )
+            && s.delivery == FinalDelivery::Pending
     }) else {
         return;
     };
     let text = CString::new(s.text.replace('\0', "")).unwrap();
     s.delivery = match unsafe { pulse_dictation_final_step(text.as_ptr()) } {
-        1 => FinalDelivery::Input,
-        2 => FinalDelivery::Submitted,
-        3 => FinalDelivery::SubmittedPending,
-        0 if s.delivery == FinalDelivery::Pending => FinalDelivery::Pending,
-        _ if s.delivery == FinalDelivery::SubmittedPending => FinalDelivery::Submitted,
+        0 => FinalDelivery::Pending,
+        1 => FinalDelivery::Submitted,
         _ => FinalDelivery::Clipboard,
     };
 }
@@ -505,9 +491,6 @@ fn start(app: &tauri::AppHandle) {
         if let Some(previous) = guard.take() {
             previous.cancel.cancel();
         }
-    }
-    unsafe {
-        pulse_dictation_clear_target();
     }
     let window = match create_window(app) {
         Ok(window) => window,
@@ -601,7 +584,6 @@ fn cancel(app: &tauri::AppHandle) {
         .interrupt();
     unsafe {
         pulse_dictation_stop();
-        pulse_dictation_clear_target();
     }
     if let Some(s) = app.state::<Dictation>().session.lock().unwrap().as_mut() {
         s.audio.take();
@@ -775,13 +757,8 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         }
         s.text = text.clone();
         s.phase = "sending";
-        // Capture the input selected now, never the one selected at recording
-        // start. Keep the overlay at bottom center during verified delivery.
-        s.delivery = if unsafe { pulse_dictation_delivery_begin() } == 1 {
-            FinalDelivery::Pending
-        } else {
-            FinalDelivery::Clipboard
-        };
+        // Resolve the selected input at dispatch, never at recording start.
+        s.delivery = FinalDelivery::Pending;
         // Capture failures may cancel the network but should still deliver the
         // partial words. Explicit cancellation never delivers anything.
         s.cancel = CancellationToken::new();
@@ -794,8 +771,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             let expired = Instant::now() >= deadline;
             let handle = app.clone();
             let complete = on_main(&app, move || {
-                // Deliver only to the captured final input. Windows can fall
-                // back before dispatch, never after text may have been inserted.
+                // A completed dispatch never becomes a clipboard fallback.
                 delivery_tick(&handle, id);
                 let state = handle.state::<Dictation>();
                 let mut guard = state.session.lock().unwrap();
@@ -803,7 +779,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                     return Ok(true);
                 };
                 s.phase = match s.final_delivery(expired) {
-                    FinalDelivery::Pending | FinalDelivery::SubmittedPending => return Ok(false),
+                    FinalDelivery::Pending => return Ok(false),
                     FinalDelivery::Clipboard => {
                         let text = CString::new(s.text.replace('\0', "")).unwrap();
                         if unsafe { pulse_dictation_copy(text.as_ptr()) } {
@@ -814,13 +790,8 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                             "done"
                         }
                     }
-                    FinalDelivery::Input | FinalDelivery::Submitted | FinalDelivery::Discard => {
-                        "done"
-                    }
+                    FinalDelivery::Submitted | FinalDelivery::Discard => "done",
                 };
-                unsafe {
-                    pulse_dictation_clear_target();
-                }
                 Ok(true)
             })
             .await
@@ -869,9 +840,6 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         let mut guard = state.session.lock().unwrap();
         if guard.as_ref().is_some_and(|s| s.id == id) {
             *guard = None;
-            unsafe {
-                pulse_dictation_clear_target();
-            }
             if let Some(window) = handle.get_webview_window(WINDOW) {
                 let _ = window.hide();
             }
@@ -902,11 +870,11 @@ mod tests {
     }
 
     #[test]
-    fn final_delivery_waits_for_verified_input_or_copies_once() {
+    fn final_delivery_waits_for_dispatch_or_copies_once() {
         let mut session = test_session();
         assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
-        session.delivery = FinalDelivery::Input;
-        assert_eq!(session.final_delivery(false), FinalDelivery::Input);
+        session.delivery = FinalDelivery::Submitted;
+        assert_eq!(session.final_delivery(false), FinalDelivery::Submitted);
         session.delivery = FinalDelivery::Clipboard;
         assert_eq!(session.final_delivery(false), FinalDelivery::Clipboard);
         session.delivery = FinalDelivery::Pending;

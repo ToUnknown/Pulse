@@ -24,7 +24,6 @@ static std::thread hookThread;
 static DWORD hookThreadId;
 static HHOOK keyboardHook;
 static bool rightDown, passRightAlt;
-static std::atomic<bool> deliveryInterrupted{false}, deliveryActive{false};
 
 static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) {
     if (code == HC_ACTION) {
@@ -32,7 +31,6 @@ static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) {
         if (!(key->flags & LLKHF_INJECTED)) {
             bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
             bool right = key->vkCode == VK_RMENU || (key->vkCode == VK_MENU && (key->flags & LLKHF_EXTENDED));
-            if (down && deliveryActive) deliveryInterrupted = true;
             if (right) {
                 if (down && !rightDown) passRightAlt=(GetAsyncKeyState(VK_CONTROL)&0x8000)!=0;
                 rightDown=down;
@@ -142,42 +140,35 @@ extern "C" void pulse_dictation_start_async(uint64_t id, Audio callback, void(*r
 }
 
 static ComPtr<IUIAutomation> automation;
-static ComPtr<IUIAutomationElement> target;
-static HWND targetWindow, overlayWindow;
-static std::wstring baseText, expectedText;
-static size_t selectionStart, selectionLength;
-static bool pending, haveBaseline, expectedKnown;
-static ULONGLONG pendingSince;
+static HWND overlayWindow;
 static std::wstring utf16(const char *text) {
     int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,nullptr,0);
     if (!n) return {};
     std::wstring result(n,L'\0'); MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,result.data(),n);
     result.resize(n-1); return result;
 }
-static std::wstring bstr(BSTR value) { return value ? std::wstring(value,SysStringLen(value)) : std::wstring(); }
 static bool initAutomation() {
     if (automation) return true;
-    // Tauri initializes COM for WebView2 on this thread. Do not change its apartment.
     HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     if (FAILED(init) && init!=RPC_E_CHANGED_MODE) return false;
     HRESULT hr=CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation));
     if (SUCCEEDED(hr) && automation) {
         ComPtr<IUIAutomation2> limits;
-        if (SUCCEEDED(automation.As(&limits)) && limits) { limits->put_ConnectionTimeout(500); limits->put_TransactionTimeout(500); }
+        if (SUCCEEDED(automation.As(&limits)) && limits) { limits->put_ConnectionTimeout(250); limits->put_TransactionTimeout(250); }
     }
     return SUCCEEDED(hr) && automation;
 }
-static bool editable(IUIAutomationElement *element) {
-    if (!element) return false;
-    BOOL password=TRUE, enabled=FALSE;
-    if (FAILED(element->get_CurrentIsPassword(&password)) || password ||
-        FAILED(element->get_CurrentIsEnabled(&enabled)) || !enabled) return false;
+enum class TextInput { Unknown, Rejected, Editable };
+static TextInput focusedTextInput() {
+    ComPtr<IUIAutomationElement> element;
+    if (!initAutomation() || FAILED(automation->GetFocusedElement(&element)) || !element) return TextInput::Unknown;
+    BOOL password=FALSE, enabled=TRUE;
+    if ((SUCCEEDED(element->get_CurrentIsPassword(&password)) && password) ||
+        (SUCCEEDED(element->get_CurrentIsEnabled(&enabled)) && !enabled)) return TextInput::Rejected;
     ComPtr<IUIAutomationValuePattern> value;
     BOOL readOnly=TRUE;
-    // Success alone does not establish that an optional pattern is present.
-    // Non-editable controls must reach clipboard fallback, not a null COM call.
     if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&value))) && value &&
-        SUCCEEDED(value->get_CurrentIsReadOnly(&readOnly))) return !readOnly;
+        SUCCEEDED(value->get_CurrentIsReadOnly(&readOnly))) return readOnly ? TextInput::Rejected : TextInput::Editable;
     ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
     if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) && text &&
         SUCCEEDED(text->get_DocumentRange(&document)) && document) {
@@ -185,149 +176,48 @@ static bool editable(IUIAutomationElement *element) {
         bool known=SUCCEEDED(document->GetAttributeValue(UIA_IsReadOnlyAttributeId,&attribute)) && attribute.vt==VT_BOOL;
         bool writable=known && attribute.boolVal==VARIANT_FALSE;
         VariantClear(&attribute);
-        if (known) return writable;
+        if (known) return writable ? TextInput::Editable : TextInput::Rejected;
     }
-    // Some custom editors expose a focused Edit control but no text patterns.
-    // Do not infer editability from arbitrary document/window controls.
-    CONTROLTYPEID type=0; BOOL focusable=FALSE;
-    return SUCCEEDED(element->get_CurrentControlType(&type)) && type==UIA_EditControlTypeId &&
-        SUCCEEDED(element->get_CurrentIsKeyboardFocusable(&focusable)) && focusable;
+    CONTROLTYPEID type=0;
+    return SUCCEEDED(element->get_CurrentControlType(&type)) && type==UIA_EditControlTypeId
+        ? TextInput::Editable : TextInput::Unknown;
 }
-static bool snapshot(IUIAutomationElement *element, std::wstring &value, size_t *start=nullptr, size_t *length=nullptr) {
-    if (!element || (start && !length)) return false;
-    ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
-    if (FAILED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) || !text ||
-        FAILED(text->get_DocumentRange(&document)) || !document) {
-        // Classic single-line Edit controls may expose ValuePattern only.
-        // Read their existing selection; never select-all or replace the field.
-        ComPtr<IUIAutomationValuePattern> field;
-        BSTR raw=nullptr;
-        if (FAILED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&field))) || !field ||
-            FAILED(field->get_CurrentValue(&raw))) return false;
-        value=bstr(raw); SysFreeString(raw);
-        if (!start) return true;
-        UIA_HWND native=nullptr;
-        if (FAILED(element->get_CurrentNativeWindowHandle(&native)) || !native || value.size()>65535) return false;
-        HWND handle=reinterpret_cast<HWND>(native);
-        wchar_t name[32]{};
-        if (!GetClassNameW(handle,name,32) || _wcsicmp(name,L"Edit")!=0) return false;
-        DWORD_PTR selected=0;
-        if (!SendMessageTimeoutW(handle,EM_GETSEL,0,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,100,&selected) || selected==0xffffffff) return false;
-        *start=LOWORD(selected); size_t end=HIWORD(selected);
-        if (end<*start || end>value.size()) return false;
-        *length=end-*start; return true;
-    }
-    BSTR raw=nullptr;
-    if (FAILED(document->GetText(-1,&raw))) return false;
-    value=bstr(raw); SysFreeString(raw);
-    if (!start) return true;
-    ComPtr<IUIAutomationTextRangeArray> ranges; ComPtr<IUIAutomationTextRange> selected, prefix;
-    int count=0;
-    if (FAILED(text->GetSelection(&ranges)) || !ranges || FAILED(ranges->get_Length(&count)) || count!=1 ||
-        FAILED(ranges->GetElement(0,&selected)) || !selected || FAILED(document->Clone(&prefix)) || !prefix ||
-        FAILED(prefix->MoveEndpointByRange(TextPatternRangeEndpoint_End,selected.Get(),TextPatternRangeEndpoint_Start))) return false;
-    if (FAILED(prefix->GetText(-1,&raw))) return false;
-    *start=SysStringLen(raw); SysFreeString(raw);
-    if (FAILED(selected->GetText(-1,&raw))) return false;
-    *length=SysStringLen(raw); SysFreeString(raw);
-    return *start<=value.size() && *length<=value.size()-*start;
+static bool modifiersDown() {
+    return ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|
+        GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0;
 }
-static std::wstring normalizeLines(const std::wstring &value) {
-    std::wstring result;
-    for (size_t i=0;i<value.size();i++) {
-        if (value[i]==L'\r') { result+=L'\n'; if(i+1<value.size() && value[i+1]==L'\n') i++; }
-        else result+=value[i];
-    }
-    return result;
-}
-static bool sameInput() {
-    if (!automation || !target || GetForegroundWindow()!=targetWindow) return false;
-    ComPtr<IUIAutomationElement> focused; BOOL same=FALSE;
-    return SUCCEEDED(automation->GetFocusedElement(&focused)) && focused &&
-        SUCCEEDED(automation->CompareElements(target.Get(),focused.Get(),&same)) && same;
-}
-extern "C" void pulse_dictation_clear_target() {
-    deliveryActive=false; target.Reset(); targetWindow=nullptr;
-    baseText.clear(); expectedText.clear(); pending=false; haveBaseline=false;
-    expectedKnown=false; deliveryInterrupted=false;
-}
-extern "C" int pulse_dictation_delivery_begin() {
-    pulse_dictation_clear_target();
-    if (!initAutomation()) return 0;
-    deliveryActive=true;
-    targetWindow=GetForegroundWindow();
-    if (!targetWindow || FAILED(automation->GetFocusedElement(&target)) || !target) {
-        pulse_dictation_clear_target(); return 0;
-    }
-    if (!editable(target.Get()) || !sameInput()) {
-        pulse_dictation_clear_target(); return 2;
-    }
-    // Reading the whole document and caret is optional. Input dispatch works
-    // with editors that deliberately expose only part of their accessibility API.
-    haveBaseline=snapshot(target.Get(),baseText,&selectionStart,&selectionLength);
-    return 1;
-}
+// 0 = wait for physical modifiers; 1 = submitted once; -1 = copy instead.
+// The OS routes one batch to the current caret. No saved field, document reads,
+// text replacement, or asynchronous accessibility acknowledgment is involved.
 extern "C" int pulse_dictation_final_step(const char *utf8) {
-    // -1: nothing sent; 0: waiting to send; 1: verified; 2: submitted without
-    // confirmation; 3: submitted, awaiting receipt. Only -1 permits copying.
-    std::wstring actual;
-    if (pending) {
-        if (target && expectedKnown && snapshot(target.Get(),actual) &&
-            normalizeLines(actual)==normalizeLines(expectedText)) return 1;
-        // A stale provider, user typing, or focus change cannot undo dispatch.
-        // Never replay the transcript or overwrite the clipboard after sending.
-        if (!expectedKnown || deliveryInterrupted || !sameInput() || GetTickCount64()-pendingSince>=1000) return 2;
-        return 3;
-    }
-    if (!target || deliveryInterrupted || !sameInput() || !editable(target.Get())) return -1;
-    size_t start=0,length=0;
-    bool haveCurrent=snapshot(target.Get(),actual,&start,&length);
-    if (haveBaseline && haveCurrent &&
-        (actual!=baseText || start!=selectionStart || length!=selectionLength)) return -1;
+    if (modifiersDown()) return 0;
     std::wstring text=utf16(utf8);
     if (text.empty()) return -1;
-    // Do not release/repress the user's physical modifiers. Wait briefly for
-    // the dictation key to rise instead of generating Alt/Ctrl shortcuts.
-    if ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000) return 0;
-    if (deliveryInterrupted || !sameInput()) return -1;
-    expectedKnown=haveCurrent;
-    if (expectedKnown) expectedText=actual.substr(0,start)+text+actual.substr(start+length);
-    std::vector<INPUT> input(text.size()*2);
+    HWND foreground=GetForegroundWindow();
+    if (!foreground) return -1;
+    TextInput inputKind=focusedTextInput();
+    GUITHREADINFO info{sizeof(info)};
+    DWORD thread=GetWindowThreadProcessId(foreground,nullptr);
+    bool haveInfo=thread && GetGUIThreadInfo(thread,&info);
+    if (GetForegroundWindow()!=foreground) return 0;
+    if (inputKind==TextInput::Rejected) return -1;
+    if (haveInfo && (info.flags&(GUI_INMENUMODE|GUI_INMOVESIZE))) return -1;
+    // Native caret presence covers editors with incomplete UI Automation data.
+    bool caret=haveInfo && info.hwndFocus && info.hwndCaret &&
+        (info.hwndFocus==info.hwndCaret || IsChild(info.hwndFocus,info.hwndCaret));
+    if (inputKind!=TextInput::Editable && !caret) return -1;
+    std::vector<INPUT> events(text.size()*2);
     for (size_t i=0;i<text.size();i++) {
-        input[2*i].type=input[2*i+1].type=INPUT_KEYBOARD;
-        input[2*i].ki.wScan=input[2*i+1].ki.wScan=text[i];
-        input[2*i].ki.dwFlags=KEYEVENTF_UNICODE;
-        input[2*i+1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
-        input[2*i].ki.dwExtraInfo=input[2*i+1].ki.dwExtraInfo=EventTag;
+        events[2*i].type=events[2*i+1].type=INPUT_KEYBOARD;
+        events[2*i].ki.wScan=events[2*i+1].ki.wScan=text[i];
+        events[2*i].ki.dwFlags=KEYEVENTF_UNICODE;
+        events[2*i+1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
+        events[2*i].ki.dwExtraInfo=events[2*i+1].ki.dwExtraInfo=EventTag;
     }
-    // Native Edit/RichEdit controls offer an atomic, undoable selection edit.
-    // Web/custom controls receive a single Unicode input transaction.
-    UIA_HWND native=nullptr;
-    if (SUCCEEDED(target->get_CurrentNativeWindowHandle(&native)) && native) {
-        HWND handle=reinterpret_cast<HWND>(native);
-        wchar_t name[64]{}; GetClassNameW(handle,name,64);
-        if (IsWindowUnicode(handle) && (_wcsicmp(name,L"Edit")==0 || _wcsnicmp(name,L"RichEdit",8)==0)) {
-            if (deliveryInterrupted || !sameInput() || (GetWindowLongPtrW(handle,GWL_STYLE)&ES_READONLY)) return -1;
-            DWORD_PTR result=0;
-            // Timeout may mean the edit already happened. Only a definitive
-            // rejection permits clipboard fallback; never replay this write.
-            pending=true; pendingSince=GetTickCount64();
-            SetLastError(ERROR_SUCCESS);
-            LRESULT sent=SendMessageTimeoutW(handle,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(text.c_str()),SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&result);
-            DWORD error=GetLastError();
-            if (!sent && (error==ERROR_ACCESS_DENIED || error==ERROR_INVALID_WINDOW_HANDLE)) {
-                pending=false; return -1;
-            }
-            return 3;
-        }
-    }
-    // One batch, no paced typing, no clipboard writes, and no retry after a
-    // partial/ambiguous dispatch. Windows enforces elevated-app boundaries.
-    if (deliveryInterrupted || !sameInput()) return -1;
-    pending=true; pendingSince=GetTickCount64();
-    UINT sent=SendInput(static_cast<UINT>(input.size()),input.data(),sizeof(INPUT));
-    if (!sent) { pending=false; return -1; }
-    return 3;
+    if (modifiersDown() || GetForegroundWindow()!=foreground) return 0;
+    UINT sent=SendInput(static_cast<UINT>(events.size()),events.data(),sizeof(INPUT));
+    // Even a partial dispatch must never be replayed or copied a second time.
+    return sent ? 1 : -1;
 }
 extern "C" bool pulse_dictation_copy(const char *utf8) {
     std::wstring text=utf16(utf8); if(text.empty()) return false;
