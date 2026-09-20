@@ -337,12 +337,15 @@ static CGImageRef PulseBackdropMask(void) {
 static void PulseDictationBackdrop(NSWindow *window, const void *key,
                                    double x, double y, double width, double height,
                                    double opacity, bool darkMode) {
+    (void)darkMode;
     NSView *host = PulseDictationMaterialHost(window);
     if (!host) return;
     NSVisualEffectView *halo = objc_getAssociatedObject(window,key);
     if (!halo) {
         halo = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-        halo.material = NSVisualEffectMaterialPopover;
+        // The outer region samples the desktop, rather than extending a
+        // popover's opaque-looking light/dark surface beyond the UI bounds.
+        halo.material = NSVisualEffectMaterialUnderWindowBackground;
         halo.blendingMode = NSVisualEffectBlendingModeBehindWindow;
         halo.state = NSVisualEffectStateActive;
         halo.wantsLayer = YES;
@@ -355,9 +358,8 @@ static void PulseDictationBackdrop(NSWindow *window, const void *key,
     }
     halo.hidden = opacity<=0 || width<=0 || height<=0 || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
     if (halo.hidden) return;
-    // This quiet backing follows the desktop appearance; the UI keeps its
-    // contrasting inverse surface above it. No separate animation or delay.
-    halo.appearance = [NSAppearance appearanceNamed:darkMode ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    // Inherit AppKit's current appearance instead of forcing a surface tint.
+    halo.appearance = nil;
     NSRect block = NSMakeRect(x,host.isFlipped ? y : NSHeight(host.bounds)-y-height,width,height);
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
