@@ -2,8 +2,10 @@
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #include <IOKit/hidsystem/IOLLEvent.h>
+#include <dlfcn.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -334,38 +336,124 @@ static CGImageRef PulseBackdropMask(void) {
     });
     return image;
 }
+// AppKit materials always bring their own color recipe. The outer backdrop
+// needs only a Gaussian filter, so use the compositor directly. These private
+// capabilities are optional: an unsupported OS gets no outer effect, not tint.
+static bool PulseEnableDesktopBackdrop(NSWindow *window) {
+    static char configuredKey;
+    NSNumber *configured=objc_getAssociatedObject(window,&configuredKey);
+    if (configured) return configured.boolValue;
+    bool enabled=false;
+    id oldFlatten=nil, oldHosting=nil;
+    @try {
+        oldFlatten=[window valueForKey:@"shouldAutoFlattenLayerTree"];
+        oldHosting=[window valueForKey:@"canHostLayersInWindowServer"];
+        [window setValue:@NO forKey:@"shouldAutoFlattenLayerTree"];
+        [window setValue:@NO forKey:@"canHostLayersInWindowServer"];
+        [window setValue:@YES forKey:@"canHostLayersInWindowServer"];
+        // A nonzero alpha keeps the transparent window's backing surface live.
+        window.opaque=NO;
+        window.backgroundColor=[NSColor colorWithWhite:0 alpha:0.001];
+        enabled=true;
+    } @catch (NSException *exception) {
+        (void)exception;
+        @try {
+            if (oldFlatten) [window setValue:oldFlatten forKey:@"shouldAutoFlattenLayerTree"];
+            if (oldHosting) [window setValue:oldHosting forKey:@"canHostLayersInWindowServer"];
+        } @catch (NSException *restoreException) { (void)restoreException; }
+    }
+    objc_setAssociatedObject(window,&configuredKey,@(enabled),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return enabled;
+}
+static void PulseKeepBackdropLive(NSWindow *window) {
+    // Keep WindowServer from flattening the blur during Spaces transitions.
+    // Window resize may reset this tag; do not send an IPC on every UI frame.
+    typedef int32_t (*ConnectionID)(void);
+    typedef int32_t (*SetTags)(int32_t,int32_t,const uint32_t *,int32_t);
+    static ConnectionID connection;
+    static SetTags setTags;
+    static char taggedSizeKey;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        connection=(ConnectionID)dlsym(RTLD_DEFAULT,"CGSMainConnectionID");
+        setTags=(SetTags)dlsym(RTLD_DEFAULT,"CGSSetWindowTags");
+    });
+    if (connection && setTags && window.windowNumber>0) {
+        NSValue *taggedSize=objc_getAssociatedObject(window,&taggedSizeKey);
+        NSSize size=window.frame.size;
+        if (taggedSize && NSEqualSizes(taggedSize.sizeValue,size)) return;
+        uint32_t tags[2]={0,1u<<16};
+        if (setTags(connection(),(int32_t)window.windowNumber,tags,64)==0)
+            objc_setAssociatedObject(window,&taggedSizeKey,[NSValue valueWithSize:size],OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+static NSView *PulseCreateUntintedBackdrop(NSWindow *window) {
+    @try {
+        Class backdropClass=NSClassFromString(@"CABackdropLayer");
+        Class filterClass=NSClassFromString(@"CAFilter");
+        SEL factory=NSSelectorFromString(@"filterWithType:");
+        if (!backdropClass || ![backdropClass isSubclassOfClass:CALayer.class] ||
+            ![filterClass respondsToSelector:factory]) return nil;
+        id filter=((id (*)(id,SEL,id))objc_msgSend)(filterClass,factory,@"gaussianBlur");
+        if (!filter) return nil;
+        [filter setValue:@18 forKey:@"inputRadius"];
+        [filter setValue:@YES forKey:@"inputNormalizeEdges"];
+        CALayer *backdrop=[backdropClass layer];
+        if (!backdrop) return nil;
+        [backdrop setValue:@YES forKey:@"windowServerAware"];
+        [backdrop setValue:@YES forKey:@"allowsGroupBlending"];
+        [backdrop setValue:@YES forKey:@"allowsGroupOpacity"];
+        [backdrop setValue:@YES forKey:@"ignoresOffscreenGroups"];
+        [backdrop setValue:@NO forKey:@"allowsInPlaceFiltering"];
+        [backdrop setValue:@YES forKey:@"disablesOccludedBackdropBlurs"];
+        [backdrop setValue:@0.25 forKey:@"scale"];
+        [backdrop setValue:@24 forKey:@"bleedAmount"];
+        [backdrop setValue:[NSString stringWithFormat:@"PulseDictation-%ld",(long)window.windowNumber] forKey:@"groupName"];
+        backdrop.backgroundColor=NULL;
+        backdrop.filters=@[filter];
+        if (!PulseEnableDesktopBackdrop(window)) return nil;
+        NSView *view=[[NSView alloc] initWithFrame:NSZeroRect];
+        view.wantsLayer=YES;
+        view.layer.backgroundColor=NULL;
+        view.layer.sublayers=@[backdrop];
+        CALayer *mask=[CALayer layer];
+        mask.contents=(__bridge id)PulseBackdropMask();
+        mask.contentsCenter=CGRectMake(38.0/78,38.0/78,2.0/78,2.0/78);
+        view.layer.mask=mask;
+        return view;
+    } @catch (NSException *exception) {
+        (void)exception;
+        return nil;
+    }
+}
 static void PulseDictationBackdrop(NSWindow *window, const void *key,
                                    double x, double y, double width, double height,
                                    double opacity, bool darkMode) {
     (void)darkMode;
     NSView *host = PulseDictationMaterialHost(window);
     if (!host) return;
-    NSVisualEffectView *halo = objc_getAssociatedObject(window,key);
+    id saved=objc_getAssociatedObject(window,key);
+    if (saved==NSNull.null) return;
+    NSView *halo=saved;
     if (!halo) {
-        halo = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-        // The outer region samples the desktop, rather than extending a
-        // popover's opaque-looking light/dark surface beyond the UI bounds.
-        halo.material = NSVisualEffectMaterialUnderWindowBackground;
-        halo.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-        halo.state = NSVisualEffectStateActive;
-        halo.wantsLayer = YES;
-        CALayer *mask = [CALayer layer];
-        mask.contents = (__bridge id)PulseBackdropMask();
-        mask.contentsCenter = CGRectMake(38.0/78,38.0/78,2.0/78,2.0/78);
-        halo.layer.mask = mask;
+        halo=PulseCreateUntintedBackdrop(window);
+        if (!halo) {
+            objc_setAssociatedObject(window,key,NSNull.null,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        }
         [host addSubview:halo positioned:NSWindowBelow relativeTo:nil];
         objc_setAssociatedObject(window,key,halo,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     halo.hidden = opacity<=0 || width<=0 || height<=0 || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
     if (halo.hidden) return;
-    // Inherit AppKit's current appearance instead of forcing a surface tint.
-    halo.appearance = nil;
+    PulseKeepBackdropLive(window);
     NSRect block = NSMakeRect(x,host.isFlipped ? y : NSHeight(host.bounds)-y-height,width,height);
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     halo.frame = NSInsetRect(block,-PulseBackdropPadding,-PulseBackdropPadding);
-    halo.alphaValue = opacity * 0.8;
+    halo.alphaValue = opacity;
     halo.layer.mask.frame = halo.bounds;
+    halo.layer.sublayers.firstObject.frame = halo.bounds;
     [CATransaction commit];
 }
 
