@@ -18,7 +18,7 @@ const element = () => ({
   scrollTo({top}){this.scrollTop=top;},
   getBoundingClientRect(){return {x:400,y:600,width:64,height:28};},
 });
-const body = element(), nodes = Object.fromEntries(['#words','#transcript','#text-viewport','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
+const body = element(), nodes = Object.fromEntries(['#transcript-backdrop','#waveform-backdrop','#words','#transcript','#text-viewport','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
 const bars=[];
 let barStart;
 const drawing={setTransform(){},clearRect(){bars.length=0;},beginPath(){},moveTo(x,y){barStart=y;},lineTo(x,y){this.amplitude=y-barStart;},stroke(){bars.push({height:this.amplitude,alpha:this.globalAlpha});}};
@@ -148,3 +148,18 @@ themePreference.matches = false;
 await sandbox.syncGlass();
 assert.equal(calls.at(-1).args.darkMode,false);
 console.log('PASS: native glass tracks appearance changes without geometry changes');
+
+overlayOpacity = '.5';
+await sandbox.syncGlass();
+for (const id of ['#waveform-backdrop','#transcript-backdrop']) {
+  assert.equal(nodes[id].style.left,'376px');
+  assert.equal(nodes[id].style.top,'576px');
+  assert.equal(nodes[id].style.width,'112px');
+  assert.equal(nodes[id].style.height,'76px');
+  assert.equal(nodes[id].style.opacity,'0.4','halo follows the same presentation fade');
+}
+overlayOpacity = '0';
+await sandbox.syncGlass();
+assert.equal(nodes['#waveform-backdrop'].style.opacity,'0');
+assert.equal(nodes['#transcript-backdrop'].style.opacity,'0');
+console.log('PASS: 24px backdrop padding and synchronized disappearance');

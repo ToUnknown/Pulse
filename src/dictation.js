@@ -6,6 +6,8 @@ const shell = document.querySelector("#waveform-shell");
 const overlay = document.querySelector("#dictation");
 const transcript = document.querySelector("#transcript");
 const textViewport = document.querySelector("#text-viewport");
+const transcriptBackdrop = document.querySelector("#transcript-backdrop");
+const waveformBackdrop = document.querySelector("#waveform-backdrop");
 const context = canvas.getContext("2d");
 const darkMode = matchMedia("(prefers-color-scheme: dark)");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -38,8 +40,16 @@ function layoutText(now) {
 }
 let generation = 0, shownSession, voice = 0, lastFrame = 0;
 let glassBusy = false, lastGlass = "";
+function placeBackdrop(element, rect, opacity) {
+  const padding = 24;
+  element.style.left = `${rect.x - padding}px`;
+  element.style.top = `${rect.y - padding}px`;
+  element.style.width = `${rect.width + padding * 2}px`;
+  element.style.height = `${rect.height + padding * 2}px`;
+  element.style.opacity = String(opacity * .8);
+}
 async function syncGlass() {
-  if (!invoke || id === undefined) return;
+  if (id === undefined) return;
   const sessionId = id;
   const rect = shell.getBoundingClientRect();
   // Keep the native lens through the DOM's completion fade; removing it on
@@ -50,6 +60,11 @@ async function syncGlass() {
   const textRect = transcript.getBoundingClientRect();
   const textFrame = { x: textRect.x, y: textRect.y, width: textRect.width, height: textRect.height,
     opacity: visible ? Number(getComputedStyle(transcript).opacity) * Number(getComputedStyle(overlay).opacity) : 0 };
+  // Browser fallback shares the exact measured frame/fade used by AppKit.
+  // Keep it outside the blocks so their clipping cannot cut off the halo.
+  placeBackdrop(waveformBackdrop, frame, frame.opacity);
+  placeBackdrop(transcriptBackdrop, textFrame, textFrame.opacity);
+  if (!invoke) return;
   const signature = JSON.stringify([sessionId, darkMode.matches, ...[...Object.values(frame), ...Object.values(textFrame)].map(value => Math.round(value * 100) / 100)]);
   if (signature === lastGlass) return;
   try {

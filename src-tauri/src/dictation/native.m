@@ -424,14 +424,92 @@ void pulse_dictation_position(void *pointer, double *bottom) {
     window.ignoresMouseEvents = YES; window.hidesOnDeactivate = NO; window.hasShadow = NO;
     window.animationBehavior = NSWindowAnimationBehaviorNone;
     [window setFrame:chosen.frame display:YES animate:NO];
-    *bottom = MAX(20, NSMinY(chosen.visibleFrame) - NSMinY(chosen.frame) + 16);
+    // Leave room for the 24pt feather even when the Dock is hidden.
+    *bottom = MAX(28, NSMinY(chosen.visibleFrame) - NSMinY(chosen.frame) + 16);
+}
+
+// Keep every backdrop below every native surface, and all native material
+// below WKWebView. Otherwise two overlapping halos can frost the glass rim.
+static NSView *PulseDictationMaterialHost(NSWindow *window) {
+    NSView *content = window.contentView;
+    if (!content) return nil;
+    static char materialKey;
+    NSView *host = objc_getAssociatedObject(window,&materialKey);
+    if (!host) {
+        host = [[NSView alloc] initWithFrame:content.bounds];
+        host.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [content addSubview:host positioned:NSWindowBelow relativeTo:nil];
+        objc_setAssociatedObject(window,&materialKey,host,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return host;
+}
+
+// A reusable nine-slice alpha mask feathers a 24pt halo around each block.
+// Stretch only the center: resizing text must not stretch the blur's edge width.
+static const CGFloat PulseBackdropPadding = 24;
+static CGImageRef PulseBackdropMask(void) {
+    static CGImageRef image;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        enum { size = 78 };
+        uint8_t pixels[size * size * 4];
+        for (size_t y=0; y<size; y++) for (size_t x=0; x<size; x++) {
+            // Signed distance from a 30pt rounded rect with a 14pt radius.
+            CGFloat dx = MAX(fabs(x + 0.5 - size/2.0) - 1, 0);
+            CGFloat dy = MAX(fabs(y + 0.5 - size/2.0) - 1, 0);
+            CGFloat distance = MAX(hypot(dx,dy) - 14, 0);
+            CGFloat t = MAX(0, 1 - distance/PulseBackdropPadding);
+            uint8_t alpha = (uint8_t)lrint(255 * t*t*(3-2*t));
+            for (size_t c=0; c<4; c++) pixels[(y*size+x)*4+c] = alpha;
+        }
+        CGColorSpaceRef color = CGColorSpaceCreateDeviceRGB();
+        CGContextRef context = CGBitmapContextCreate(pixels,size,size,8,size*4,color,(CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+        image = CGBitmapContextCreateImage(context);
+        CGContextRelease(context);
+        CGColorSpaceRelease(color);
+    });
+    return image;
+}
+static void PulseDictationBackdrop(NSWindow *window, const void *key,
+                                   double x, double y, double width, double height,
+                                   double opacity, bool darkMode) {
+    NSView *host = PulseDictationMaterialHost(window);
+    if (!host) return;
+    NSVisualEffectView *halo = objc_getAssociatedObject(window,key);
+    if (!halo) {
+        halo = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+        halo.material = NSVisualEffectMaterialPopover;
+        halo.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        halo.state = NSVisualEffectStateActive;
+        halo.wantsLayer = YES;
+        CALayer *mask = [CALayer layer];
+        mask.contents = (__bridge id)PulseBackdropMask();
+        mask.contentsCenter = CGRectMake(38.0/78,38.0/78,2.0/78,2.0/78);
+        halo.layer.mask = mask;
+        [host addSubview:halo positioned:NSWindowBelow relativeTo:nil];
+        objc_setAssociatedObject(window,key,halo,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    halo.hidden = opacity<=0 || width<=0 || height<=0 || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
+    if (halo.hidden) return;
+    // This quiet backing follows the desktop appearance; the UI keeps its
+    // contrasting inverse surface above it. No separate animation or delay.
+    halo.appearance = [NSAppearance appearanceNamed:darkMode ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    NSRect block = NSMakeRect(x,host.isFlipped ? y : NSHeight(host.bounds)-y-height,width,height);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    halo.frame = NSInsetRect(block,-PulseBackdropPadding,-PulseBackdropPadding);
+    halo.alphaValue = opacity * 0.8;
+    halo.layer.mask.frame = halo.bounds;
+    [CATransaction commit];
 }
 
 // Back the bordered transcript box with the native desktop material.
 void pulse_dictation_transcript_blur(void *pointer, double x, double y, double width, double height, double opacity, bool darkMode) {
     NSWindow *window=(__bridge NSWindow *)pointer;
-    NSView *host=window.contentView;
+    NSView *host=PulseDictationMaterialHost(window);
     if (!host) return;
+    static char backdropKey;
+    PulseDictationBackdrop(window,&backdropKey,x,y,width,height,opacity,darkMode);
     static char blurKey;
     NSVisualEffectView *blur=objc_getAssociatedObject(window,&blurKey);
     if (!blur) {
@@ -442,7 +520,7 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
         blur.wantsLayer=YES;
         blur.layer.cornerCurve=kCACornerCurveContinuous;
         blur.layer.masksToBounds=YES;
-        [host addSubview:blur positioned:NSWindowBelow relativeTo:nil];
+        [host addSubview:blur positioned:NSWindowAbove relativeTo:nil];
         objc_setAssociatedObject(window,&blurKey,blur,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     blur.appearance=[NSAppearance appearanceNamed:darkMode ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
@@ -459,8 +537,10 @@ void pulse_dictation_transcript_blur(void *pointer, double x, double y, double w
 // keeps the glass aligned with the bars through placement and pill morphs.
 bool pulse_dictation_glass(void *pointer, double x, double y, double width, double height, double opacity, bool darkMode) {
     NSWindow *window=(__bridge NSWindow *)pointer;
-    NSView *host=window.contentView;
+    NSView *host=PulseDictationMaterialHost(window);
     if (!host) return false;
+    static char backdropKey;
+    PulseDictationBackdrop(window,&backdropKey,x,y,width,height,opacity,darkMode);
     static char glassKey;
     NSView *glass=objc_getAssociatedObject(window,&glassKey);
     if (!glass) {
@@ -482,7 +562,7 @@ bool pulse_dictation_glass(void *pointer, double x, double y, double width, doub
             effect.layer.masksToBounds=YES;
             glass=effect;
         }
-        [host addSubview:glass positioned:NSWindowBelow relativeTo:nil];
+        [host addSubview:glass positioned:NSWindowAbove relativeTo:nil];
         objc_setAssociatedObject(window,&glassKey,glass,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     // Use the inverse appearance, matching the CSS surface and waveform colors.
