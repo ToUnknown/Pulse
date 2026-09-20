@@ -8,6 +8,7 @@ const transcript = document.querySelector("#transcript");
 const textViewport = document.querySelector("#text-viewport");
 const transcriptBackdrop = document.querySelector("#transcript-backdrop");
 const waveformBackdrop = document.querySelector("#waveform-backdrop");
+const copyLabel = document.querySelector("#copy-label");
 const context = canvas.getContext("2d");
 const darkMode = matchMedia("(prefers-color-scheme: dark)");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -54,7 +55,7 @@ async function syncGlass() {
   const rect = shell.getBoundingClientRect();
   // Keep the native lens through the DOM's completion fade; removing it on
   // the first "done" snapshot makes the glass pop away under the fading bars.
-  const visible = ["listening", "finalizing", "sending", "done"].includes(snapshot.phase);
+  const visible = ["listening", "finalizing", "sending", "copied", "done"].includes(snapshot.phase);
   const frame = { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
     opacity: visible ? Number(getComputedStyle(shell).opacity) * Number(getComputedStyle(overlay).opacity) : 0 };
   const textRect = transcript.getBoundingClientRect();
@@ -148,8 +149,12 @@ export function render(next) {
     textViewport.style.height = '0px'; words.style.transform = 'translateY(0px)';
     textViewport.scrollTop = 0;
     body.dataset.expanded = "false"; voice = 0;
+    body.dataset.copied = "false";
   }
   snapshot = next;
+  if (next.phase === "copied") body.dataset.copied = "true";
+  const copyMessage = body.dataset.copied === "true" ? "Copied to clipboard" : "";
+  if (copyLabel.textContent !== copyMessage) copyLabel.textContent = copyMessage;
   body.style.setProperty("--bottom", `${next.bottom || 28}px`);
   // All recording and delivery states stay in the same bottom-center overlay.
   if (next.samples !== lastSamples) { waveTime = performance.now(); lastSamples = next.samples; }
@@ -226,13 +231,14 @@ else if (new URLSearchParams(location.search).has("preview")) {
     {phase:"listening",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
     {phase:"finalizing",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
     {phase:"sending",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
+    {phase:"copied",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
     {phase:"done",text:"A little thought becomes a sentence. Every word appears while I speak.",levels}
   ];
   window.previewDictation = render;
   const advance=()=>{render({id:1,bottom:32,samples:step+1,level:.09,...demo[Math.min(step++,demo.length-1)]});};
   const fixture = new URLSearchParams(location.search).get("preview");
   if (fixture === "long") demo[1].text = "A thought becomes a sentence. New words appear gently while I speak, and the box keeps the latest five lines in view. I can keep talking without losing the full transcript, then send everything to the selected input when I finish.";
-  const index = { pill: 0, expanded: 1, long: 1, finalizing: 2, sending: 3, done: 4 }[fixture];
+  const index = { pill: 0, expanded: 1, long: 1, finalizing: 2, sending: 3, copied: 4, done: 5 }[fixture];
   if (index !== undefined) { step = index; advance(); }
   else { advance(); setInterval(advance,3000); }
   setInterval(() => { if (snapshot.phase === "listening") render({...snapshot, samples:(snapshot.samples || 0)+1, level:.025 + .07 * (1+Math.sin(performance.now()/450))/2}); }, 70);

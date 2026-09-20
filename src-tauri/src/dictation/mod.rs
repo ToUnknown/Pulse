@@ -295,7 +295,8 @@ pub async fn dictation_glass(
     if ![frame.x, frame.y, frame.width, frame.height, frame.opacity]
         .iter()
         .all(|v| v.is_finite())
-        || !(0.0..=100.0).contains(&frame.width)
+        // The clipboard confirmation expands the same lens beyond waveform width.
+        || !(0.0..=180.0).contains(&frame.width)
         || !(0.0..=40.0).contains(&frame.height)
         || !(0.0..=1.0).contains(&frame.opacity)
     {
@@ -455,7 +456,7 @@ fn start(app: &tauri::AppHandle) {
         let mut guard = state.session.lock().unwrap();
         if guard
             .as_ref()
-            .is_some_and(|s| !matches!(s.phase, "idle" | "done" | "error"))
+            .is_some_and(|s| !matches!(s.phase, "idle" | "done" | "copied" | "error"))
         {
             state.hold_shortcut.lock().unwrap().interrupt();
             return;
@@ -760,17 +761,20 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                 let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
                     return Ok(true);
                 };
-                match s.final_delivery(expired) {
+                s.phase = match s.final_delivery(expired) {
                     FinalDelivery::Pending => return Ok(false),
                     FinalDelivery::Clipboard => {
                         let text = CString::new(s.text.replace('\0', "")).unwrap();
-                        if !unsafe { pulse_dictation_copy(text.as_ptr()) } {
-                            *state.startup_error.lock().unwrap() = Some("Could not copy the transcript. Use Copy last transcript in Settings.".into());
+                        if unsafe { pulse_dictation_copy(text.as_ptr()) } {
+                            "copied"
+                        } else {
+                            *state.startup_error.lock().unwrap() =
+                                Some("Could not copy the transcript to the clipboard.".into());
+                            "done"
                         }
                     }
-                    FinalDelivery::Input | FinalDelivery::Discard => {}
-                }
-                s.phase = "done";
+                    FinalDelivery::Input | FinalDelivery::Discard => "done",
+                };
                 unsafe {
                     pulse_dictation_clear_target();
                 }
@@ -783,6 +787,28 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             }
             tokio::time::sleep(Duration::from_millis(40)).await;
         }
+    }
+    // Give the clipboard-only confirmation time to expand and be read. A new
+    // recording can replace it immediately; this task must not fade that session.
+    let copied = app
+        .state::<Dictation>()
+        .session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|s| s.id == id && s.phase == "copied");
+    if copied {
+        tokio::time::sleep(Duration::from_millis(1600)).await;
+        let handle = app.clone();
+        let _ = on_main(&app, move || {
+            let state = handle.state::<Dictation>();
+            let mut guard = state.session.lock().unwrap();
+            if let Some(s) = guard.as_mut().filter(|s| s.id == id && s.phase == "copied") {
+                s.phase = "done";
+            }
+            Ok(())
+        })
+        .await;
     }
     // Allow the lens contraction/fade plus one overlay polling interval.
     let wait = app

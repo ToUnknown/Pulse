@@ -18,7 +18,7 @@ const element = () => ({
   scrollTo({top}){this.scrollTop=top;},
   getBoundingClientRect(){return {x:400,y:600,width:64,height:28};},
 });
-const body = element(), nodes = Object.fromEntries(['#transcript-backdrop','#waveform-backdrop','#words','#transcript','#text-viewport','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
+const body = element(), nodes = Object.fromEntries(['#copy-label','#transcript-backdrop','#waveform-backdrop','#words','#transcript','#text-viewport','#waveform','#status','#waveform-shell','#dictation'].map(id=>[id,element()]));
 const bars=[];
 let barStart;
 const drawing={setTransform(){},clearRect(){bars.length=0;},beginPath(){},moveTo(x,y){barStart=y;},lineTo(x,y){this.amplitude=y-barStart;},stroke(){bars.push({height:this.amplitude,alpha:this.globalAlpha});}};
@@ -161,5 +161,24 @@ for (const id of ['#waveform-backdrop','#transcript-backdrop']) {
 overlayOpacity = '0';
 await sandbox.syncGlass();
 assert.equal(nodes['#waveform-backdrop'].style.opacity,'0');
-assert.equal(nodes['#transcript-backdrop'].style.opacity,'0');
+assert.equal(nodes['#copy-label','#transcript-backdrop'].style.opacity,'0');
 console.log('PASS: 24px backdrop padding and synchronized disappearance');
+
+// Clipboard feedback is a native-glass pill state, not an insertion success tip.
+sandbox.render({id:20,phase:'sending',text:'Fallback words'});
+sandbox.render({id:20,phase:'copied',text:'Fallback words'});
+assert.equal(body.dataset.copied,'true');
+assert.equal(nodes['#copy-label'].textContent,'Copied to clipboard');
+overlayOpacity='1';
+await sandbox.syncGlass();
+assert.equal(calls.at(-1).args.frame.opacity,1,'glass and backdrop stay visible throughout the copy morph');
+sandbox.render({id:20,phase:'done',text:'Fallback words'});
+assert.equal(body.dataset.copied,'true','confirmation shape survives the final fade');
+sandbox.window.pulseDictationStart(21,28);
+assert.equal(body.dataset.copied,'false');
+assert.equal(nodes['#copy-label'].textContent,'','new recording never flashes the previous clipboard message');
+sandbox.render({id:20,phase:'copied',text:'Old fallback'});
+assert.equal(body.dataset.phase,'listening','old clipboard completion cannot replace a new recording');
+sandbox.render({id:21,phase:'done',text:'Inserted words'});
+assert.equal(nodes['#copy-label'].textContent,'','successful field insertion remains silent');
+console.log('PASS: clipboard-only confirmation, native-glass visibility, fade shape and new-session reset');

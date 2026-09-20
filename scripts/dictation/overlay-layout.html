@@ -50,10 +50,21 @@ document.querySelector('#run').onclick = async () => {
   check(words.textContent === sentence, 'rapid partial updates and finalization preserve the complete transcript');
   check(Math.abs(words.getBoundingClientRect().bottom - viewport.getBoundingClientRect().bottom) < 1, 'rapid updates finish at the latest line');
   check(Math.abs(pill.getBoundingClientRect().y - pillY) < 1, 'pill stays vertically anchored through growth and finalization');
-  render(sentence, 'sending'); await wait(100); render(sentence, 'done'); await wait(450);
+  render(sentence, 'sending'); await wait(100);
+  const loadingWidth=pill.getBoundingClientRect().width;
+  render(sentence, 'copied');
+  const widths=[];
+  for(let i=0;i<35;i++) { await new Promise(resolve=>view.requestAnimationFrame(resolve)); widths.push(pill.getBoundingClientRect().width); }
+  check(widths.some(w=>w>loadingWidth+1 && w<163), 'clipboard pill expands through intermediate widths');
+  await wait(400); // rAF can run at 120Hz; wait for the opacity delay as well.
+  check(Math.abs(pill.getBoundingClientRect().width-164)<1, 'clipboard pill settles without clipping its label');
+  check(doc.querySelector('#copy-label').textContent==='Copied to clipboard' && Number(view.getComputedStyle(doc.querySelector('#copy-status')).opacity)===1, 'clipboard confirmation replaces the spinner');
+  check(Number(view.getComputedStyle(box).opacity)===0, 'transcript fades out during clipboard confirmation');
+  render(sentence, 'done'); await wait(450);
+  check(Math.abs(pill.getBoundingClientRect().width-164)<1, 'confirmation keeps its shape while fading away');
   check(Number(view.getComputedStyle(doc.querySelector('#dictation')).opacity) === 0, 'completion fades the overlay');
   view.previewDictation({id:id+1,phase:'listening',text:'',bottom:32}); await wait(450);
-  check(words.textContent === '' && Number(view.getComputedStyle(box).opacity) === 0, 'next session has no previous text or box flash');
+  check(words.textContent === '' && Number(view.getComputedStyle(box).opacity) === 0 && doc.querySelector('#copy-label').textContent === '', 'next session has no previous text, box or clipboard confirmation flash');
   render(sentence); // Rejected as stale; leave the fresh empty session intact.
   check(words.textContent === '', 'stale completion cannot revive the previous session');
   result.textContent = checks.join('\n');
