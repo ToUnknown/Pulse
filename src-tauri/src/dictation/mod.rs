@@ -98,6 +98,10 @@ struct Session {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinalDelivery {
     Pending,
+    // Windows accepted input events; readback is now advisory. This state can
+    // never fall back to clipboard, even on focus loss or the outer deadline.
+    SubmittedPending,
+    Submitted,
     Input,
     Clipboard,
     Discard,
@@ -108,6 +112,8 @@ impl Session {
             FinalDelivery::Discard
         } else if expired && self.delivery == FinalDelivery::Pending {
             FinalDelivery::Clipboard
+        } else if expired && self.delivery == FinalDelivery::SubmittedPending {
+            FinalDelivery::Submitted
         } else {
             self.delivery
         }
@@ -457,14 +463,20 @@ fn delivery_tick(app: &tauri::AppHandle, id: u64) {
         s.id == id
             && s.phase == "sending"
             && !s.cancel.is_cancelled()
-            && s.delivery == FinalDelivery::Pending
+            && matches!(
+                s.delivery,
+                FinalDelivery::Pending | FinalDelivery::SubmittedPending
+            )
     }) else {
         return;
     };
     let text = CString::new(s.text.replace('\0', "")).unwrap();
     s.delivery = match unsafe { pulse_dictation_final_step(text.as_ptr()) } {
-        0 => FinalDelivery::Pending,
         1 => FinalDelivery::Input,
+        2 => FinalDelivery::Submitted,
+        3 => FinalDelivery::SubmittedPending,
+        0 if s.delivery == FinalDelivery::Pending => FinalDelivery::Pending,
+        _ if s.delivery == FinalDelivery::SubmittedPending => FinalDelivery::Submitted,
         _ => FinalDelivery::Clipboard,
     };
 }
@@ -782,8 +794,8 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             let expired = Instant::now() >= deadline;
             let handle = app.clone();
             let complete = on_main(&app, move || {
-                // Deliver only to the captured final input. Losing focus falls
-                // back to clipboard without following or editing another field.
+                // Deliver only to the captured final input. Windows can fall
+                // back before dispatch, never after text may have been inserted.
                 delivery_tick(&handle, id);
                 let state = handle.state::<Dictation>();
                 let mut guard = state.session.lock().unwrap();
@@ -791,7 +803,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                     return Ok(true);
                 };
                 s.phase = match s.final_delivery(expired) {
-                    FinalDelivery::Pending => return Ok(false),
+                    FinalDelivery::Pending | FinalDelivery::SubmittedPending => return Ok(false),
                     FinalDelivery::Clipboard => {
                         let text = CString::new(s.text.replace('\0', "")).unwrap();
                         if unsafe { pulse_dictation_copy(text.as_ptr()) } {
@@ -802,7 +814,9 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                             "done"
                         }
                     }
-                    FinalDelivery::Input | FinalDelivery::Discard => "done",
+                    FinalDelivery::Input | FinalDelivery::Submitted | FinalDelivery::Discard => {
+                        "done"
+                    }
                 };
                 unsafe {
                     pulse_dictation_clear_target();

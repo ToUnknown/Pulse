@@ -146,7 +146,7 @@ static ComPtr<IUIAutomationElement> target;
 static HWND targetWindow, overlayWindow;
 static std::wstring baseText, expectedText;
 static size_t selectionStart, selectionLength;
-static bool pending;
+static bool pending, haveBaseline, expectedKnown;
 static ULONGLONG pendingSince;
 static std::wstring utf16(const char *text) {
     int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,nullptr,0);
@@ -168,19 +168,27 @@ static bool initAutomation() {
     return SUCCEEDED(hr);
 }
 static bool editable(IUIAutomationElement *element) {
-    BOOL password=TRUE, enabled=FALSE, focus=FALSE;
+    BOOL password=TRUE, enabled=FALSE;
     if (FAILED(element->get_CurrentIsPassword(&password)) || password ||
-        FAILED(element->get_CurrentIsEnabled(&enabled)) || !enabled ||
-        FAILED(element->get_CurrentHasKeyboardFocus(&focus)) || !focus) return false;
+        FAILED(element->get_CurrentIsEnabled(&enabled)) || !enabled) return false;
     ComPtr<IUIAutomationValuePattern> value;
     BOOL readOnly=TRUE;
     if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&value))) &&
         SUCCEEDED(value->get_CurrentIsReadOnly(&readOnly))) return !readOnly;
     ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
-    if (FAILED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) || FAILED(text->get_DocumentRange(&document))) return false;
-    VARIANT attribute; VariantInit(&attribute);
-    bool writable=SUCCEEDED(document->GetAttributeValue(UIA_IsReadOnlyAttributeId,&attribute)) && attribute.vt==VT_BOOL && attribute.boolVal==VARIANT_FALSE;
-    VariantClear(&attribute); return writable;
+    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) &&
+        SUCCEEDED(text->get_DocumentRange(&document))) {
+        VARIANT attribute; VariantInit(&attribute);
+        bool known=SUCCEEDED(document->GetAttributeValue(UIA_IsReadOnlyAttributeId,&attribute)) && attribute.vt==VT_BOOL;
+        bool writable=known && attribute.boolVal==VARIANT_FALSE;
+        VariantClear(&attribute);
+        if (known) return writable;
+    }
+    // Some custom editors expose a focused Edit control but no text patterns.
+    // Do not infer editability from arbitrary document/window controls.
+    CONTROLTYPEID type=0; BOOL focusable=FALSE;
+    return SUCCEEDED(element->get_CurrentControlType(&type)) && type==UIA_EditControlTypeId &&
+        SUCCEEDED(element->get_CurrentIsKeyboardFocusable(&focusable)) && focusable;
 }
 static bool snapshot(IUIAutomationElement *element, std::wstring &value, size_t *start=nullptr, size_t *length=nullptr) {
     ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
@@ -234,35 +242,50 @@ static bool sameInput() {
 }
 extern "C" void pulse_dictation_clear_target() {
     deliveryActive=false; target.Reset(); targetWindow=nullptr;
-    baseText.clear(); expectedText.clear(); pending=false; deliveryInterrupted=false;
+    baseText.clear(); expectedText.clear(); pending=false; haveBaseline=false;
+    expectedKnown=false; deliveryInterrupted=false;
 }
 extern "C" int pulse_dictation_delivery_begin() {
     pulse_dictation_clear_target();
     if (!initAutomation()) return 0;
+    deliveryActive=true;
     targetWindow=GetForegroundWindow();
-    if (!targetWindow || FAILED(automation->GetFocusedElement(&target)) || !target) return 0;
-    if (!editable(target.Get()) || !snapshot(target.Get(),baseText,&selectionStart,&selectionLength) || !sameInput()) {
+    if (!targetWindow || FAILED(automation->GetFocusedElement(&target)) || !target) {
+        pulse_dictation_clear_target(); return 0;
+    }
+    if (!editable(target.Get()) || !sameInput()) {
         pulse_dictation_clear_target(); return 2;
     }
-    deliveryActive=true; return 1;
+    // Reading the whole document and caret is optional. Input dispatch works
+    // with editors that deliberately expose only part of their accessibility API.
+    haveBaseline=snapshot(target.Get(),baseText,&selectionStart,&selectionLength);
+    return 1;
 }
 extern "C" int pulse_dictation_final_step(const char *utf8) {
-    if (!target || deliveryInterrupted || !sameInput()) return -1;
+    // -1: nothing sent; 0: waiting to send; 1: verified; 2: submitted without
+    // confirmation; 3: submitted, awaiting receipt. Only -1 permits copying.
     std::wstring actual;
     if (pending) {
-        if (snapshot(target.Get(),actual) && normalizeLines(actual)==normalizeLines(expectedText)) return 1;
-        return GetTickCount64()-pendingSince<1000 ? 0 : -1;
+        if (target && expectedKnown && snapshot(target.Get(),actual) &&
+            normalizeLines(actual)==normalizeLines(expectedText)) return 1;
+        // A stale provider, user typing, or focus change cannot undo dispatch.
+        // Never replay the transcript or overwrite the clipboard after sending.
+        if (!expectedKnown || deliveryInterrupted || !sameInput() || GetTickCount64()-pendingSince>=1000) return 2;
+        return 3;
     }
+    if (!target || deliveryInterrupted || !sameInput() || !editable(target.Get())) return -1;
     size_t start=0,length=0;
-    if (!editable(target.Get()) || !snapshot(target.Get(),actual,&start,&length) ||
-        actual!=baseText || start!=selectionStart || length!=selectionLength) return -1;
+    bool haveCurrent=snapshot(target.Get(),actual,&start,&length);
+    if (haveBaseline && haveCurrent &&
+        (actual!=baseText || start!=selectionStart || length!=selectionLength)) return -1;
     std::wstring text=utf16(utf8);
     if (text.empty()) return -1;
     // Do not release/repress the user's physical modifiers. Wait briefly for
     // the dictation key to rise instead of generating Alt/Ctrl shortcuts.
     if ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000) return 0;
     if (deliveryInterrupted || !sameInput()) return -1;
-    expectedText=baseText.substr(0,start)+text+baseText.substr(start+length);
+    expectedKnown=haveCurrent;
+    if (expectedKnown) expectedText=actual.substr(0,start)+text+actual.substr(start+length);
     std::vector<INPUT> input(text.size()*2);
     for (size_t i=0;i<text.size();i++) {
         input[2*i].type=input[2*i+1].type=INPUT_KEYBOARD;
@@ -272,23 +295,33 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
         input[2*i].ki.dwExtraInfo=input[2*i+1].ki.dwExtraInfo=EventTag;
     }
     // Native Edit/RichEdit controls offer an atomic, undoable selection edit.
-    // Web/custom controls use the same verified transaction with Unicode input.
-    pending=true; pendingSince=GetTickCount64();
+    // Web/custom controls receive a single Unicode input transaction.
     UIA_HWND native=nullptr;
     if (SUCCEEDED(target->get_CurrentNativeWindowHandle(&native)) && native) {
         HWND handle=reinterpret_cast<HWND>(native);
         wchar_t name[64]{}; GetClassNameW(handle,name,64);
-        if (_wcsicmp(name,L"Edit")==0 || _wcsnicmp(name,L"RichEdit",8)==0) {
+        if (IsWindowUnicode(handle) && (_wcsicmp(name,L"Edit")==0 || _wcsnicmp(name,L"RichEdit",8)==0)) {
+            if (deliveryInterrupted || !sameInput() || (GetWindowLongPtrW(handle,GWL_STYLE)&ES_READONLY)) return -1;
             DWORD_PTR result=0;
-            // A timeout is ambiguous, so only read back; never replay a write.
-            SendMessageTimeoutW(handle,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(text.c_str()),SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&result);
-            return 0;
+            // Timeout may mean the edit already happened. Only a definitive
+            // rejection permits clipboard fallback; never replay this write.
+            pending=true; pendingSince=GetTickCount64();
+            SetLastError(ERROR_SUCCESS);
+            LRESULT sent=SendMessageTimeoutW(handle,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(text.c_str()),SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&result);
+            DWORD error=GetLastError();
+            if (!sent && (error==ERROR_ACCESS_DENIED || error==ERROR_INVALID_WINDOW_HANDLE)) {
+                pending=false; return -1;
+            }
+            return 3;
         }
     }
     // One batch, no paced typing, no clipboard writes, and no retry after a
     // partial/ambiguous dispatch. Windows enforces elevated-app boundaries.
+    if (deliveryInterrupted || !sameInput()) return -1;
+    pending=true; pendingSince=GetTickCount64();
     UINT sent=SendInput(static_cast<UINT>(input.size()),input.data(),sizeof(INPUT));
-    return sent ? 0 : -1;
+    if (!sent) { pending=false; return -1; }
+    return 3;
 }
 extern "C" bool pulse_dictation_copy(const char *utf8) {
     std::wstring text=utf16(utf8); if(text.empty()) return false;
