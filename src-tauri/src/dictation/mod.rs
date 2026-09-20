@@ -24,6 +24,11 @@ use tokio_tungstenite::{
 use tokio_util::sync::CancellationToken;
 
 const WINDOW: &str = "dictation";
+const API_KEY_REQUIRED: &str = "Add your OpenAI API key in Settings to enable Dictation.";
+const ACCESSIBILITY_REQUIRED: &str =
+    "Allow Accessibility in Dictation settings to use Right Option, then enable Dictation again.";
+const MICROPHONE_REQUIRED: &str =
+    "Allow Microphone access in Pulse Settings → Advanced → Dictation.";
 const SHORTCUT: &str = if cfg!(target_os = "windows") {
     "Right Alt"
 } else {
@@ -141,10 +146,10 @@ fn settings_only(window: &WebviewWindow) -> Result<(), String> {
 }
 fn register(app: &tauri::AppHandle) -> Result<(), String> {
     if !crate::openai_credentials::is_configured()? {
-        return Err("Add your OpenAI API key in Settings to enable Dictation.".into());
+        return Err(API_KEY_REQUIRED.into());
     }
     if !unsafe { pulse_dictation_ax_allowed() } {
-        return Err("Allow Accessibility in Dictation settings to use Right Option, then enable Dictation again.".into());
+        return Err(ACCESSIBILITY_REQUIRED.into());
     }
     *app.state::<Dictation>().hold_shortcut.lock().unwrap() =
         shortcut::HoldShortcut::new(unsafe { pulse_dictation_right_option_down() });
@@ -238,8 +243,23 @@ fn create_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
 pub fn dictation_settings(app: tauri::AppHandle, window: WebviewWindow) -> Result<Value, String> {
     settings_only(&window)?;
     let state = app.state::<Dictation>();
+    let microphone = unsafe { pulse_dictation_mic_allowed() };
+    let accessibility = unsafe { pulse_dictation_ax_allowed() };
+    let api_key = crate::openai_credentials::is_configured().unwrap_or(false);
+    let mut error = state.startup_error.lock().unwrap();
+    // Permissions can change in System Settings without a new recording or
+    // toggle. Retire only the diagnostic whose prerequisite is now satisfied.
+    let resolved = match error.as_deref() {
+        Some(ACCESSIBILITY_REQUIRED) => accessibility,
+        Some(MICROPHONE_REQUIRED) => microphone,
+        Some(API_KEY_REQUIRED) => api_key,
+        _ => false,
+    };
+    if resolved {
+        *error = None;
+    }
     Ok(
-        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":SHORTCUT, "microphone":unsafe { pulse_dictation_mic_allowed() }, "accessibility":unsafe { pulse_dictation_ax_allowed() }, "apiKeyConfigured":crate::openai_credentials::is_configured().unwrap_or(false), "error":*state.startup_error.lock().unwrap()}),
+        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":SHORTCUT, "microphone":microphone, "accessibility":accessibility, "apiKeyConfigured":api_key, "error":*error}),
     )
 }
 #[tauri::command]
@@ -269,7 +289,7 @@ pub async fn set_dictation_enabled(
         let state = handle.state::<Dictation>();
         let old = state.enabled.load(Ordering::Acquire);
         if old && enabled && !crate::openai_credentials::is_configured()? {
-            return Err("Add your OpenAI API key in Settings to enable Dictation.".into());
+            return Err(API_KEY_REQUIRED.into());
         }
         if old == enabled {
             return Ok(());
@@ -536,7 +556,7 @@ fn start(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let started = capture.await.unwrap_or(false);
         let result = if !mic {
-            Err("Allow Microphone access in Pulse Settings → Advanced → Dictation.".into())
+            Err(MICROPHONE_REQUIRED.into())
         } else if !started {
             Err("Could not start the microphone. Check your input device and try again.".into())
         } else {
