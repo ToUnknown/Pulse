@@ -12,6 +12,8 @@ There is no field locking, live editor mutation, transcript history, or temporar
 
 macOS uses native clear glass where available. The untinted outer blur additionally depends on optional private compositor classes/functions, guarded at runtime; if unavailable, the halo is omitted. This needs review on new macOS releases and for any future App Store distribution. Windows currently has CSS styling rather than a desktop backdrop blur.
 
+macOS bundles require both `NSMicrophoneUsageDescription` in `Info.plist` and `com.apple.security.device.audio-input` in the signing entitlements. `bundle.macOS.entitlements` points to `src-tauri/Entitlements.plist`. Without that entitlement, hardened-runtime builds are denied before the permission prompt and do not appear in the Microphone privacy list. Validate the installed bundle's signature with `codesign -d --entitlements - /Applications/Pulse.app`; a working dev process alone does not establish that packaged permissions work.
+
 ## Verification inventory
 
 These are available checks, not a claim that the current branch passed them:
