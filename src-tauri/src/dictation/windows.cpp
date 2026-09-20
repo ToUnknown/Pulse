@@ -161,23 +161,26 @@ static bool initAutomation() {
     HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     if (FAILED(init) && init!=RPC_E_CHANGED_MODE) return false;
     HRESULT hr=CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation));
-    if (SUCCEEDED(hr)) {
+    if (SUCCEEDED(hr) && automation) {
         ComPtr<IUIAutomation2> limits;
-        if (SUCCEEDED(automation.As(&limits))) { limits->put_ConnectionTimeout(500); limits->put_TransactionTimeout(500); }
+        if (SUCCEEDED(automation.As(&limits)) && limits) { limits->put_ConnectionTimeout(500); limits->put_TransactionTimeout(500); }
     }
-    return SUCCEEDED(hr);
+    return SUCCEEDED(hr) && automation;
 }
 static bool editable(IUIAutomationElement *element) {
+    if (!element) return false;
     BOOL password=TRUE, enabled=FALSE;
     if (FAILED(element->get_CurrentIsPassword(&password)) || password ||
         FAILED(element->get_CurrentIsEnabled(&enabled)) || !enabled) return false;
     ComPtr<IUIAutomationValuePattern> value;
     BOOL readOnly=TRUE;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&value))) &&
+    // Success alone does not establish that an optional pattern is present.
+    // Non-editable controls must reach clipboard fallback, not a null COM call.
+    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&value))) && value &&
         SUCCEEDED(value->get_CurrentIsReadOnly(&readOnly))) return !readOnly;
     ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) &&
-        SUCCEEDED(text->get_DocumentRange(&document))) {
+    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) && text &&
+        SUCCEEDED(text->get_DocumentRange(&document)) && document) {
         VARIANT attribute; VariantInit(&attribute);
         bool known=SUCCEEDED(document->GetAttributeValue(UIA_IsReadOnlyAttributeId,&attribute)) && attribute.vt==VT_BOOL;
         bool writable=known && attribute.boolVal==VARIANT_FALSE;
@@ -191,13 +194,16 @@ static bool editable(IUIAutomationElement *element) {
         SUCCEEDED(element->get_CurrentIsKeyboardFocusable(&focusable)) && focusable;
 }
 static bool snapshot(IUIAutomationElement *element, std::wstring &value, size_t *start=nullptr, size_t *length=nullptr) {
+    if (!element || (start && !length)) return false;
     ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
-    if (FAILED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) || FAILED(text->get_DocumentRange(&document))) {
+    if (FAILED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) || !text ||
+        FAILED(text->get_DocumentRange(&document)) || !document) {
         // Classic single-line Edit controls may expose ValuePattern only.
         // Read their existing selection; never select-all or replace the field.
         ComPtr<IUIAutomationValuePattern> field;
         BSTR raw=nullptr;
-        if (FAILED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&field))) || FAILED(field->get_CurrentValue(&raw))) return false;
+        if (FAILED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&field))) || !field ||
+            FAILED(field->get_CurrentValue(&raw))) return false;
         value=bstr(raw); SysFreeString(raw);
         if (!start) return true;
         UIA_HWND native=nullptr;
@@ -217,8 +223,8 @@ static bool snapshot(IUIAutomationElement *element, std::wstring &value, size_t 
     if (!start) return true;
     ComPtr<IUIAutomationTextRangeArray> ranges; ComPtr<IUIAutomationTextRange> selected, prefix;
     int count=0;
-    if (FAILED(text->GetSelection(&ranges)) || FAILED(ranges->get_Length(&count)) || count!=1 ||
-        FAILED(ranges->GetElement(0,&selected)) || FAILED(document->Clone(&prefix)) ||
+    if (FAILED(text->GetSelection(&ranges)) || !ranges || FAILED(ranges->get_Length(&count)) || count!=1 ||
+        FAILED(ranges->GetElement(0,&selected)) || !selected || FAILED(document->Clone(&prefix)) || !prefix ||
         FAILED(prefix->MoveEndpointByRange(TextPatternRangeEndpoint_End,selected.Get(),TextPatternRangeEndpoint_Start))) return false;
     if (FAILED(prefix->GetText(-1,&raw))) return false;
     *start=SysStringLen(raw); SysFreeString(raw);
@@ -235,7 +241,7 @@ static std::wstring normalizeLines(const std::wstring &value) {
     return result;
 }
 static bool sameInput() {
-    if (!target || GetForegroundWindow()!=targetWindow) return false;
+    if (!automation || !target || GetForegroundWindow()!=targetWindow) return false;
     ComPtr<IUIAutomationElement> focused; BOOL same=FALSE;
     return SUCCEEDED(automation->GetFocusedElement(&focused)) && focused &&
         SUCCEEDED(automation->CompareElements(target.Get(),focused.Get(),&same)) && same;
