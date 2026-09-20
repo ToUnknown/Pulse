@@ -17,7 +17,11 @@ static NSString *editor, *secondEditor;
 static AXUIElementRef secondElement;
 static NSRange secondCaret;
 static NSMutableArray<NSString *> *editFrames;
-static bool exposesPlaceholder, phantomPlaceholderCaret, emptyParagraph;
+static bool exposesPlaceholder, phantomPlaceholderCaret, emptyParagraph, missingEmptyValue;
+static bool rangeOnlyValue, supportsSelectedText, ignoreSelectedWrite;
+static bool secureField, disabledField, readOnlyField;
+static AXError selectedWriteError;
+static unsigned selectedWrites;
 static NSRange caret;
 static bool focused=true, supportsRange=true, acceptTyping=true, acceptSelection=true;
 static unsigned keyboardEvents, clipboardWrites, withdrawalWrites;
@@ -46,6 +50,7 @@ static bool acceptWithdrawal=true;
 @interface TestWorkspace : NSObject
 @property(readonly) TestRunningApplication *frontmostApplication;
 @property(readonly) NSNotificationCenter *notificationCenter;
+@property(readonly) BOOL accessibilityDisplayShouldReduceTransparency;
 + (instancetype)sharedWorkspace;
 - (BOOL)openURL:(NSURL *)url;
 @end
@@ -54,6 +59,7 @@ static bool acceptWithdrawal=true;
 - (TestRunningApplication *)frontmostApplication { return [TestRunningApplication runningApplicationWithProcessIdentifier:foregroundPID]; }
 - (BOOL)openURL:(NSURL *)url { abort(); }
 - (NSNotificationCenter *)notificationCenter { return NSNotificationCenter.defaultCenter; }
+- (BOOL)accessibilityDisplayShouldReduceTransparency { return NO; }
 @end
 static AXUIElementRef createSystem(void) { return (AXUIElementRef)CFRetain(fakeSystem); }
 static bool trusted(void) { return true; }
@@ -67,21 +73,34 @@ static AXError copyAttribute(AXUIElementRef element,CFStringRef name,CFTypeRef *
     if (CFEqual(name,kAXParentAttribute)) { *out=CFRetain(wrongParent && !CFEqual(element,fakeElement) ? fakeWindow : fakeParent); return kAXErrorSuccess; }
     if (CFEqual(name,kAXFocusedWindowAttribute)) { *out=CFRetain(focusedWindow); return kAXErrorSuccess; }
     if (CFEqual(name,kAXWindowAttribute)) { *out=CFRetain(fakeWindow); return kAXErrorSuccess; }
+    if (rangeOnlyValue && CFEqual(name,kAXValueAttribute)) return kAXErrorAttributeUnsupported;
+    if (missingEmptyValue && !fieldText.length && CFEqual(name,kAXValueAttribute)) return kAXErrorNoValue;
     if ((missingText && CFEqual(name,kAXValueAttribute)) || (missingSelection && CFEqual(name,kAXSelectedTextRangeAttribute))) return kAXErrorCannotComplete;
     if (missingEditability && (CFEqual(name,kAXRoleAttribute) || CFEqual(name,CFSTR("AXEditable")))) return kAXErrorCannotComplete;
     if (CFEqual(name,kAXFocusedUIElementAttribute) && focused && !(missingSystemFocus && CFEqual(element,fakeSystem))) *out=CFRetain(selectedElement);
     else if (CFEqual(name,kAXRoleAttribute)) *out=CFRetain(kAXTextAreaRole);
-    else if (CFEqual(name,CFSTR("AXEditable"))) *out=CFRetain(kCFBooleanTrue);
+    else if (CFEqual(name,kAXSubroleAttribute) && secureField) *out=CFRetain(kAXSecureTextFieldSubrole);
+    else if (CFEqual(name,kAXEnabledAttribute)) *out=CFRetain(disabledField ? kCFBooleanFalse : kCFBooleanTrue);
+    else if (CFEqual(name,CFSTR("AXEditable"))) *out=CFRetain(readOnlyField ? kCFBooleanFalse : kCFBooleanTrue);
     else if (CFEqual(name,kAXValueAttribute)) *out=CFBridgingRetain(!fieldText.length && emptyParagraph ? @"\n" : exposesPlaceholder && !fieldText.length ? @"\nType here" : fieldText);
     else if (CFEqual(name,kAXNumberOfCharactersAttribute)) { long count=characterCountOverride>=0 ? characterCountOverride : fieldText.length; *out=CFNumberCreate(NULL,kCFNumberLongType,&count); }
     else if (CFEqual(name,kAXDescriptionAttribute) && exposesPlaceholder) *out=CFRetain(CFSTR("Type here"));
     else if (CFEqual(name,kAXSelectedTextRangeAttribute)) { CFRange r=CFRangeMake(!fieldText.length && emptyCaretOffset ? emptyCaretOffset : phantomPlaceholderCaret && !fieldText.length ? 10 : fieldCaret.location,fieldCaret.length); *out=AXValueCreate(kAXValueCFRangeType,&r); }
     return *out?kAXErrorSuccess:kAXErrorNoValue;
 }
-static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=!missingEditability && (CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true); return kAXErrorSuccess; }
+static AXError settable(AXUIElementRef e,CFStringRef name,Boolean *out) { *out=!missingEditability && (CFEqual(name,kAXSelectedTextAttribute)?supportsSelectedText:CFEqual(name,kAXSelectedTextRangeAttribute)?supportsRange:true); return kAXErrorSuccess; }
 static AXError writeAttribute(AXUIElementRef e,CFStringRef name,CFTypeRef value) {
-    // Final delivery never changes focus, selection, or a whole field through AX.
-    abort();
+    // Only replacing the current selection is permitted, never a full-value,
+    // focus, or selection-range setter.
+    if (!CFEqual(name,kAXSelectedTextAttribute)) abort();
+    selectedWrites++;
+    if (selectedWriteError!=kAXErrorSuccess) return selectedWriteError;
+    if (!ignoreSelectedWrite) {
+        NSString *insert=(__bridge NSString *)value;
+        editor=[editor stringByReplacingCharactersInRange:caret withString:insert];
+        caret=NSMakeRange(caret.location+insert.length,0);
+    }
+    return kAXErrorSuccess;
 }
 static void post(pid_t pid,CGEventRef event) {
     if (pid!=(selectedElement==secondElement ? secondPID : 1000) || CGEventGetFlags(event)!=0 || !CGEventGetIntegerValueField(event,kCGEventSourceUserData)) abort();
@@ -102,6 +121,11 @@ static void post(pid_t pid,CGEventRef event) {
 }
 static AXError parameterized(AXUIElementRef e,CFStringRef name,CFTypeRef value,CFTypeRef *out) {
     *out=NULL;
+    if (rangeOnlyValue && CFEqual(name,kAXStringForRangeParameterizedAttribute)) {
+        CFRange range;
+        if (!AXValueGetValue(value,kAXValueCFRangeType,&range) || range.location!=0 || range.length!=editor.length) return kAXErrorIllegalArgument;
+        *out=CFBridgingRetain(editor); return kAXErrorSuccess;
+    }
     if (!caretBounds || !CFEqual(name,kAXBoundsForRangeParameterizedAttribute))return kAXErrorNoValue;
     CFRange r; if(!AXValueGetValue(value,kAXValueCFRangeType,&r))return kAXErrorIllegalArgument;
     CGRect rect=CGRectMake(100+(r.location%20)*7,200+(r.location/20)*18,r.length*7,18);
@@ -132,7 +156,9 @@ static void begin(void) {
     stableIdentity=wrongIdentity=wrongParent=caretBounds=false;
     acceptFocus=true; targetGone=false; foregroundPID=1000; secondPID=1000; focusedWindow=fakeWindow;
     missingSystemFocus=missingText=missingSelection=missingEditability=false; emptyCaretOffset=0; characterCountOverride=-1;
-    selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false;
+    selectedElement=fakeElement; exposesPlaceholder=false; phantomPlaceholderCaret=false; emptyParagraph=false; missingEmptyValue=false;
+    rangeOnlyValue=supportsSelectedText=ignoreSelectedWrite=secureField=disabledField=readOnlyField=false;
+    selectedWriteError=kAXErrorSuccess;
     focused=supportsRange=acceptTyping=acceptSelection=true;
     editor=@"Before SELECT after"; caret=NSMakeRange(7,6);
     expect(pulse_dictation_delivery_begin()==1,"capture selected input only at final delivery");
@@ -204,6 +230,40 @@ int main(void) {
         begin(); editor=@""; caret=NSMakeRange(0,0); emptyCaretOffset=1;
         expect(pulse_dictation_delivery_begin()==1,"synthetic empty caret is normalized");
         insert("Empty editor."); expect([editor isEqualToString:@"Empty editor."],"empty contenteditable receives final text");
+        begin(); editor=@""; caret=NSMakeRange(0,0); missingEmptyValue=true;
+        expect(pulse_dictation_delivery_begin()==1,"empty native composer with AXNoValue and zero characters accepts dictation");
+        insert("A complete sentence in an empty native composer.");
+        expect([editor isEqualToString:@"A complete sentence in an empty native composer."],"empty native composer receives the entire transcript");
+        begin(); rangeOnlyValue=true;
+        expect(pulse_dictation_delivery_begin()==1,"text-range-only editors use the same delivery path");
+        insert("range editor 🌍");
+        expect([editor isEqualToString:@"Before range editor 🌍 after"],"range reader preserves surrounding content");
+        begin(); supportsSelectedText=true;
+        before=keyboardEvents;
+        insert("direct replacement 🌍");
+        expect(keyboardEvents==before && [editor isEqualToString:@"Before direct replacement 🌍 after"],"selected-text capability inserts once without keyboard or clipboard");
+        begin(); supportsSelectedText=true; selectedWriteError=kAXErrorAttributeUnsupported;
+        before=keyboardEvents; insert("unsupported setter");
+        expect(keyboardEvents==before+2,"explicitly unsupported setter falls back to normal input once");
+        begin(); supportsSelectedText=true; ignoreSelectedWrite=true;
+        before=keyboardEvents;
+        expect(pulse_dictation_final_step("ignored direct write")==0,"an AX success response alone does not mean delivery");
+        pendingSince-=1;
+        expect(pulse_dictation_final_step("ignored direct write")==-1 && keyboardEvents==before,"ambiguous AX writes never get replayed as keyboard input");
+        begin();
+        expect(pulse_dictation_final_step("verified text")==0,"start an insertion before the caret becomes unavailable");
+        missingSelection=true;
+        expect(pulse_dictation_final_step("verified text")==1,"verified text delivery does not depend on delayed caret readback");
+        begin(); secureField=true;
+        expect(pulse_dictation_delivery_begin()==2,"secure fields are never typed into");
+        begin(); disabledField=true;
+        expect(pulse_dictation_delivery_begin()==2,"disabled fields are never typed into");
+        begin(); readOnlyField=true;
+        expect(pulse_dictation_delivery_begin()==2,"read-only fields are never typed into");
+        begin(); editor=@""; caret=NSMakeRange(0,0); missingText=true;
+        expect(readText(fakeElement)==nil,"a transient value read failure is never mistaken for empty content");
+        begin(); editor=@""; caret=NSMakeRange(0,0); missingEmptyValue=true; characterCountOverride=3;
+        expect(readText(fakeElement)==nil,"missing value with unverified content never becomes an empty document");
         begin(); missingSystemFocus=true;
         expect(pulse_dictation_delivery_begin()==1,"app focus fallback supports embedded editors"); insert("embedded editor");
         begin(); supportsRange=false;

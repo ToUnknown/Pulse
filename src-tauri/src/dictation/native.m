@@ -225,14 +225,21 @@ static bool editable(AXUIElementRef element) {
     if (readOnly) CFRelease(readOnly);
     return valid;
 }
-// Delivery never uses the pasteboard when an input was selected. Unicode key
-// events exercise web editors' normal input path after recording finishes.
-// Every asynchronous write is read back before reporting delivery.
+// One capability-based path for all apps: replace the current selection when
+// supported, otherwise use normal Unicode input. Never set an entire field or
+// borrow the pasteboard. Read back the result before reporting delivery.
 static NSString *insertionBase, *insertedText, *expectedValue, *pendingText, *pendingValue;
 static NSRange originalSelection, expectedSelection, pendingSelection;
 static CFTimeInterval pendingSince, unreadableSince;
 static bool insertionUsable, insertionStarted;
 static NSString *placeholderCandidate;
+static bool textLength(AXUIElementRef element, CFIndex *length) {
+    CFTypeRef value = attribute(element,kAXNumberOfCharactersAttribute);
+    bool ok = value && CFGetTypeID(value)==CFNumberGetTypeID() &&
+        CFNumberGetValue(value,kCFNumberCFIndexType,length) && *length>=0;
+    if (value) CFRelease(value);
+    return ok;
+}
 static bool readSelection(AXUIElementRef element, NSRange *range) {
     CFTypeRef value = attribute(element, kAXSelectedTextRangeAttribute);
     CFRange selected;
@@ -259,11 +266,27 @@ static bool readSelection(AXUIElementRef element, NSRange *range) {
     return ok;
 }
 static NSString *readText(AXUIElementRef element) {
-    CFTypeRef value = attribute(element, kAXValueAttribute);
+    CFTypeRef value = NULL;
+    AXError error = AXUIElementCopyAttributeValue(element,kAXValueAttribute,&value);
     if (value && CFGetTypeID(value) == CFStringGetTypeID()) {
         return CFBridgingRelease(value);
     }
     if (value) CFRelease(value);
+    // Empty native composers (including Messages) omit AXValue. Other editors
+    // expose their document only through the text-range API. Missing is not
+    // empty: require an explicit character count, never a timed-out AX query.
+    CFIndex length;
+    if ((error==kAXErrorNoValue || error==kAXErrorAttributeUnsupported) && textLength(element,&length)) {
+        if (length==0) return @"";
+        CFRange all = CFRangeMake(0,length);
+        AXValueRef range = AXValueCreate(kAXValueCFRangeType,&all);
+        value = NULL;
+        AXError read = AXUIElementCopyParameterizedAttributeValue(element,kAXStringForRangeParameterizedAttribute,range,&value);
+        CFRelease(range);
+        if (read==kAXErrorSuccess && value && CFGetTypeID(value)==CFStringGetTypeID() && CFStringGetLength(value)==length)
+            return CFBridgingRelease(value);
+        if (value) CFRelease(value);
+    }
     return nil;
 }
 static bool textInput(AXUIElementRef element) {
@@ -351,10 +374,25 @@ static bool typeUnicode(NSString *text) {
     if (source) CFRelease(source);
     return sent;
 }
+static bool replaceSelection(NSString *text) {
+    Boolean selectionWritable=false;
+    if (AXUIElementIsAttributeSettable(deliveryElement,kAXSelectedTextAttribute,&selectionWritable)==kAXErrorSuccess && selectionWritable) {
+        AXError result=AXUIElementSetAttributeValue(deliveryElement,kAXSelectedTextAttribute,(__bridge CFStringRef)text);
+        // Success, timeout, and other ambiguous outcomes all require readback.
+        // Never retry a write that may already have reached the editor.
+        if (result!=kAXErrorAttributeUnsupported && result!=kAXErrorNotImplemented) return true;
+        NSRange selection;
+        if (deliveryInterrupted || !sameInput() || !editable(deliveryElement) ||
+            ![readText(deliveryElement) isEqualToString:expectedValue] ||
+            !readSelection(deliveryElement,&selection) || !NSEqualRanges(selection,expectedSelection)) return false;
+    }
+    return typeUnicode(text);
+}
 // AX value and selection are independent, asynchronous observations. A Unicode
 // event can also be applied in several input events by the receiving editor.
 // While waiting, never resend, adopt partial content, or write to another field.
-// Only the exact expected value AND caret can acknowledge our transaction.
+// The exact expected document acknowledges delivery. Caret reporting may lag
+// or disappear after a successful edit and must not trigger a clipboard copy.
 static int awaitInsertionReadback(void) {
     CFTimeInterval now=CFAbsoluteTimeGetCurrent();
     if (!unreadableSince) unreadableSince=now;
@@ -368,33 +406,34 @@ int pulse_dictation_final_step(const char *utf8) {
     if (!insertionUsable || deliveryInterrupted) { insertionUsable=false; return -1; }
     if (!sameInput()) { insertionUsable=false; return -1; }
     NSString *actual = readText(deliveryElement);
-    NSRange selection;
-    if (!actual || !readSelection(deliveryElement,&selection)) return awaitInsertionReadback();
+    if (!actual) return awaitInsertionReadback();
     if (pendingValue) {
-        if (!insertionStarted && placeholderCandidate && [actual isEqualToString:pendingText] &&
-            NSEqualRanges(selection,NSMakeRange(pendingText.length,0))) {
+        if (!insertionStarted && placeholderCandidate && ![actual isEqualToString:insertionBase] && [actual isEqualToString:pendingText]) {
             // The editor removed its placeholder, not user content. Rebase the
             // owned range to the verified empty document without typing twice.
             insertionBase=@""; expectedValue=@""; pendingValue=pendingText;
-            originalSelection=NSMakeRange(0,0); pendingSelection=selection;
+            originalSelection=NSMakeRange(0,0); pendingSelection=NSMakeRange(pendingText.length,0);
         }
-        if ([actual isEqualToString:pendingValue] && NSEqualRanges(selection,pendingSelection)) {
+        if ([actual isEqualToString:pendingValue]) {
             insertedText=pendingText; expectedValue=pendingValue; expectedSelection=pendingSelection; insertionStarted=true;
             pendingText=pendingValue=nil;
         } else return awaitInsertionReadback();
     }
-    if (![actual isEqualToString:expectedValue] || !NSEqualRanges(selection,expectedSelection)) { insertionUsable=false; return -1; }
     NSString *desired = [NSString stringWithUTF8String:utf8];
     if (!desired) { insertionUsable=false; return -1; }
+    if (![actual isEqualToString:expectedValue]) { insertionUsable=false; return -1; }
     if ([desired isEqualToString:insertedText]) { unreadableSince=0; return 1; }
     if (insertionStarted) { insertionUsable=false; return -1; }
+    NSRange selection;
+    if (!readSelection(deliveryElement,&selection)) return awaitInsertionReadback();
+    if (!NSEqualRanges(selection,expectedSelection)) { insertionUsable=false; return -1; }
     if (!editable(deliveryElement)) return awaitInsertionReadback();
     // Revalidate content and focus immediately before posting input.
     if (deliveryInterrupted) { insertionUsable=false; return -1; }
     if (!sameInput()) { insertionUsable=false; return -1; }
     if (![readText(deliveryElement) isEqualToString:expectedValue]) return awaitInsertionReadback();
-    // Send the complete final transcript once, without paced typing batches.
-    if (!typeUnicode(desired)) { insertionUsable=false; return -1; }
+    // Replace only the selected range with the complete final transcript.
+    if (!replaceSelection(desired)) { insertionUsable=false; return -1; }
     pendingText=desired;
     pendingValue=[insertionBase stringByReplacingCharactersInRange:originalSelection withString:desired];
     pendingSelection=NSMakeRange(selection.location+desired.length,0);
