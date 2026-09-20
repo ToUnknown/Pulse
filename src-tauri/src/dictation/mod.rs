@@ -1,4 +1,4 @@
-//! Mac hold-to-dictate. Credentials and microphone bytes never enter the webview.
+//! Cross-platform tap-or-hold dictation. Credentials and microphone bytes never enter the webview.
 mod protocol;
 mod shortcut;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -24,6 +24,26 @@ use tokio_tungstenite::{
 use tokio_util::sync::CancellationToken;
 
 const WINDOW: &str = "dictation";
+const SHORTCUT: &str = if cfg!(target_os = "windows") {
+    "Right Alt"
+} else {
+    "Right Option"
+};
+fn native_window(window: &WebviewWindow) -> Result<*mut c_void, String> {
+    #[cfg(target_os = "macos")]
+    {
+        window
+            .ns_window()
+            .map_err(|_| "Could not access the dictation overlay.".into())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        window
+            .hwnd()
+            .map(|h| h.0.cast())
+            .map_err(|_| "Could not access the dictation overlay.".into())
+    }
+}
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 extern "C" {
     fn pulse_dictation_register_shortcut(callback: extern "C" fn(bool, bool, bool, f64)) -> bool;
@@ -132,7 +152,9 @@ fn register(app: &tauri::AppHandle) -> Result<(), String> {
     if unsafe { pulse_dictation_register_shortcut(shortcut_event) } {
         Ok(())
     } else {
-        Err("Could not listen for Right Option. Check Accessibility access and try again.".into())
+        Err(format!(
+            "Could not listen for {SHORTCUT}. Check access and try again."
+        ))
     }
 }
 
@@ -151,11 +173,13 @@ extern "C" fn shortcut_event(down: bool, chord: bool, interrupted: bool, timesta
             key.update(down, chord, timestamp)
         }
     };
-    match action {
-        Some(shortcut::Action::Start) => start(app),
-        Some(shortcut::Action::Release) => release(app),
-        Some(shortcut::Action::Cancel) => cancel(app),
-        None => {}
+    if let Some(action) = action {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || match action {
+            shortcut::Action::Start => start(&handle),
+            shortcut::Action::Release => release(&handle),
+            shortcut::Action::Cancel => cancel(&handle),
+        });
     }
 }
 pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -184,6 +208,13 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     }
     Ok(())
 }
+pub fn shutdown() {
+    unsafe {
+        pulse_dictation_unregister_shortcut();
+        pulse_dictation_stop();
+        pulse_dictation_clear_target();
+    }
+}
 fn create_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(WINDOW) {
         return Ok(window);
@@ -210,7 +241,7 @@ pub fn dictation_settings(app: tauri::AppHandle, window: WebviewWindow) -> Resul
     settings_only(&window)?;
     let state = app.state::<Dictation>();
     Ok(
-        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":"Right Option", "microphone":unsafe { pulse_dictation_mic_allowed() }, "accessibility":unsafe { pulse_dictation_ax_allowed() }, "apiKeyConfigured":crate::openai_credentials::is_configured().unwrap_or(false), "error":*state.startup_error.lock().unwrap()}),
+        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":SHORTCUT, "microphone":unsafe { pulse_dictation_mic_allowed() }, "accessibility":unsafe { pulse_dictation_ax_allowed() }, "apiKeyConfigured":crate::openai_credentials::is_configured().unwrap_or(false), "error":*state.startup_error.lock().unwrap()}),
     )
 }
 #[tauri::command]
@@ -329,9 +360,7 @@ pub async fn dictation_glass(
         {
             return Ok(false);
         }
-        let pointer = window
-            .ns_window()
-            .map_err(|_| "Could not access the dictation overlay.")?;
+        let pointer = native_window(&window)?;
         Ok(unsafe {
             pulse_dictation_transcript_blur(
                 pointer,
@@ -478,7 +507,7 @@ fn start(app: &tauri::AppHandle) {
         }
     };
     let mut bottom = 24.0;
-    if let Ok(pointer) = window.ns_window() {
+    if let Ok(pointer) = native_window(&window) {
         unsafe {
             pulse_dictation_position(pointer, &mut bottom);
         }

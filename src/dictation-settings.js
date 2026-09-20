@@ -12,13 +12,13 @@ async function refresh() {
     enabled.disabled = !state.apiKeyConfigured;
     enabled.checked = state.enabled && state.apiKeyConfigured;
     document.querySelector("#dictation-description").textContent = state.apiKeyConfigured
-      ? "Turn your voice into text. Tap Right Option to start or stop, or hold it while speaking."
+      ? `Turn your voice into text. Tap ${state.shortcut} to start or stop, or hold it while speaking.`
       : "Add your OpenAI API key below to enable Dictation.";
     document.querySelector("#dictation-microphone").hidden = state.microphone;
     document.querySelector("#dictation-accessibility").hidden = state.accessibility;
     if (state.error && state.apiKeyConfigured) { error.textContent=state.error; error.hidden=false; }
     else if (!state.apiKeyConfigured) error.hidden=true;
-  } catch { /* Dictation is currently a macOS feature. */ }
+  } catch { /* The backend may still be starting. */ }
 }
 enabled.addEventListener("change", async () => {
   busy=true; enabled.disabled=true; error.hidden=true;

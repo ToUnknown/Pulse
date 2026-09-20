@@ -1,4 +1,4 @@
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod dictation;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod openai_credentials;
@@ -1657,15 +1657,15 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::dictation_settings,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::set_dictation_enabled,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::request_dictation_access,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::dictation_snapshot,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::dictation_overlay_ready,
         dictation::dictation_glass,
         settings_window_action,
@@ -1979,7 +1979,7 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             text_extractor::install(app.handle())?;
 
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             dictation::install(app.handle())?;
 
             #[cfg(target_os = "macos")]
@@ -2010,6 +2010,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Pulse")
         .run(|_app, _event| {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if matches!(&_event, tauri::RunEvent::Exit) {
+                dictation::shutdown();
+            }
             // The selector may be the only Tauri window. Keep the tray app and
             // shortcut hook alive while its replacement is prepared. Explicit
             // Quit and updater restarts have an exit code and still go through.

@@ -331,10 +331,7 @@ pub async fn clear_openai_api_key(
 ) -> Result<(), String> {
     settings_only(&window)?;
     openai_credentials::clear()?;
-    #[cfg(target_os = "macos")]
     crate::dictation::set_dictation_enabled(app, window, false).await?;
-    #[cfg(not(target_os = "macos"))]
-    let _ = app;
     Ok(())
 }
 
