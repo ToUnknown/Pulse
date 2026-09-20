@@ -1,0 +1,55 @@
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; --ink: #ffffff; --paper: rgba(16,16,18,.96); --surface: #101012; --pill-tint: rgba(16,16,18,.78); --panel-border: rgba(255,255,255,.28); --line: rgba(255,255,255,.28); --wave: #ffffff; --bottom: 28px; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; pointer-events: none; }
+#dictation { position: absolute; bottom: var(--bottom); left: 50%; width: min(320px, calc(100vw - 32px)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; transition: opacity .22s ease, transform .28s cubic-bezier(.22,.8,.25,1); }
+body:is([data-phase="idle"],[data-phase="done"],[data-phase="error"]) #dictation { opacity: 0; transform: translateX(-50%) translateY(5px); }
+/* Finish the lens contraction before the last soft fade. */
+body[data-phase="done"] #dictation { transition: opacity .22s ease .1s, transform .28s ease .1s; }
+/* A conventional text box grows upward while the pill stays in place. */
+#transcript { position: absolute; bottom: calc(100% + 10px); width: 100%; padding: 12px 14px; color: var(--ink); background: var(--paper); border: 1px solid var(--panel-border); border-radius: 14px; box-shadow: 0 5px 18px rgba(0,0,0,.12); opacity: 0; overflow: hidden; transform: translateY(4px); transition: opacity .28s ease, transform .32s cubic-bezier(.22,.8,.25,1); }
+body[data-expanded="true"]:is([data-phase="listening"],[data-phase="finalizing"],[data-phase="sending"]) #transcript { opacity: 1; transform: none; }
+#text-viewport { position: relative; height: 0; max-height: 100px; overflow: clip; overflow-anchor: none; }
+#words { margin: 0; font-size: 13px; line-height: 20px; font-weight: 500; letter-spacing: -.1px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.word { display: inline-block; max-width: 100%; vertical-align: top; }
+.new-word { animation: word-arrive .34s cubic-bezier(.2,.7,.3,1) both; }
+@keyframes word-arrive { from { opacity: .2; filter: blur(1.5px); } to { opacity: 1; filter: blur(0); } }
+body:is([data-phase="done"],[data-phase="error"],[data-phase="idle"]) #transcript { transition-duration: .2s; }
+#waveform-shell { position: relative; flex: none; width: 64px; height: 28px; border-radius: 16px; border: 1px solid var(--panel-border); background: var(--pill-tint); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), inset 0 -1px 0 rgba(0,0,0,.16), 0 2px 6px rgba(30,40,55,.10); overflow: hidden; transition: width .32s cubic-bezier(.22,.8,.25,1), height .32s ease, border-radius .32s ease; }
+/* Preserve the native refracting rim; a center tint keeps the bars readable
+   even when clear glass samples content with the opposite brightness. */
+body[data-native-glass="true"] #waveform-shell { background: var(--pill-tint); border-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+
+
+#waveform { width: 100%; height: 100%; display: block; transition: opacity .14s; }
+#spinner { position: absolute; inset: 0; margin: auto; opacity: 0; width: 14px; height: 14px; border: 1.5px solid var(--line); border-top-color: var(--wave); border-right-color: var(--wave); border-radius: 50%; animation: spin .8s linear infinite; transition: opacity .14s; }
+@keyframes spin { to { transform: rotate(360deg); } }
+body:is([data-phase="finalizing"],[data-phase="sending"],[data-phase="done"]) #waveform-shell { width: 28px; height: 28px; border-radius: 50%; }
+body:not([data-phase="listening"]) #waveform { opacity: 0; }
+body:is([data-phase="finalizing"],[data-phase="sending"]) #spinner { opacity: 1; }
+#copy-status { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; gap: 7px; color: var(--ink); font-size: 11px; font-weight: 500; white-space: nowrap; opacity: 0; transform: translateY(3px); filter: blur(2px); transition: opacity .22s ease, transform .32s cubic-bezier(.22,.8,.25,1), filter .28s ease; }
+#copy-status svg { flex: none; }
+/* Keep the confirmation shape through the final fade, instead of contracting
+   into a spinner again. The next session resets it before showing the pill. */
+body[data-copied="true"]:is([data-phase="copied"],[data-phase="done"]) #waveform-shell { width: 164px; border-radius: 16px; }
+body[data-copied="true"]:is([data-phase="copied"],[data-phase="done"]) #copy-status { opacity: 1; transform: none; filter: blur(0); transition-delay: .1s; }
+body[data-phase="error"] #waveform-shell { display: none; }
+@media (prefers-color-scheme: dark) { :root { --ink: #101012; --paper: rgba(253,253,253,.96); --surface: #fdfdfd; --pill-tint: rgba(253,253,253,.84); --panel-border: rgba(0,0,0,.24); --line: rgba(0,0,0,.24); --wave: #101012; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; transition-delay: 0ms !important; } }
+
+body[data-placing="true"] #dictation, body[data-placing="true"] #transcript, body[data-placing="true"] #text-viewport { transition: none; }
+body[data-placing="true"] #waveform-shell { animation: none; transition: none; }
+body[data-phase="listening"][data-placing="false"] #waveform-shell { animation: pill-arrive .44s cubic-bezier(.16,1,.3,1) backwards; }
+/* Animate the capsule's bounds so the native material recomputes refraction
+   throughout the circle-to-pill morph. The center stays at the bottom of the screen. */
+@keyframes pill-arrive {
+  0% { width: 28px; opacity: .22; }
+  18% { opacity: 1; }
+  100% { width: 64px; opacity: 1; }
+}
+
+@media (prefers-reduced-transparency: reduce) { #transcript { background: var(--paper); } #waveform-shell { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+
+/* Preview/fallback only: native halos sample the actual desktop behind WKWebView. */
+.dictation-backdrop { position: absolute; pointer-events: none; opacity: 0; border-radius: 38px; background: transparent; -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); -webkit-mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent), linear-gradient(to bottom, transparent, #000 24px, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent), linear-gradient(to bottom, transparent, #000 24px, #000 calc(100% - 24px), transparent); -webkit-mask-composite: source-in; mask-composite: intersect; }
+body[data-native-glass="true"] .dictation-backdrop { visibility: hidden; }
+@media (prefers-reduced-transparency: reduce) { .dictation-backdrop { display: none; } }

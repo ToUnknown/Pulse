@@ -13,7 +13,9 @@ Text Extractor requires macOS 14 or later. Other menu-bar features remain availa
 - Default and Red menu-bar icons
 - In-app update checks and restart
 
-- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Enabling Text Extractor prepares OCR in the background; Settings shows its status until it is ready. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized. A locally installed Codex signed in with ChatGPT is the preferred provider for GPT-5.6 Luna Advanced extraction. The shared OpenAI API key remains an alternative; the Codex option is hidden when Codex is not installed.
+- Dictation: tap **Right Option** to start or finish hands-free recording, or hold it for at least half a second and release. See [Dictation](#dictation) for setup and delivery behavior.
+
+- Text Extractor: Option + Shift + T opens the editor; Control + Option + Shift + T copies immediately. Basic uses Apple Vision locally with no model download or API key. Enabling Text Extractor prepares OCR in the background; Settings shows its status until it is ready. Allow Screen Recording in Settings → Advanced, where both shortcuts and their default modes can be customized. The shared OpenAI API key is the default provider for GPT-5.6 Luna Advanced extraction. A signed-in local Codex is an optional LLM provider; its toggle is hidden when Codex is not installed.
 
 ### Windows
 
@@ -22,10 +24,23 @@ Text Extractor requires macOS 14 or later. Other menu-bar features remain availa
 - Default and Red tray icons
 - In-app update checks and restart
 - Auto, Light, and Dark appearance modes with configurable start times.
-- Text Extractor prototype: use Win + Shift + T to open the animated editor, or Ctrl + Win + Shift + T to select and instantly copy local OCR text. Selection happens over the live desktop. Basic uses a small downloaded PP-OCRv5 model locally, with no API key. Enable it and customize either shortcut and its default mode in Settings → Advanced. A locally installed Codex signed in with ChatGPT is the preferred provider for GPT-5.6 Luna Advanced extraction, with the shared OpenAI API key as an alternative. The Codex option is hidden when Codex is not installed. Escape or an outside click dismisses the overlay.
+- Dictation: tap **Right Alt** to start or finish hands-free recording, or hold it for at least half a second and release. AltGr remains available for normal typing.
+- Text Extractor prototype: use Win + Shift + T to open the animated editor, or Ctrl + Win + Shift + T to select and instantly copy local OCR text. Selection happens over the live desktop. Basic uses a small downloaded PP-OCRv5 model locally, with no API key. Enable it and customize either shortcut and its default mode in Settings → Advanced. The shared OpenAI API key is the default provider for GPT-5.6 Luna Advanced extraction. A signed-in local Codex is an optional LLM provider; its toggle is hidden when Codex is not installed. Escape or an outside click dismisses the overlay.
 
 See [Text Extractor setup and prototype notes](scripts/text-extractor/README.md) for architecture, setup, and manual platform verification notes.
 
 The [manual Windows OCR acceptance pipeline](scripts/text-extractor/qa/README.md) prepares English and Ukrainian test cards for a future native verification run. It only launches with an explicit `--run` flag.
 
 Text Extractor’s **Translate** uses Google Translate’s unofficial web endpoint on both platforms, without an API key or account. Choosing a language sends the current editor text to Google; an internet connection is required. If translation fails, the original text stays editable. Retry, or explicitly choose **Use Advanced** to send it through the configured Codex/API provider when available. Translate is unavailable when the editor contains more than 5,000 characters; shorten the text to enable it again. Google may change or block this endpoint.
+
+## Dictation
+
+Add your OpenAI API key and enable **Tap or hold to dictate** in Settings → Advanced. Dictation requires microphone access; macOS also requires Accessibility access. The optional Codex subscription toggle applies to LLM features such as Text Extractor, not Dictation.
+
+Recording shows a small voice-reactive pill and a transcript box with up to five visible lines at the bottom center. Hands-free recording continues while you type, click, or switch apps. No input field is tracked or edited during recording. Audio streams to OpenAI's `gpt-live-transcribe` with high delay; release/stop commits the recording and waits for the final text.
+
+Pulse sends the completed transcript to the currently selected supported input using Unicode input events, without reading or changing the clipboard. If no suitable input is found or no text can be dispatched, Pulse copies the transcript and briefly shows **Copied to clipboard**. Once input events have been submitted, Pulse does not retry or overwrite the clipboard based on an unreliable editor readback. Some custom editors and Windows apps running with higher privileges may reject synthetic input; submission is not a universal insertion guarantee.
+
+The macOS pill uses native clear glass on macOS 26 or a system material on older versions. Its outer blur uses optional private compositor APIs and has no tinted fallback when unavailable. Windows uses CSS styling; it does not currently blur other desktop windows behind the overlay. Both themes keep contrasting text and waveform colors.
+
+Pulse does not save dictation recordings or transcripts to disk or offer a last-transcript history. Session text is cleared after delivery; operational errors appear in Settings. See [dictation maintenance notes](scripts/dictation/README.md) for architecture and verification coverage.

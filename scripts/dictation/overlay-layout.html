@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dictation layout regression</title>
+<style>body{margin:0;font:14px system-ui;background:#b7bdc7} iframe{border:0;width:100vw;height:100vh;position:absolute;inset:0} #controls{position:relative;padding:20px} pre{white-space:pre-wrap}</style>
+<iframe src="../../src/dictation.html?preview=pill" title="Actual dictation overlay"></iframe>
+<div id="controls"><button id="run">Run layout checks</button><pre id="result">Ready</pre></div>
+<script type="module">
+const frame = document.querySelector('iframe');
+const result = document.querySelector('#result');
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+document.querySelector('#run').onclick = async () => {
+  const view = frame.contentWindow, doc = view.document;
+  const box = doc.querySelector('#transcript'), viewport = doc.querySelector('#text-viewport');
+  const words = doc.querySelector('#words'), pill = doc.querySelector('#waveform-shell');
+  const checks = [], check = (ok, label) => checks.push(`${ok ? 'PASS' : 'FAIL'}: ${label}`);
+  const id = Date.now(), render = (text, phase = 'listening') => view.previewDictation({ id, phase, text, bottom:32 });
+  result.textContent = 'Running…';
+  render('A small thought.');
+  await wait(900);
+  const first = words.firstChild, before = box.getBoundingClientRect(), pillY = pill.getBoundingClientRect().y;
+  render('A small thought.\nBecomes a second line.');
+  check(Math.abs(box.getBoundingClientRect().height - before.height) < 1, 'line wrap does not instantly resize the box');
+  check(words.firstChild === first, 'existing words retain their nodes');
+  const heights = [];
+  for (let i=0;i<40;i++) { await new Promise(resolve => view.requestAnimationFrame(resolve)); heights.push(box.getBoundingClientRect().height); }
+  check(heights.some(h=>h>before.height+1 && h<before.height+19), 'growth has intermediate frames');
+  check(Math.abs(heights.at(-1) - before.height - 20) < 1, 'growth settles at the measured text height');
+  const long = 'First line.\nSecond line.\nThird line.\nFourth line.\nFifth line.\nSixth line.\nSeventh line.';
+  render(long);
+  await wait(900);
+  check(Math.abs(viewport.getBoundingClientRect().height - 100) < 1, 'viewport is capped at five lines');
+  check(Math.abs(words.getBoundingClientRect().bottom - viewport.getBoundingClientRect().bottom) < 1, 'newest line settles at the bottom');
+  const oldHeight = box.getBoundingClientRect().height;
+  render('A corrected short sentence.');
+  check(Math.abs(box.getBoundingClientRect().height - oldHeight) < 1, 'correction does not instantly shrink the box');
+  await wait(900);
+  check(Math.abs(viewport.getBoundingClientRect().height - 20) < 1, 'short correction settles without empty rows');
+  render('A short sentence with words then a');
+  await wait(900);
+  const partial = words.lastChild, partialRect = partial.getBoundingClientRect(), partialLocalY = partialRect.y - words.getBoundingClientRect().y;
+  render('A short sentence with words then abcdefghijklmnopqrstuv');
+  const movingRect = words.lastChild.getBoundingClientRect();
+  check(words.lastChild === partial && Math.abs(movingRect.x-partialRect.x)<1 && Math.abs(movingRect.y-partialRect.y)<1, 'partial word wrapping starts at its previous visual position');
+  await wait(900);
+  check(Math.abs(words.lastChild.getBoundingClientRect().y-words.getBoundingClientRect().y-partialLocalY)>1, 'wrapped word moves smoothly to the next line');
+  const sentence = 'Words arriving rapidly should wrap smoothly and keep the full transcript intact as the box grows above the pill. '.repeat(3);
+  for(let i=1;i<=sentence.length;i+=3) { render(sentence.slice(0,i)); await wait(12); }
+  render(sentence, 'finalizing');
+  await wait(900);
+  check(words.textContent === sentence, 'rapid partial updates and finalization preserve the complete transcript');
+  check(Math.abs(words.getBoundingClientRect().bottom - viewport.getBoundingClientRect().bottom) < 1, 'rapid updates finish at the latest line');
+  check(Math.abs(pill.getBoundingClientRect().y - pillY) < 1, 'pill stays vertically anchored through growth and finalization');
+  render(sentence, 'sending'); await wait(100);
+  const loadingWidth=pill.getBoundingClientRect().width;
+  render(sentence, 'copied');
+  const widths=[];
+  for(let i=0;i<35;i++) { await new Promise(resolve=>view.requestAnimationFrame(resolve)); widths.push(pill.getBoundingClientRect().width); }
+  check(widths.some(w=>w>loadingWidth+1 && w<163), 'clipboard pill expands through intermediate widths');
+  await wait(400); // rAF can run at 120Hz; wait for the opacity delay as well.
+  check(Math.abs(pill.getBoundingClientRect().width-164)<1, 'clipboard pill settles without clipping its label');
+  check(doc.querySelector('#copy-label').textContent==='Copied to clipboard' && Number(view.getComputedStyle(doc.querySelector('#copy-status')).opacity)===1, 'clipboard confirmation replaces the spinner');
+  check(Number(view.getComputedStyle(box).opacity)===0, 'transcript fades out during clipboard confirmation');
+  render(sentence, 'done'); await wait(450);
+  check(Math.abs(pill.getBoundingClientRect().width-164)<1, 'confirmation keeps its shape while fading away');
+  check(Number(view.getComputedStyle(doc.querySelector('#dictation')).opacity) === 0, 'completion fades the overlay');
+  view.previewDictation({id:id+1,phase:'listening',text:'',bottom:32}); await wait(450);
+  check(words.textContent === '' && Number(view.getComputedStyle(box).opacity) === 0 && doc.querySelector('#copy-label').textContent === '', 'next session has no previous text, box or clipboard confirmation flash');
+  render(sentence); // Rejected as stale; leave the fresh empty session intact.
+  check(words.textContent === '', 'stale completion cannot revive the previous session');
+  result.textContent = checks.join('\n');
+};
+</script>

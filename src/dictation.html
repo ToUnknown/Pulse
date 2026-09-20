@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pulse Dictation</title>
+  <link rel="stylesheet" href="dictation.css">
+  <script type="module" src="dictation.js"></script>
+</head>
+<body data-phase="idle">
+  <div id="transcript-backdrop" class="dictation-backdrop" aria-hidden="true"></div>
+  <div id="waveform-backdrop" class="dictation-backdrop" aria-hidden="true"></div>
+  <main id="dictation" aria-label="Live dictation">
+    <div id="transcript" aria-live="off"><div id="text-viewport"><p id="words"></p></div></div>
+    <div id="waveform-shell">
+      <canvas id="waveform" aria-hidden="true"></canvas><span id="spinner" aria-hidden="true"></span>
+      <span id="copy-status"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="3" width="8" height="4" rx="1.5"/><path d="M8 5H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/></svg><span id="copy-label" role="status"></span></span>
+    </div>
+  </main>
+</body>
+</html>

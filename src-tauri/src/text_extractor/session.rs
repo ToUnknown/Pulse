@@ -325,8 +325,14 @@ pub async fn save_openai_api_key(window: WebviewWindow, api_key: String) -> Resu
 }
 
 #[tauri::command]
-pub fn clear_openai_api_key(window: WebviewWindow) -> Result<(), String> {
+pub async fn clear_openai_api_key(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<(), String> {
     settings_only(&window)?;
+    // Persist disabling first: a settings-write failure must not leave an
+    // enabled shortcut behind after its required credential has been deleted.
+    crate::dictation::set_dictation_enabled(app, window, false).await?;
     openai_credentials::clear()
 }
 
@@ -534,13 +540,13 @@ pub fn appearance_changed(app: &tauri::AppHandle, theme: tauri::Theme) {
         .as_ref()
         .map(|session| session.label.clone());
     if let Some(window) = label.and_then(|label| app.get_webview_window(&label)) {
-        if let Err(error) = window.set_theme(Some(theme)) {
+        if let Err(error) = window.set_theme(crate::native_window_theme(theme)) {
             eprintln!("Text Extractor appearance update failed: {error}");
         }
     }
     for window in app.webview_windows().into_values() {
         if window.label().starts_with(NOTICE_PREFIX) || window.label() == "settings" {
-            let _ = window.set_theme(Some(theme));
+            let _ = window.set_theme(crate::native_window_theme(theme));
         }
     }
 }
@@ -576,7 +582,7 @@ fn show_quick_copy_notice(
     } else {
         "window.pulseQuickCopySucceeded = false;"
     })
-    .theme(Some(crate::visual_app_theme(app)?))
+    .theme(crate::native_window_theme(crate::visual_app_theme(app)?))
     .visible(false)
     .focused(false)
     .focusable(false)
@@ -648,7 +654,7 @@ async fn prepare_window(app: &tauri::AppHandle) -> Result<(), String> {
         let window =
             WebviewWindowBuilder::new(app, &label, WebviewUrl::App("text-extractor.html".into()))
                 .title("Pulse Text Extractor")
-                .theme(Some(crate::visual_app_theme(app)?))
+                .theme(crate::native_window_theme(crate::visual_app_theme(app)?))
                 .visible(false)
                 .focused(false)
                 .transparent(true)
@@ -962,7 +968,7 @@ pub fn text_extractor_show(app: tauri::AppHandle, window: WebviewWindow) -> Resu
     ensure_session(&app, &window)?;
     // Re-read Pulse's visual theme in case it changed while the capture loaded.
     window
-        .set_theme(Some(crate::visual_app_theme(&app)?))
+        .set_theme(crate::native_window_theme(crate::visual_app_theme(&app)?))
         .map_err(|_| "Could not apply Pulse appearance.".to_string())?;
     window
         .show()
@@ -1431,16 +1437,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_preferences_prefer_codex_without_changing_shortcut_modes() {
+    fn preferences_default_to_api_and_preserve_explicit_codex() {
         let preferences: Preferences =
             serde_json::from_value(json!({"enabled": true, "quickMode": "advanced"})).unwrap();
-        assert_eq!(preferences.advanced_provider, AdvancedProvider::Codex);
+        assert_eq!(preferences.advanced_provider, AdvancedProvider::Api);
         assert_eq!(preferences.quick_mode, ExtractionMode::Advanced);
         assert_eq!(preferences.editor_mode, ExtractionMode::Basic);
         let mut explicit = preferences;
-        explicit.advanced_provider = AdvancedProvider::Api;
+        explicit.advanced_provider = AdvancedProvider::Codex;
         let restored: Preferences =
             serde_json::from_slice(&serde_json::to_vec(&explicit).unwrap()).unwrap();
-        assert_eq!(restored.advanced_provider, AdvancedProvider::Api);
+        assert_eq!(restored.advanced_provider, AdvancedProvider::Codex);
     }
 }

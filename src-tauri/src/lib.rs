@@ -1,4 +1,6 @@
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+mod dictation;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod openai_credentials;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod text_extractor;
@@ -772,8 +774,9 @@ fn set_auto_schedule(app: tauri::AppHandle, light_start: u8, dark_start: u8) -> 
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let window = if let Some(window) = app.get_webview_window("settings") {
-        window.show()?;
+    let existing = app.get_webview_window("settings");
+    let reopening = existing.is_some();
+    let window = if let Some(window) = existing {
         window
     } else {
         let window_height = app
@@ -802,7 +805,11 @@ fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     };
 
     if let Ok(theme) = visual_app_theme(app) {
-        let _ = window.set_theme(Some(theme));
+        let _ = window.set_theme(native_window_theme(theme));
+    }
+    // Clear an old appearance override before revealing a reused Settings window.
+    if reopening {
+        window.show()?;
     }
     let _ = window.eval("window.dispatchEvent(new Event('pulse-settings-open'))");
     if window.is_visible()? {
@@ -1389,6 +1396,32 @@ fn visual_windows_theme(app: &tauri::AppHandle) -> Result<WindowsTheme, String> 
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn native_window_theme(theme: tauri::Theme) -> Option<tauri::Theme> {
+    // Tao applies a macOS window theme to NSApplication, not just that window.
+    // A fixed appearance also pins effectiveAppearance, so our system watcher
+    // would keep observing the old theme. None restores AppKit inheritance.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = theme;
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Some(theme)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn macos_windows_follow_system_appearance_in_both_modes() {
+    // Every create/show/change path must leave AppKit in automatic mode, even
+    // when the last observed appearance was the opposite of the current system.
+    for previous in [tauri::Theme::Light, tauri::Theme::Dark] {
+        assert_eq!(native_window_theme(previous), None);
+    }
+}
+
 /// Pulse's effective appearance, independent of the operating system adapter.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn visual_app_theme(app: &tauri::AppHandle) -> Result<tauri::Theme, String> {
@@ -1624,6 +1657,12 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
+        dictation::dictation_settings,
+        dictation::set_dictation_enabled,
+        dictation::request_dictation_access,
+        dictation::dictation_snapshot,
+        dictation::dictation_overlay_ready,
+        dictation::dictation_glass,
         settings_window_action,
         set_start_at_login,
         set_tray_icon_mode,
@@ -1935,6 +1974,9 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             text_extractor::install(app.handle())?;
 
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            dictation::install(app.handle())?;
+
             #[cfg(target_os = "macos")]
             start_macos_appearance_watcher(app.handle().clone());
 
@@ -1963,6 +2005,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Pulse")
         .run(|_app, _event| {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if matches!(&_event, tauri::RunEvent::Exit) {
+                dictation::shutdown();
+            }
             // The selector may be the only Tauri window. Keep the tray app and
             // shortcut hook alive while its replacement is prepared. Explicit
             // Quit and updater restarts have an exit code and still go through.
