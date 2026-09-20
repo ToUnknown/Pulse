@@ -12,7 +12,7 @@ const copyLabel = document.querySelector("#copy-label");
 const context = canvas.getContext("2d");
 const darkMode = matchMedia("(prefers-color-scheme: dark)");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
-let snapshot = { phase: "idle", levels: [], text: "" };
+let snapshot = { phase: "idle", level: 0, text: "" };
 let shown = "", id, lastSamples = 0, waveTime = 0;
 let wordTokens = [], wordNodes = [];
 let textHeight = 0, textVelocity = 0, layoutTime;
@@ -193,7 +193,7 @@ function drawWave(now) {
   context.setTransform(dpr,0,0,dpr,0,0); context.clearRect(0,0,width,height);
   context.strokeStyle = getComputedStyle(body).getPropertyValue("--wave"); context.lineWidth = 3; context.lineCap = "round";
   // Only the current microphone level drives the wave; there is no history.
-  const level = now - waveTime < 220 ? Math.max(0, snapshot.level ?? snapshot.levels?.at(-1) ?? 0) : 0;
+  const level = now - waveTime < 220 ? Math.max(0, snapshot.level ?? 0) : 0;
   const target = Math.min(1, Math.sqrt(level) * 4.2);
   const elapsed = Math.min(64, Math.max(1, now - lastFrame)); lastFrame = now;
   voice += (target - voice) * (1 - Math.exp(-elapsed / (target > voice ? 45 : 130)));
@@ -219,20 +219,19 @@ async function poll() {
 }
 requestAnimationFrame(frame);
 if (invoke) {
-  window.pulseDictationStart = (sessionId, bottom) => render({ id: sessionId, bottom, phase: "listening", text: "", levels: [] });
+  window.pulseDictationStart = (sessionId, bottom) => render({ id: sessionId, bottom, phase: "listening", text: "", level: 0 });
   poll();
 }
 // Browser-only visual fixture. Native sessions never accept URL-driven state.
 else if (new URLSearchParams(location.search).has("preview")) {
-  const levels = Array.from({length:80},(_,i)=>i%17<4?.001:.03+Math.sin(i*1.4)**2*.13);
   let step=0;
   const demo=[
-    {phase:"listening",text:"",levels:levels.slice(-14)},
-    {phase:"listening",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
-    {phase:"finalizing",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
-    {phase:"sending",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
-    {phase:"copied",text:"A little thought becomes a sentence. Every word appears while I speak.",levels},
-    {phase:"done",text:"A little thought becomes a sentence. Every word appears while I speak.",levels}
+    {phase:"listening",text:"",level:.09},
+    {phase:"listening",text:"A little thought becomes a sentence. Every word appears while I speak.",level:.09},
+    {phase:"finalizing",text:"A little thought becomes a sentence. Every word appears while I speak.",level:.09},
+    {phase:"sending",text:"A little thought becomes a sentence. Every word appears while I speak.",level:.09},
+    {phase:"copied",text:"A little thought becomes a sentence. Every word appears while I speak.",level:.09},
+    {phase:"done",text:"A little thought becomes a sentence. Every word appears while I speak.",level:.09}
   ];
   window.previewDictation = render;
   const advance=()=>{render({id:1,bottom:32,samples:step+1,level:.09,...demo[Math.min(step++,demo.length-1)]});};

@@ -75,7 +75,6 @@ function renderProvider() {
     ? "Checking Codex…"
     : state.codex?.available ? "" : "Unavailable. Open Codex and sign in, then retry.";
   if (providerStatus.textContent !== message) providerStatus.textContent = message;
-  providerStatus.dataset.tone = "";
   $("#codex-access-notice").hidden = !message;
   providerRetry.hidden = !!state.codex?.available;
   providerRetry.disabled = busy || !!state.codex?.checking;

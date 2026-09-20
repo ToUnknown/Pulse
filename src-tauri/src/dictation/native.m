@@ -87,7 +87,7 @@ bool pulse_dictation_register_shortcut(PulseShortcut callback) {
     // Trust flagsChanged for release. A separate key-state query may return
     // false while the physical modifier is still held and must not commit an
     // empty recording. The timer only cancels on permission loss; sleep also
-    // cancels above, and the recording lifecycle has a maximum duration.
+    // cancels above; no release is inferred from a polled physical-key state.
     shortcutReleaseTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
         (void)timer;
         PulseDictationShortcutWatchdog();

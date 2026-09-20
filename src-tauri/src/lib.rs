@@ -1657,15 +1657,10 @@ pub fn run() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::dictation_settings,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::set_dictation_enabled,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::request_dictation_access,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::dictation_snapshot,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         dictation::dictation_overlay_ready,
         dictation::dictation_glass,
         settings_window_action,

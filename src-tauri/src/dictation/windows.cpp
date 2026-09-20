@@ -35,10 +35,10 @@ static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) {
                 if (down && !rightDown) passRightAlt=(GetAsyncKeyState(VK_CONTROL)&0x8000)!=0;
                 rightDown=down;
             }
-            // AltGr injects a synthetic left Ctrl; consult physical hook events,
-            // not GetAsyncKeyState(VK_CONTROL), when interpreting Right Alt.
+            // Forward AltGr/Ctrl+Alt to the app without presenting it as a
+            // dictation press, including while hands-free recording is active.
             bool chord = down && !right;
-            if (auto callback = shortcutCallback.load()) callback(rightDown,chord,false,GetTickCount64()/1000.0);
+            if (auto callback = shortcutCallback.load()) callback(rightDown && !passRightAlt,chord,false,GetTickCount64()/1000.0);
             // Reserve bare Right Alt so releasing it cannot focus an app's menu
             // and lose the text field. Preserve the Ctrl+Alt sequence of AltGr.
             if (right && !passRightAlt) return 1;

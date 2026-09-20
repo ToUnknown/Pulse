@@ -330,9 +330,10 @@ pub async fn clear_openai_api_key(
     window: WebviewWindow,
 ) -> Result<(), String> {
     settings_only(&window)?;
-    openai_credentials::clear()?;
+    // Persist disabling first: a settings-write failure must not leave an
+    // enabled shortcut behind after its required credential has been deleted.
     crate::dictation::set_dictation_enabled(app, window, false).await?;
-    Ok(())
+    openai_credentials::clear()
 }
 
 #[tauri::command]

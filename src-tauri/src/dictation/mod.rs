@@ -157,8 +157,8 @@ fn register(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-// AppKit invokes both local and global event monitors on its main thread.
-// Only physical key state is forwarded; no typed text is read or retained.
+// Native monitors forward physical key state, never typed text. Dispatch UI
+// actions to the main thread; the Windows hook must return promptly.
 extern "C" fn shortcut_event(down: bool, chord: bool, interrupted: bool, timestamp: f64) {
     let Some(app) = APP.get() else {
         return;
@@ -309,6 +309,16 @@ pub struct GlassFrame {
     height: f64,
     opacity: f64,
 }
+impl GlassFrame {
+    fn valid(&self, max_width: f64, max_height: f64) -> bool {
+        [self.x, self.y, self.width, self.height, self.opacity]
+            .iter()
+            .all(|value| value.is_finite())
+            && (0.0..=max_width).contains(&self.width)
+            && (0.0..=max_height).contains(&self.height)
+            && (0.0..=1.0).contains(&self.opacity)
+    }
+}
 #[tauri::command]
 pub async fn dictation_glass(
     app: tauri::AppHandle,
@@ -321,29 +331,11 @@ pub async fn dictation_glass(
     if window.label() != WINDOW {
         return Err("This is only available to the dictation overlay.".into());
     }
-    if ![frame.x, frame.y, frame.width, frame.height, frame.opacity]
-        .iter()
-        .all(|v| v.is_finite())
-        // The clipboard confirmation expands the same lens beyond waveform width.
-        || !(0.0..=180.0).contains(&frame.width)
-        || !(0.0..=40.0).contains(&frame.height)
-        || !(0.0..=1.0).contains(&frame.opacity)
-    {
+    // Clipboard confirmation expands the pill beyond waveform width.
+    if !frame.valid(180.0, 40.0) {
         return Err("Invalid glass frame.".into());
     }
-    if ![
-        transcript.x,
-        transcript.y,
-        transcript.width,
-        transcript.height,
-        transcript.opacity,
-    ]
-    .iter()
-    .all(|v| v.is_finite())
-        || !(0.0..=400.0).contains(&transcript.width)
-        || !(0.0..=140.0).contains(&transcript.height)
-        || !(0.0..=1.0).contains(&transcript.opacity)
-    {
+    if !transcript.valid(400.0, 140.0) {
         return Err("Invalid transcript frame.".into());
     }
     let handle = app.clone();
@@ -507,7 +499,7 @@ fn start(app: &tauri::AppHandle) {
             pulse_dictation_position(pointer, &mut bottom);
         }
     }
-    let (tx, rx) = mpsc::channel(256); // Bounded startup/network backlog, about 10 seconds.
+    let (tx, rx) = mpsc::channel(256); // Bound the microphone's startup/network backlog.
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let token = CancellationToken::new();
     *state.session.lock().unwrap() = Some(Session {

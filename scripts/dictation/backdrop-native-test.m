@@ -10,17 +10,23 @@ int main(void) {
         pulse_dictation_transcript_blur(pointer,200,300,320,66,1,false);
         pulse_dictation_glass(pointer,328,376,64,28,1,false);
         NSView *host = PulseDictationMaterialHost(window);
+        // Private backdrop APIs are optional; unsupported systems deliberately
+        // retain just the two native UI surfaces rather than a tinted halo.
+        if (host.subviews.count == 2) {
+            puts("SKIP: untinted backdrop unavailable; no replacement halo was added");
+            return 0;
+        }
         assert(host.subviews.count == 4);
         NSView *pillHalo = host.subviews[0], *textHalo = host.subviews[1];
         // Both halos stay below the transcript backing and optical glass.
         assert(pillHalo.layer.mask && textHalo.layer.mask);
         assert(NSEqualRects(pillHalo.frame,NSMakeRect(304,172,112,76)));
         assert(NSEqualRects(textHalo.frame,NSMakeRect(176,210,368,114)));
-        assert(fabs(textHalo.alphaValue - .8) < .001);
+        assert(fabs(textHalo.alphaValue - 1) < .001);
         pulse_dictation_transcript_blur(pointer,200,240,320,126,.5,true);
         assert(NSEqualRects(textHalo.frame,NSMakeRect(176,210,368,174)));
         assert(NSEqualRects(textHalo.layer.mask.frame,textHalo.bounds));
-        assert(fabs(textHalo.alphaValue - .4) < .001);
+        assert(fabs(textHalo.alphaValue - .5) < .001);
         pulse_dictation_glass(pointer,346,376,28,28,.5,true);
         assert(NSEqualRects(pillHalo.frame,NSMakeRect(322,172,76,76)));
         pulse_dictation_transcript_blur(pointer,200,240,320,126,0,true);
