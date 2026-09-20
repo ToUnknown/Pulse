@@ -25,7 +25,7 @@ These are available checks, not a claim that the current branch passed them:
 | Async microphone startup | `capture-startup-test.m`, using a simulated engine without opening the microphone |
 | Renderer state and growth | `overlay-test.mjs`, using the real renderer with a minimal DOM; `overlay-layout.html` is a browser layout fixture |
 | Native blur geometry | `backdrop-native-test.m`, using an unshown macOS window; explicitly skips when private backdrop support is absent |
-| Settings access | `../text-extractor/qa/settings-access.html` |
+| Settings access | `settings-test.mjs` covers grant/denial, stale messages, action errors, overlapping refreshes, repeated requests, and the API-key gate using simulated IPC; `../text-extractor/qa/settings-access.html` covers the shared Advanced Access UI |
 
 The obsolete `delivery-native-test.m` exercised removed live-field APIs and was deleted. Current Unicode delivery and clipboard fallback still need focused native regression coverage; renderer fixtures cannot establish acceptance by real editors. Windows hook/AltGr behavior also needs native verification.
 
