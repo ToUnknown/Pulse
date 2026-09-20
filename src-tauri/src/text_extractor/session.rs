@@ -542,13 +542,13 @@ pub fn appearance_changed(app: &tauri::AppHandle, theme: tauri::Theme) {
         .as_ref()
         .map(|session| session.label.clone());
     if let Some(window) = label.and_then(|label| app.get_webview_window(&label)) {
-        if let Err(error) = window.set_theme(Some(theme)) {
+        if let Err(error) = window.set_theme(crate::native_window_theme(theme)) {
             eprintln!("Text Extractor appearance update failed: {error}");
         }
     }
     for window in app.webview_windows().into_values() {
         if window.label().starts_with(NOTICE_PREFIX) || window.label() == "settings" {
-            let _ = window.set_theme(Some(theme));
+            let _ = window.set_theme(crate::native_window_theme(theme));
         }
     }
 }
@@ -584,7 +584,7 @@ fn show_quick_copy_notice(
     } else {
         "window.pulseQuickCopySucceeded = false;"
     })
-    .theme(Some(crate::visual_app_theme(app)?))
+    .theme(crate::native_window_theme(crate::visual_app_theme(app)?))
     .visible(false)
     .focused(false)
     .focusable(false)
@@ -656,7 +656,7 @@ async fn prepare_window(app: &tauri::AppHandle) -> Result<(), String> {
         let window =
             WebviewWindowBuilder::new(app, &label, WebviewUrl::App("text-extractor.html".into()))
                 .title("Pulse Text Extractor")
-                .theme(Some(crate::visual_app_theme(app)?))
+                .theme(crate::native_window_theme(crate::visual_app_theme(app)?))
                 .visible(false)
                 .focused(false)
                 .transparent(true)
@@ -970,7 +970,7 @@ pub fn text_extractor_show(app: tauri::AppHandle, window: WebviewWindow) -> Resu
     ensure_session(&app, &window)?;
     // Re-read Pulse's visual theme in case it changed while the capture loaded.
     window
-        .set_theme(Some(crate::visual_app_theme(&app)?))
+        .set_theme(crate::native_window_theme(crate::visual_app_theme(&app)?))
         .map_err(|_| "Could not apply Pulse appearance.".to_string())?;
     window
         .show()
