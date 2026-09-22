@@ -56,7 +56,7 @@ async fn translate_at(
 ) -> Result<String, String> {
     let mut response = client
         .post(endpoint)
-        // Keep selected text out of URLs, and never attach API keys or Codex credentials.
+        // Keep selected text out of URLs and never attach OpenAI API credentials.
         .form(&[
             ("client", "gtx"),
             ("sl", "auto"),

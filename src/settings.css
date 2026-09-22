@@ -578,11 +578,6 @@ main { max-width: 720px; margin: 0 auto; }
 .api-key-buttons { display: flex; flex: none; gap: 6px; }
 .api-key-card .extractor-error { margin: 0; }
 .api-key-form { display: grid; gap: 14px; }
-.codex-access { border-top: 1px solid var(--border); padding-top: 14px; }
-.codex-access-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; cursor: pointer; }
-.codex-access strong { font-size: 13px; font-weight: 600; }
-.codex-access-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 8px; }
-.codex-access-notice .settings-button { flex: none; }
 .page-note { color: var(--secondary-text); font-size: 13px; line-height: 1.6; }
 @keyframes settings-page-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
