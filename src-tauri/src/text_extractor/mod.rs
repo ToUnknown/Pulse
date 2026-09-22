@@ -1,6 +1,5 @@
 //! Shared extraction lifecycle with compile-time native platform adapters.
 mod advanced;
-mod codex;
 mod google_translate;
 mod local_ocr;
 mod pixels;

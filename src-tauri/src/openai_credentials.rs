@@ -74,7 +74,7 @@ async fn validate_and_persist(
     match response.status().as_u16() {
         200 => {}
         401 => return Err("Not a valid OpenAI API key.".into()),
-        403 | 404 => return Err("This API key cannot access GPT-5.6 Luna.".into()),
+        403 | 404 => return Err("This API key cannot access GPT-6 Luna.".into()),
         429 => {
             return Err(
                 "OpenAI could not check this key because its usage or billing limit was reached."
