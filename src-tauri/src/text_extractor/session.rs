@@ -1,6 +1,5 @@
 use super::{
-    advanced,
-    google_translate,
+    advanced, google_translate,
     local_ocr::ModelStatus,
     pixels::DesktopFrame,
     platform::{self, capture, LocalOcr},
@@ -197,7 +196,12 @@ pub fn text_extractor_state(app: tauri::AppHandle, window: WebviewWindow) -> Res
     let credential_state = openai_credentials::is_configured();
     let configured = credential_state.as_ref().copied().unwrap_or(false);
     let preferences = state.preferences.lock().unwrap().clone();
-    let error = state.error.lock().unwrap().clone().or(credential_state.err());
+    let error = state
+        .error
+        .lock()
+        .unwrap()
+        .clone()
+        .or(credential_state.err());
     let mut result = json!({"advancedAvailable": configured});
     result.as_object_mut().unwrap().extend(
         json!({"enabled": preferences.enabled, "shortcut": preferences.shortcut, "quickShortcut": preferences.quick_shortcut,
@@ -1070,10 +1074,7 @@ async fn recognize_selection(
     }
 }
 
-async fn request_advanced(
-    body: Value,
-    cancel: CancellationToken,
-) -> Result<String, String> {
+async fn request_advanced(body: Value, cancel: CancellationToken) -> Result<String, String> {
     advanced::request(body, cancel).await
 }
 
@@ -1320,13 +1321,15 @@ mod tests {
 
     #[test]
     fn removed_subscription_selection_resets_advanced_modes() {
-        let preferences = load_preferences(&serde_json::to_vec(&json!({
-            "enabled": true,
-            "editorMode": "advanced",
-            "quickMode": "advanced",
-            "advancedProvider": "codex"
-        }))
-        .unwrap())
+        let preferences = load_preferences(
+            &serde_json::to_vec(&json!({
+                "enabled": true,
+                "editorMode": "advanced",
+                "quickMode": "advanced",
+                "advancedProvider": "codex"
+            }))
+            .unwrap(),
+        )
         .unwrap();
         assert_eq!(preferences.quick_mode, ExtractionMode::Basic);
         assert_eq!(preferences.editor_mode, ExtractionMode::Basic);
