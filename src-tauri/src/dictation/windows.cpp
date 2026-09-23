@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <uiautomation.h>
 #include <mmdeviceapi.h>
+#include <ole2.h>
 #include <audioclient.h>
 #include <shellapi.h>
 #include <wrl/client.h>
@@ -18,7 +19,6 @@
 using Microsoft::WRL::ComPtr;
 using Shortcut = void(*)(bool,bool,bool,double);
 using Audio = void(*)(uint64_t,const uint8_t*,size_t,float);
-static constexpr ULONG_PTR EventTag = 0x50554c53;
 static std::atomic<Shortcut> shortcutCallback{nullptr};
 static std::thread hookThread;
 static DWORD hookThreadId;
@@ -186,13 +186,29 @@ static bool modifiersDown() {
     return ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|
         GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0;
 }
-// 0 = wait for physical modifiers; 1 = submitted once; -1 = copy instead.
-// The OS routes one batch to the current caret. No saved field, document reads,
-// text replacement, or asynchronous accessibility acknowledgment is involved.
+extern "C" bool pulse_dictation_copy(const char *utf8);
+static ComPtr<IDataObject> previousClipboard;
+static DWORD temporarySequence;
+static bool pastePending;
+static void restoreClipboard() {
+    if (temporarySequence && GetClipboardSequenceNumber()==temporarySequence) {
+        // If the user copied something newer, their clipboard always wins.
+        OleSetClipboard(previousClipboard.Get());
+    }
+    previousClipboard.Reset();
+    temporarySequence=0;
+    pastePending=false;
+    OleUninitialize();
+}
+static VOID CALLBACK finishPaste(HWND window, UINT message, UINT_PTR timer, DWORD time) {
+    (void)window; (void)message; (void)time;
+    KillTimer(nullptr,timer);
+    restoreClipboard();
+}
+// 0 = wait for physical modifiers; 1 = paste submitted; -1 = copy instead.
 extern "C" int pulse_dictation_final_step(const char *utf8) {
-    if (modifiersDown()) return 0;
-    std::wstring text=utf16(utf8);
-    if (text.empty()) return -1;
+    if (modifiersDown() || pastePending) return 0;
+    if (!utf8 || !*utf8) return -1;
     HWND foreground=GetForegroundWindow();
     if (!foreground) return -1;
     TextInput inputKind=focusedTextInput();
@@ -202,22 +218,50 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
     if (GetForegroundWindow()!=foreground) return 0;
     if (inputKind==TextInput::Rejected) return -1;
     if (haveInfo && (info.flags&(GUI_INMENUMODE|GUI_INMOVESIZE))) return -1;
-    // Native caret presence covers editors with incomplete UI Automation data.
     bool caret=haveInfo && info.hwndFocus && info.hwndCaret &&
         (info.hwndFocus==info.hwndCaret || IsChild(info.hwndFocus,info.hwndCaret));
     if (inputKind!=TextInput::Editable && !caret) return -1;
-    std::vector<INPUT> events(text.size()*2);
-    for (size_t i=0;i<text.size();i++) {
-        events[2*i].type=events[2*i+1].type=INPUT_KEYBOARD;
-        events[2*i].ki.wScan=events[2*i+1].ki.wScan=text[i];
-        events[2*i].ki.dwFlags=KEYEVENTF_UNICODE;
-        events[2*i+1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
-        events[2*i].ki.dwExtraInfo=events[2*i+1].ki.dwExtraInfo=EventTag;
+
+    HRESULT init=OleInitialize(nullptr);
+    if (FAILED(init)) return -1;
+    ComPtr<IDataObject> previous;
+    if (FAILED(OleGetClipboard(previous.GetAddressOf()))) { OleUninitialize(); return -1; }
+    DWORD before=GetClipboardSequenceNumber();
+    if (modifiersDown() || GetForegroundWindow()!=foreground) { OleUninitialize(); return 0; }
+    if (!pulse_dictation_copy(utf8)) {
+        if (GetClipboardSequenceNumber()!=before) OleSetClipboard(previous.Get());
+        OleUninitialize();
+        return -1;
     }
-    if (modifiersDown() || GetForegroundWindow()!=foreground) return 0;
-    UINT sent=SendInput(static_cast<UINT>(events.size()),events.data(),sizeof(INPUT));
-    // Even a partial dispatch must never be replayed or copied a second time.
-    return sent ? 1 : -1;
+    DWORD temporary=GetClipboardSequenceNumber();
+    if (temporary==before) { OleSetClipboard(previous.Get()); OleUninitialize(); return -1; }
+    if (modifiersDown() || GetForegroundWindow()!=foreground) {
+        if (GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
+        OleUninitialize();
+        return 0;
+    }
+
+    INPUT keys[4]{};
+    keys[0].type=keys[1].type=keys[2].type=keys[3].type=INPUT_KEYBOARD;
+    keys[0].ki.wVk=keys[3].ki.wVk=VK_CONTROL;
+    keys[1].ki.wVk=keys[2].ki.wVk='V';
+    keys[2].ki.dwFlags=keys[3].ki.dwFlags=KEYEVENTF_KEYUP;
+    UINT sent=SendInput(4,keys,sizeof(INPUT));
+    if (!sent) {
+        if (GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
+        OleUninitialize();
+        return -1;
+    }
+    previousClipboard=previous;
+    temporarySequence=temporary;
+    pastePending=true;
+    if (!SetTimer(nullptr,0,250,finishPaste)) {
+        // Timers normally run on this UI thread. Keep restoration safe if one
+        // cannot be installed, at the cost of a brief finalization pause.
+        Sleep(250);
+        restoreClipboard();
+    }
+    return 1;
 }
 extern "C" bool pulse_dictation_copy(const char *utf8) {
     std::wstring text=utf16(utf8); if(text.empty()) return false;

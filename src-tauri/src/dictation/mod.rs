@@ -101,7 +101,7 @@ struct Session {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinalDelivery {
     Pending,
-    // Input events were submitted; apps do not provide a universal receipt.
+    // Paste was submitted; apps do not provide a universal receipt.
     Submitted,
     Clipboard,
     Discard,
@@ -783,7 +783,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             let expired = Instant::now() >= deadline;
             let handle = app.clone();
             let complete = on_main(&app, move || {
-                // A completed dispatch never becomes a clipboard fallback.
+                // A submitted paste never becomes a second clipboard fallback.
                 delivery_tick(&handle, id);
                 let state = handle.state::<Dictation>();
                 let mut guard = state.session.lock().unwrap();

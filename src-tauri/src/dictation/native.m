@@ -183,20 +183,13 @@ static CFTypeRef attribute(AXUIElementRef element, CFStringRef name) {
 }
 static AXUIElementRef focusedElement(void) {
     if (!AXIsProcessTrusted()) return NULL;
-    // Prefer the active app's current focus over a stale system-wide element.
-    pid_t pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
-    if (pid<=0) return NULL;
-    for (int attempt=0; attempt<2; attempt++) {
-        AXUIElementRef root=attempt ? AXUIElementCreateSystemWide() : AXUIElementCreateApplication(pid);
-        AXUIElementSetMessagingTimeout(root,0.25);
-        CFTypeRef value=attribute(root,kAXFocusedUIElementAttribute);
-        CFRelease(root);
-        pid_t owner=0;
-        if (value && CFGetTypeID(value)==AXUIElementGetTypeID() &&
-            AXUIElementGetPid((AXUIElementRef)value,&owner)==kAXErrorSuccess && owner==pid &&
-            NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier==pid) return (AXUIElementRef)value;
-        if (value) CFRelease(value);
-    }
+    // System panels and webview helpers need not share the frontmost app's PID.
+    AXUIElementRef root=AXUIElementCreateSystemWide();
+    AXUIElementSetMessagingTimeout(root,0.25);
+    CFTypeRef value=attribute(root,kAXFocusedUIElementAttribute);
+    CFRelease(root);
+    if (value && CFGetTypeID(value)==AXUIElementGetTypeID()) return (AXUIElementRef)value;
+    if (value) CFRelease(value);
     return NULL;
 }
 static bool editable(AXUIElementRef element) {
@@ -222,54 +215,85 @@ static bool modifiersDown(void) {
     return (flags & (kCGEventFlagMaskAlternate | kCGEventFlagMaskCommand |
                      kCGEventFlagMaskControl | kCGEventFlagMaskShift)) != 0;
 }
-// 0 = wait for physical modifiers; 1 = submitted once; -1 = copy instead.
+// Pasteboard items become stale when their owner changes. Copy each format's
+// bytes now, so a temporary transcript cannot erase the user's rich content.
+static NSArray<NSPasteboardItem *> *clipboardSnapshot(NSPasteboard *board) {
+    NSMutableArray<NSPasteboardItem *> *copies=[NSMutableArray array];
+    NSArray<NSPasteboardItem *> *items=board.pasteboardItems;
+    if (!items && board.types.count) return nil;
+    for (NSPasteboardItem *item in items ?: @[]) {
+        NSPasteboardItem *copy=[NSPasteboardItem new];
+        for (NSPasteboardType type in item.types) {
+            NSData *data=[item dataForType:type];
+            if (!data || ![copy setData:data forType:type]) return nil;
+        }
+        [copies addObject:copy];
+    }
+    return copies;
+}
+static void restoreClipboard(NSPasteboard *board, NSArray<NSPasteboardItem *> *items, NSInteger expectedChange) {
+    if (board.changeCount!=expectedChange) return; // The user copied something newer.
+    [board clearContents];
+    if (items.count) [board writeObjects:items];
+}
+// 0 = wait for physical modifiers/focus change; 1 = paste submitted; -1 = copy instead.
 int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
     NSString *text=[NSString stringWithUTF8String:utf8];
     if (!text.length) return -1;
-    pid_t pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
     AXUIElementRef element=focusedElement();
     if (!element) return -1;
-    AXUIElementSetMessagingTimeout(element,0.08);
     bool input=editable(element);
     CFRelease(element);
-    if (pid!=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) return 0;
-    if (!input || pid<=0) return -1;
+    if (!input) return -1;
+
     CGEventSourceRef source=CGEventSourceCreate(kCGEventSourceStatePrivate);
-    CGEventRef down=source ? CGEventCreateKeyboardEvent(source,0,true) : NULL;
-    CGEventRef up=source ? CGEventCreateKeyboardEvent(source,0,false) : NULL;
-    if (!down || !up) {
-        if (down) CFRelease(down);
-        if (up) CFRelease(up);
+    CGEventRef events[4]={
+        source ? CGEventCreateKeyboardEvent(source,0x37,true) : NULL,  // Command down
+        source ? CGEventCreateKeyboardEvent(source,0x09,true) : NULL,  // V down
+        source ? CGEventCreateKeyboardEvent(source,0x09,false) : NULL, // V up
+        source ? CGEventCreateKeyboardEvent(source,0x37,false) : NULL  // Command up
+    };
+    bool ready=true;
+    for (int i=0;i<4;i++) if (!events[i]) ready=false;
+    if (!ready) {
+        for (int i=0;i<4;i++) if (events[i]) CFRelease(events[i]);
         if (source) CFRelease(source);
         return -1;
     }
-    CGEventSetFlags(down,0); CGEventSetFlags(up,0);
-    CGEventSetIntegerValueField(down,kCGEventSourceUserData,PulseDictationEventTag);
-    CGEventSetIntegerValueField(up,kCGEventSourceUserData,PulseDictationEventTag);
-    int result=0;
-    if (!modifiersDown() && pid==NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) {
-        // Small UTF-16 packets avoid Quartz's long-string truncation. Submit
-        // immediately, without paced typing, and never split a surrogate pair.
-        for (NSUInteger offset=0; offset<text.length;) {
-            UniChar characters[20];
-            NSUInteger length=MIN((NSUInteger)20,text.length-offset);
-            // Keep line separators inside a packet rather than at its start.
-            while (length>1 && offset+length<text.length &&
-                   [[NSCharacterSet newlineCharacterSet] characterIsMember:[text characterAtIndex:offset+length]]) length--;
-            [text getCharacters:characters range:NSMakeRange(offset,length)];
-            if (offset+length<text.length && (characters[length-1]&0xfc00)==0xd800) length--;
-            CGEventKeyboardSetUnicodeString(down,length,characters);
-            CGEventKeyboardSetUnicodeString(up,length,characters);
-            CGEventPost(kCGHIDEventTap,down); CGEventPost(kCGHIDEventTap,up);
-            offset+=length;
-        }
-        result=1;
+    for (int i=0;i<4;i++) {
+        CGEventSetIntegerValueField(events[i],kCGEventSourceUserData,PulseDictationEventTag);
+        CGEventSetFlags(events[i],i<3 ? kCGEventFlagMaskCommand : 0);
     }
-    CFRelease(down); CFRelease(up); CFRelease(source);
+
+    NSPasteboard *board=NSPasteboard.generalPasteboard;
+    NSInteger previousChange=board.changeCount;
+    NSArray<NSPasteboardItem *> *previous=clipboardSnapshot(board);
+    AXUIElementRef current=focusedElement();
+    bool currentInput=current && editable(current);
+    if (current) CFRelease(current);
+    int result=0;
+    if (!previous || !currentInput) result=-1;
+    else if (!modifiersDown() && board.changeCount==previousChange) {
+        [board clearContents];
+        if ([board setString:text forType:NSPasteboardTypeString]) {
+            NSInteger temporaryChange=board.changeCount;
+            for (int i=0;i<4;i++) CGEventPost(kCGHIDEventTap,events[i]);
+            // Let the target consume Paste, then restore only if this is still ours.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,250*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
+                restoreClipboard(board,previous,temporaryChange);
+            });
+            result=1;
+        } else {
+            restoreClipboard(board,previous,board.changeCount);
+            result=-1;
+        }
+    }
+    for (int i=0;i<4;i++) CFRelease(events[i]);
+    CFRelease(source);
     return result;
 }
-// The input path never accesses the clipboard. Only fallback writes here.
+// Without a usable input, leave the transcript available for manual paste.
 bool pulse_dictation_copy(const char *utf8) {
     NSString *text=[NSString stringWithUTF8String:utf8];
     if (!text.length) return false;
