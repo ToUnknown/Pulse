@@ -1,6 +1,7 @@
 const invoke = window.__TAURI__?.core.invoke;
 const section = document.querySelector("#dictation-section");
 const enabled = document.querySelector("#dictation-enabled");
+const modeDetails = document.querySelector("#dictation-modes");
 const mode = document.querySelector("#dictation-mode");
 const modeButtons = [...mode.querySelectorAll("button")];
 const error = document.querySelector("#dictation-error");
@@ -8,6 +9,10 @@ const microphone = document.querySelector("#dictation-microphone");
 const accessibility = document.querySelector("#dictation-accessibility");
 let busy = false, revision = 0, accessState, actionError = "", configured = false;
 let selectedMode = "default";
+function setModeExpanded(value) {
+  if (modeDetails.dataset.expanded !== String(value)) modeDetails.dataset.expanded = String(value);
+  if (modeDetails.inert !== !value) modeDetails.inert = !value;
+}
 function renderMode(value) {
   selectedMode = value === "live" ? "live" : "default";
   mode.style.setProperty("--mode-index", selectedMode === "live" ? 1 : 0);
@@ -35,6 +40,7 @@ async function refresh() {
     enabled.disabled = !state.apiKeyConfigured;
     const checked = state.enabled && state.apiKeyConfigured;
     if (enabled.checked !== checked) enabled.checked = checked;
+    setModeExpanded(checked);
     renderMode(state.mode);
     for (const button of modeButtons) button.disabled = false;
     const description = document.querySelector("#dictation-description");
@@ -66,9 +72,12 @@ async function act(command, args) {
     await refresh();
   }
 }
-enabled.addEventListener("change", () => act("set_dictation_enabled", {enabled:enabled.checked}));
+enabled.addEventListener("change", () => {
+  setModeExpanded(enabled.checked);
+  return act("set_dictation_enabled", {enabled:enabled.checked});
+});
 function selectMode(button) {
-  if (busy || !button || button.dataset.mode === selectedMode) return;
+  if (busy || !enabled.checked || !button || button.dataset.mode === selectedMode) return;
   renderMode(button.dataset.mode);
   return act("set_dictation_mode", {mode:selectedMode});
 }

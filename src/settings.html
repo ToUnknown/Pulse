@@ -54,12 +54,16 @@
               </span>
               <input id="dictation-enabled" type="checkbox" aria-describedby="dictation-description" disabled />
             </label>
-            <div class="dictation-mode-row">
-              <span id="dictation-mode-label">Transcription model</span>
-              <div id="dictation-mode" class="shortcut-mode" role="radiogroup" aria-labelledby="dictation-mode-label" style="--mode-index: 0">
-                <span class="shortcut-mode-pill" aria-hidden="true"><span class="shortcut-mode-highlight"><span>Default</span><span>Live</span></span></span>
-                <button type="button" role="radio" data-mode="default" aria-checked="true">Default</button>
-                <button type="button" role="radio" data-mode="live" aria-checked="false" tabindex="-1">Live</button>
+            <div id="dictation-modes" class="extractor-shortcuts" data-expanded="false" inert>
+              <div class="extractor-shortcuts-inner">
+                <div class="dictation-mode-row">
+                  <span id="dictation-mode-label">Mode</span>
+                  <div id="dictation-mode" class="shortcut-mode" role="radiogroup" aria-labelledby="dictation-mode-label" style="--mode-index: 0">
+                    <span class="shortcut-mode-pill" aria-hidden="true"><span class="shortcut-mode-highlight"><span>Default</span><span>Live</span></span></span>
+                    <button type="button" role="radio" data-mode="default" aria-checked="true">Default</button>
+                    <button type="button" role="radio" data-mode="live" aria-checked="false" tabindex="-1">Live</button>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="dictation-access-actions">

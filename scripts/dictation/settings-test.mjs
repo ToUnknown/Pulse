@@ -7,6 +7,8 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../../src/dictation-settings.js', import.meta.url), 'utf8');
 const markup = readFileSync(new URL('../../src/settings.html', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../../src/settings.css', import.meta.url), 'utf8');
+assert.match(markup, /id="dictation-modes" class="extractor-shortcuts" data-expanded="false" inert/, 'dictation mode uses the same collapsible container as Text Extractor');
+assert.match(markup, /id="dictation-mode-label">Mode</, 'the control is labeled Mode');
 assert.match(markup, /id="dictation-mode" class="shortcut-mode" role="radiogroup"/, 'dictation uses the shared mode slider');
 assert.doesNotMatch(markup, /Default transcribes after you finish speaking/, 'the extra mode explanation is removed');
 assert.match(styles, /\.settings-group\[data-saving-mode="true"\] input\[type="checkbox"\]:disabled[^}]*opacity:\s*1/, 'mode saves keep disabled switches visually steady');
@@ -17,7 +19,7 @@ const deferred = () => {
 };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(overrides = {}) {
-  const ids = ['section','enabled','mode','error','description','microphone','accessibility'];
+  const ids = ['section','enabled','modes','mode','error','description','microphone','accessibility'];
   const nodes = Object.fromEntries(ids.map(id => [id, {
     hidden:true, disabled:false, checked:false, value:'', textContent:'', dataset:{}, listeners:{},
     addEventListener(name, listener) { this.listeners[name] = listener; },
@@ -29,6 +31,8 @@ async function fixture(overrides = {}) {
   }));
   nodes.mode.querySelectorAll = () => modeButtons;
   nodes.mode.style = {setProperty(name, value) { this[name] = value; }};
+  nodes.modes.dataset.expanded = 'false';
+  nodes.modes.inert = true;
   const state = {enabled:false, mode:'default', apiKeyConfigured:true, microphone:false,
     accessibility:false, shortcut:'Right Option', error:null, ...overrides};
   const calls = [], events = {}, documentEvents = {};
@@ -61,28 +65,29 @@ async function fixture(overrides = {}) {
   };
 }
 
-// A successful refresh must clear stale DOM text as well as hide the warning.
-const f = await fixture({error:'Allow Accessibility'});
-assert.equal(f.selectedMode(),'default');
-await f.click('mode');
-assert.equal(f.state.mode,'live','model selection is saved');
-assert.equal(f.selectedMode(),'live');
-assert.equal(f.nodes.mode.style['--mode-index'],1,'selection moves the shared slider');
-assert.equal(f.calls.at(-2).name,'set_dictation_mode');
-f.state.mode='default';
-await f.refresh();
-assert.equal(f.selectedMode(),'default','model selection refreshes from persisted state');
-assert.equal(f.nodes.mode.style['--mode-index'],0);
-f.key('ArrowRight'); await settle();
-assert.equal(f.selectedMode(),'live','keyboard navigation selects the second mode');
-const rejectedMode = await fixture();
+const modes = await fixture({enabled:true});
+assert.equal(modes.nodes.modes.dataset.expanded,'true');
+assert.equal(modes.nodes.modes.inert,false);
+assert.equal(modes.selectedMode(),'default');
+await modes.click('mode');
+assert.equal(modes.state.mode,'live','model selection is saved');
+assert.equal(modes.selectedMode(),'live');
+assert.equal(modes.nodes.mode.style['--mode-index'],1,'selection moves the shared slider');
+assert.equal(modes.calls.at(-2).name,'set_dictation_mode');
+modes.state.mode='default';
+await modes.refresh();
+assert.equal(modes.selectedMode(),'default','model selection refreshes from persisted state');
+assert.equal(modes.nodes.mode.style['--mode-index'],0);
+modes.key('ArrowRight'); await settle();
+assert.equal(modes.selectedMode(),'live','keyboard navigation selects the second mode');
+const rejectedMode = await fixture({enabled:true});
 rejectedMode.handle((name) => {
   if (name === 'dictation_settings') return {...rejectedMode.state};
   throw new Error('Could not save model');
 });
 await rejectedMode.click('mode');
 assert.equal(rejectedMode.selectedMode(),'default','failed model changes return the slider to the saved mode');
-const savingMode = await fixture();
+const savingMode = await fixture({enabled:true});
 const pendingMode = deferred();
 savingMode.handle(name => name === 'dictation_settings' ? {...savingMode.state} : pendingMode.promise);
 const modeSave = savingMode.click('mode');
@@ -91,6 +96,20 @@ assert.equal(savingMode.nodes.enabled.disabled,true,'mode save still blocks over
 pendingMode.resolve(); await modeSave;
 assert.equal(savingMode.nodes.section.dataset.savingMode,'false');
 assert.equal(savingMode.nodes.enabled.disabled,false);
+const visibility = await fixture();
+assert.equal(visibility.nodes.modes.dataset.expanded,'false','mode row starts collapsed while Dictation is off');
+assert.equal(visibility.nodes.modes.inert,true,'hidden modes cannot receive keyboard input');
+await visibility.click('mode');
+assert.equal(visibility.calls.some(call=>call.name==='set_dictation_mode'),false,'hidden mode cannot be changed');
+visibility.nodes.enabled.checked=true;
+await visibility.click('enabled');
+assert.equal(visibility.nodes.modes.dataset.expanded,'true','enabling Dictation reveals Mode');
+visibility.nodes.enabled.checked=false;
+await visibility.click('enabled');
+assert.equal(visibility.nodes.modes.dataset.expanded,'false','disabling Dictation hides Mode');
+assert.equal(visibility.nodes.modes.inert,true);
+// A successful refresh must clear stale DOM text as well as hide the warning.
+const f = await fixture({error:'Allow Accessibility'});
 assert.equal(f.nodes.error.hidden,false);
 assert.equal(f.nodes.accessibility.hidden,false);
 f.state.accessibility=true; f.state.error=null;
