@@ -448,6 +448,8 @@ input:focus-visible,
 
 .custom-select--icon .custom-select-menu {
   width: 154px;
+  border-radius: 999px;
+  corner-shape: var(--pill-corner-style);
 }
 
 .tray-glyph {
@@ -457,6 +459,10 @@ input:focus-visible,
   background: currentColor;
   -webkit-mask: var(--tray-icon-mask) center / contain no-repeat;
   mask: var(--tray-icon-mask) center / contain no-repeat;
+}
+
+.tray-glyph-red {
+  color: #ff1f2d;
 }
 
 #error {
