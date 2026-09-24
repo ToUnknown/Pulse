@@ -600,8 +600,8 @@ select,
   border-radius: 0 0 35px 35px;
   background: color-mix(in srgb, var(--settings-background) 12%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 70%);
-  mask-image: linear-gradient(to bottom, transparent, #000 70%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 25%, #000 85%);
+  mask-image: linear-gradient(to bottom, transparent 25%, #000 85%);
   pointer-events: none;
 }
 :root[data-floating="true"] .settings-header { grid-row: 1; z-index: 3; display: flex; align-items: center; justify-content: center; margin: -24px -24px 0; padding: 24px 24px 20px; cursor: default; user-select: none; }
@@ -616,8 +616,8 @@ select,
   border-radius: 35px 35px 0 0; corner-shape: var(--corner-style);
   background: color-mix(in srgb, var(--settings-background) 12%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
-  -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent 89%);
-  mask-image: linear-gradient(to bottom, #000 50%, transparent 89%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent 76%);
+  mask-image: linear-gradient(to bottom, #000 40%, transparent 76%);
   pointer-events: none;
 }
 :root[data-floating="true"] .settings-tab-slider { background: color-mix(in srgb, var(--settings-pill) 90%, transparent); }
