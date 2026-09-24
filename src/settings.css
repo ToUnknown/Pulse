@@ -596,7 +596,7 @@ select,
   animation: settings-panel-in 240ms cubic-bezier(.2,.8,.2,1);
 }
 :root[data-floating="true"] .settings-shell::after {
-  content: ""; position: absolute; z-index: 1; inset: auto 1px 1px; height: 96px;
+  content: ""; position: absolute; z-index: 1; inset: auto 1px 1px; height: 68px;
   border-radius: 0 0 35px 35px;
   background: color-mix(in srgb, var(--settings-background) 12%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
@@ -612,7 +612,7 @@ select,
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
 }
 :root[data-floating="true"] .settings-top-blur {
-  position: absolute; z-index: 1; inset: 1px 1px auto; display: block; height: 134px;
+  position: absolute; z-index: 1; inset: 1px 1px auto; display: block; height: 104px;
   border-radius: 35px 35px 0 0; corner-shape: var(--corner-style);
   background: color-mix(in srgb, var(--settings-background) 12%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
