@@ -626,8 +626,10 @@ select,
 :root[data-floating="true"] body { padding: 12px; }
 :root[data-floating="true"] .settings-shell {
   position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: calc(100vh - 24px); padding: 24px;
-  border: 1px solid var(--border); border-radius: 36px; corner-shape: var(--corner-style);
+  border: 1px solid var(--border); border-radius: 36px; corner-shape: var(--corner-style); overflow: clip;
   background: var(--settings-background); box-shadow: 0 4px 12px #00000024;
+  /* Backdrop layers should sample Settings content, not the moving desktop. */
+  will-change: opacity;
   animation: settings-panel-in 240ms cubic-bezier(.2,.8,.2,1);
 }
 :root[data-floating="true"] .settings-shell::after {
@@ -648,6 +650,7 @@ select,
 }
 :root[data-floating="true"] .settings-top-blur {
   position: absolute; z-index: 1; inset: 1px 1px auto; display: block; height: 134px;
+  border-radius: 35px 35px 0 0; corner-shape: var(--corner-style);
   background: color-mix(in srgb, var(--settings-background) 12%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
   -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent 86%);
