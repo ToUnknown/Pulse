@@ -1,14 +1,19 @@
 // Schema: https://developers.openai.com/api/docs/guides/realtime-transcription
 use serde_json::{json, Value};
 
-pub fn configuration() -> Value {
+pub fn configuration(model: &str) -> Value {
+    let transcription = if model == "gpt-live-transcribe" {
+        json!({"model":model,"delay":"high"})
+    } else {
+        json!({"model":model})
+    };
     json!({"type":"session.update","session":{"type":"transcription","audio":{"input":{
         "format":{"type":"audio/pcm","rate":24000},
-        "transcription":{"model":"gpt-live-transcribe","delay":"high"},
+        "transcription":transcription,
         "turn_detection":null
     }}}})
 }
-pub fn check_error(event: &Value) -> Result<(), String> {
+pub fn check_error(event: &Value, model: &str) -> Result<(), String> {
     if matches!(
         event["type"].as_str(),
         Some("error" | "conversation.item.input_audio_transcription.failed")
@@ -19,7 +24,10 @@ pub fn check_error(event: &Value) -> Result<(), String> {
             "insufficient_quota" | "rate_limit_exceeded" => {
                 "OpenAI's usage or billing limit was reached."
             }
-            "model_not_found" => "This API key cannot access GPT Live Transcribe.",
+            "model_not_found" if model == "gpt-live-transcribe" => {
+                "This API key cannot access GPT Live Transcribe."
+            }
+            "model_not_found" => "This API key cannot access GPT Transcribe.",
             _ => "OpenAI could not transcribe this recording. Check model access and try again.",
         }
         .into());
@@ -99,25 +107,33 @@ mod tests {
         assert_eq!(transcript.text, "Hello world!\nNext line");
     }
     #[test]
-    fn uses_single_manual_turn_and_current_live_transcribe_schema() {
-        let config = configuration();
-        let input = &config["session"]["audio"]["input"];
-        assert_eq!(input["format"]["rate"], 24000);
-        assert_eq!(input["transcription"]["model"], "gpt-live-transcribe");
-        assert_eq!(input["transcription"]["delay"], "high");
-        assert!(input["turn_detection"].is_null());
-        assert!(input["transcription"].get("language").is_none());
+    fn both_models_use_single_manual_turn() {
+        for model in ["gpt-transcribe", "gpt-live-transcribe"] {
+            let config = configuration(model);
+            let input = &config["session"]["audio"]["input"];
+            assert_eq!(input["format"]["rate"], 24000);
+            assert_eq!(input["transcription"]["model"], model);
+            if model == "gpt-live-transcribe" {
+                assert_eq!(input["transcription"]["delay"], "high");
+            } else {
+                assert!(input["transcription"].get("delay").is_none());
+            }
+            assert!(input["turn_detection"].is_null());
+            assert!(input["transcription"].get("language").is_none());
+        }
     }
     #[test]
     fn server_error_never_echoes_untrusted_details() {
         let error = check_error(
             &json!({"type":"error","error":{"code":"invalid_api_key","message":"SECRET"}}),
+            "gpt-transcribe",
         )
         .unwrap_err();
         assert!(!error.contains("SECRET"));
-        assert!(
-            check_error(&json!({"type":"conversation.item.input_audio_transcription.failed"}))
-                .is_err()
-        );
+        assert!(check_error(
+            &json!({"type":"conversation.item.input_audio_transcription.failed"}),
+            "gpt-transcribe"
+        )
+        .is_err());
     }
 }

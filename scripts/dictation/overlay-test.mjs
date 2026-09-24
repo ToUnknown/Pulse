@@ -171,3 +171,15 @@ assert.equal(nodes['#words'].textContent,'');
 sandbox.render({id:20,phase:'done',text:'Old words'});
 assert.equal(body.dataset.phase,'listening','old completion cannot replace a new recording');
 console.log('PASS: silent completion and new-session reset');
+
+sandbox.window.pulseDictationStart(22,28,'default');
+sandbox.render({id:22,mode:'default',phase:'listening',text:'Hidden transcript'});
+assert.equal(body.dataset.mode,'default');
+assert.equal(body.dataset.expanded,'false','Default never expands the transcript while dictating');
+sandbox.render({id:22,mode:'default',phase:'finalizing',text:'Final transcript'});
+assert.equal(body.dataset.expanded,'false','Default stays pill-only after recording');
+sandbox.window.pulseDictationStart(23,28,'live');
+sandbox.render({id:23,mode:'live',phase:'listening',text:'Visible transcript'});
+assert.equal(body.dataset.expanded,'true','Live expands the transcript as words arrive');
+assert.match(css,/body\[data-mode="default"\] #transcript\s*\{[^}]*visibility:\s*hidden/, 'Default also hides the transcript material');
+console.log('PASS: Default pill-only output and Live transcript expansion');

@@ -38,7 +38,7 @@ async fn openai_request(body: Value) -> Result<String, String> {
     if !response.status().is_success() {
         return Err(match response.status().as_u16() {
             401 => "The OpenAI API key was rejected. Update the shared key in Settings.",
-            403 | 404 => "This API key does not have access to GPT-5.6 Luna.",
+            403 | 404 => "This API key does not have access to GPT-6 Luna.",
             429 => "OpenAI usage or rate limit reached. Check your API billing or try again later.",
             _ => "OpenAI could not complete the request. Try again shortly.",
         }

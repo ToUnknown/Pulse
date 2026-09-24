@@ -88,6 +88,7 @@ extern "C" {
 }
 struct Session {
     id: u64,
+    mode: TranscriptionMode,
     audio: Option<mpsc::Sender<Vec<u8>>>,
     cancel: CancellationToken,
     error: Option<String>,
@@ -97,6 +98,26 @@ struct Session {
     samples: u64,
     bottom: f64,
     delivery: FinalDelivery,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptionMode {
+    Default,
+    Live,
+}
+impl TranscriptionMode {
+    fn setting(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Live => "live",
+        }
+    }
+    fn model(self) -> &'static str {
+        match self {
+            Self::Default => "gpt-transcribe",
+            Self::Live => "gpt-live-transcribe",
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinalDelivery {
@@ -108,6 +129,7 @@ enum FinalDelivery {
 struct Dictation {
     hold_shortcut: Mutex<shortcut::HoldShortcut>,
     enabled: AtomicBool,
+    mode: Mutex<TranscriptionMode>,
     next_id: AtomicU64,
     session: Mutex<Option<Session>>,
     startup_error: Mutex<Option<String>>,
@@ -177,10 +199,19 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     let enabled = std::fs::read_to_string(app.path().app_config_dir()?.join("dictation-enabled"))
         .is_ok_and(|value| value == "true")
         && crate::openai_credentials::is_configured().unwrap_or(false);
+    let mode = std::fs::read_to_string(app.path().app_config_dir()?.join("dictation-mode"))
+        .ok()
+        .and_then(|value| match value.as_str() {
+            "default" => Some(TranscriptionMode::Default),
+            "live" => Some(TranscriptionMode::Live),
+            _ => None,
+        })
+        .unwrap_or(TranscriptionMode::Default);
     let _ = APP.set(app.clone());
     app.manage(Dictation {
         hold_shortcut: Mutex::new(shortcut::HoldShortcut::default()),
         enabled: AtomicBool::new(enabled),
+        mode: Mutex::new(mode),
         next_id: AtomicU64::new(1),
         session: Mutex::new(None),
         startup_error: Mutex::new(None),
@@ -246,8 +277,23 @@ pub fn dictation_settings(app: tauri::AppHandle, window: WebviewWindow) -> Resul
         *error = None;
     }
     Ok(
-        json!({"enabled":state.enabled.load(Ordering::Acquire), "shortcut":SHORTCUT, "microphone":microphone, "accessibility":accessibility, "apiKeyConfigured":api_key, "error":*error}),
+        json!({"enabled":state.enabled.load(Ordering::Acquire), "mode":*state.mode.lock().unwrap(), "shortcut":SHORTCUT, "microphone":microphone, "accessibility":accessibility, "apiKeyConfigured":api_key, "error":*error}),
     )
+}
+#[tauri::command]
+pub fn set_dictation_mode(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    mode: TranscriptionMode,
+) -> Result<(), String> {
+    settings_only(&window)?;
+    let state = app.state::<Dictation>();
+    let path = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&path)
+        .and_then(|_| std::fs::write(path.join("dictation-mode"), mode.setting()))
+        .map_err(|_| "Could not save Dictation settings.")?;
+    *state.mode.lock().unwrap() = mode;
+    Ok(())
 }
 #[tauri::command]
 pub async fn request_dictation_access(
@@ -410,7 +456,7 @@ pub fn dictation_snapshot(app: tauri::AppHandle, window: WebviewWindow) -> Resul
     let guard = state.session.lock().unwrap();
     Ok(match guard.as_ref() {
         Some(s) => {
-            json!({"id":s.id,"phase":s.phase,"text":s.text,"level":s.level,"samples":s.samples,"bottom":s.bottom})
+            json!({"id":s.id,"mode":s.mode,"phase":s.phase,"text":s.text,"level":s.level,"samples":s.samples,"bottom":s.bottom})
         }
         None => json!({"phase":"idle"}),
     })
@@ -507,9 +553,11 @@ fn start(app: &tauri::AppHandle) {
     }
     let (tx, rx) = mpsc::channel(256); // Bound the microphone's startup/network backlog.
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
+    let mode = *state.mode.lock().unwrap();
     let token = CancellationToken::new();
     *state.session.lock().unwrap() = Some(Session {
         id,
+        mode,
         audio: Some(tx),
         cancel: token.clone(),
         error: None,
@@ -520,7 +568,10 @@ fn start(app: &tauri::AppHandle) {
         bottom,
         delivery: FinalDelivery::Pending,
     });
-    let _ = window.eval(format!("window.pulseDictationStart?.({id}, {bottom});"));
+    let _ = window.eval(format!(
+        "window.pulseDictationStart?.({id}, {bottom}, '{}');",
+        mode.setting()
+    ));
     let _ = window.set_ignore_cursor_events(true);
     let mic = unsafe { pulse_dictation_mic_allowed() };
     let (ready, capture) = oneshot::channel();
@@ -548,7 +599,7 @@ fn start(app: &tauri::AppHandle) {
         } else {
             tokio::select! {
                 _ = token.cancelled() => Err("cancelled".into()),
-                result = transcribe(&app, id, rx) => result,
+                result = transcribe(&app, id, mode, rx) => result,
             }
         };
         finish(app, id, result).await;
@@ -606,6 +657,7 @@ fn update_text(app: &tauri::AppHandle, id: u64, text: &str) {
 async fn transcribe(
     app: &tauri::AppHandle,
     id: u64,
+    mode: TranscriptionMode,
     audio: mpsc::Receiver<Vec<u8>>,
 ) -> Result<String, String> {
     let key = tauri::async_runtime::spawn_blocking(crate::openai_credentials::load)
@@ -623,20 +675,21 @@ async fn transcribe(
     drop(key);
     let (socket, _) = timeout(Duration::from_secs(12), connect_async(request)).await.map_err(|_| "Connecting to OpenAI timed out.")?
         .map_err(|_| "Could not connect to OpenAI. Check your API key, model access, and internet connection.")?;
-    stream_transcription(socket, audio, |text| update_text(app, id, text)).await
+    stream_transcription(socket, mode, audio, |text| update_text(app, id, text)).await
 }
 
 async fn stream_transcription(
     mut socket: Socket,
+    mode: TranscriptionMode,
     mut audio: mpsc::Receiver<Vec<u8>>,
     mut on_text: impl FnMut(&str),
 ) -> Result<String, String> {
     // This is a Realtime transcription session, not a GPT-Live voice-agent session.
-    send(&mut socket, protocol::configuration()).await?;
+    send(&mut socket, protocol::configuration(mode.model())).await?;
     timeout(Duration::from_secs(10), async {
         loop {
             let event = receive(&mut socket).await?;
-            protocol::check_error(&event)?;
+            protocol::check_error(&event, mode.model())?;
             if matches!(
                 event["type"].as_str(),
                 Some("session.updated" | "transcription_session.updated")
@@ -667,14 +720,21 @@ async fn stream_transcription(
                     if samples < 2400 { send(&mut socket,json!({"type":"input_audio_buffer.append","audio":BASE64.encode(vec![0u8;(2400-samples)*2])})).await?; }
                     send(&mut socket,json!({"type":"input_audio_buffer.commit"})).await?;
                     committed = true;
-                    deadline = Instant::now() + Duration::from_secs(20);
+                    // GPT Transcribe starts work only after commit, so longer
+                    // recordings need more time than the live model's final turn.
+                    deadline = Instant::now() + Duration::from_secs(match mode {
+                        TranscriptionMode::Default => 120,
+                        TranscriptionMode::Live => 20,
+                    });
                 }
             }
             event = receive(&mut socket) => {
                 let event = event?;
-                protocol::check_error(&event)?;
+                protocol::check_error(&event, mode.model())?;
                 if let Some(done) = transcript.accept(&event)? {
-                    on_text(&transcript.text);
+                    if mode == TranscriptionMode::Live || done {
+                        on_text(&transcript.text);
+                    }
                     if done && committed { return Ok(transcript.text); }
                 }
             }
@@ -842,7 +902,10 @@ mod tests {
             let configuration: Value =
                 serde_json::from_str(&socket.next().await.unwrap().unwrap().into_text().unwrap())
                     .unwrap();
-            assert_eq!(configuration, protocol::configuration());
+            assert_eq!(
+                configuration,
+                protocol::configuration("gpt-live-transcribe")
+            );
             // Even already-buffered audio must wait for session configuration.
             assert!(timeout(Duration::from_millis(40), socket.next())
                 .await
@@ -889,11 +952,63 @@ mod tests {
         drop(tx); // Key released before the connection was ready.
         let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
         let mut shown = Vec::new();
-        let result = stream_transcription(socket, rx, |text| shown.push(text.to_owned()))
-            .await
-            .unwrap();
+        let result = stream_transcription(socket, TranscriptionMode::Live, rx, |text| {
+            shown.push(text.to_owned())
+        })
+        .await
+        .unwrap();
         assert_eq!(result, "Hello!");
         assert_eq!(shown, ["Hallo", "Hello!"]);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn default_waits_for_final_transcript_before_display() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let config: Value =
+                serde_json::from_str(&socket.next().await.unwrap().unwrap().into_text().unwrap())
+                    .unwrap();
+            assert_eq!(config, protocol::configuration("gpt-transcribe"));
+            socket
+                .send(Message::Text(
+                    json!({"type":"session.updated"}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            let append: Value =
+                serde_json::from_str(&socket.next().await.unwrap().unwrap().into_text().unwrap())
+                    .unwrap();
+            assert_eq!(append["type"], "input_audio_buffer.append");
+            let commit: Value =
+                serde_json::from_str(&socket.next().await.unwrap().unwrap().into_text().unwrap())
+                    .unwrap();
+            assert_eq!(commit["type"], "input_audio_buffer.commit");
+            for event in [
+                json!({"type":"conversation.item.input_audio_transcription.delta","item_id":"one","delta":"Partial"}),
+                json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"one","transcript":"Final text"}),
+            ] {
+                socket
+                    .send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+        });
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(vec![1; 4800]).await.unwrap();
+        drop(tx);
+        let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let mut shown = Vec::new();
+        let result = stream_transcription(socket, TranscriptionMode::Default, rx, |text| {
+            shown.push(text.to_owned())
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, "Final text");
+        assert_eq!(shown, ["Final text"]);
         server.await.unwrap();
     }
 
@@ -935,7 +1050,10 @@ mod tests {
             };
             let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
             let mut partial = String::new();
-            let result = stream_transcription(socket, rx, |text| partial = text.to_owned()).await;
+            let result = stream_transcription(socket, TranscriptionMode::Live, rx, |text| {
+                partial = text.to_owned()
+            })
+            .await;
             if empty {
                 assert_eq!(result.unwrap(), "");
             } else {

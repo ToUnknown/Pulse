@@ -1,6 +1,7 @@
 const invoke = window.__TAURI__?.core.invoke;
 const section = document.querySelector("#dictation-section");
 const enabled = document.querySelector("#dictation-enabled");
+const mode = document.querySelector("#dictation-mode");
 const error = document.querySelector("#dictation-error");
 const microphone = document.querySelector("#dictation-microphone");
 const accessibility = document.querySelector("#dictation-accessibility");
@@ -22,6 +23,8 @@ async function refresh() {
     section.hidden = false;
     enabled.disabled = !state.apiKeyConfigured;
     enabled.checked = state.enabled && state.apiKeyConfigured;
+    mode.value = state.mode || "default";
+    mode.disabled = false;
     document.querySelector("#dictation-description").textContent = state.apiKeyConfigured
       ? `Turn your voice into text. Tap ${state.shortcut} to start or stop, or hold it while speaking.`
       : "Add your OpenAI API key below to enable Dictation.";
@@ -34,18 +37,20 @@ async function refresh() {
 async function act(command, args) {
   if (!invoke || busy) return;
   busy = true; revision++; actionError = "";
-  enabled.disabled = microphone.disabled = accessibility.disabled = true;
+  enabled.disabled = mode.disabled = microphone.disabled = accessibility.disabled = true;
   showError("");
   try { await invoke(command, args); }
   catch (reason) { actionError = String(reason); showError(actionError); }
   finally {
     busy = false;
     enabled.disabled = !configured;
+    mode.disabled = false;
     microphone.disabled = accessibility.disabled = false;
     await refresh();
   }
 }
 enabled.addEventListener("change", () => act("set_dictation_enabled", {enabled:enabled.checked}));
+mode.addEventListener("change", () => act("set_dictation_mode", {mode:mode.value}));
 microphone.addEventListener("click", () => act("request_dictation_access", {microphone:true}));
 accessibility.addEventListener("click", () => act("request_dictation_access", {microphone:false}));
 refresh();
