@@ -152,6 +152,7 @@ export function render(next) {
     body.dataset.copied = "false";
   }
   snapshot = next;
+  body.dataset.mode = next.mode || (freshSession ? "live" : body.dataset.mode || "live");
   if (next.phase === "copied") body.dataset.copied = "true";
   const copyMessage = body.dataset.copied === "true" ? "Copied to clipboard" : "";
   if (copyLabel.textContent !== copyMessage) copyLabel.textContent = copyMessage;
@@ -159,7 +160,7 @@ export function render(next) {
   // All recording and delivery states stay in the same bottom-center overlay.
   if (next.samples !== lastSamples) { waveTime = performance.now(); lastSamples = next.samples; }
   setText(next.text || "");
-  body.dataset.expanded = String(!!next.text);
+  body.dataset.expanded = String(body.dataset.mode === "live" && !!next.text);
   body.dataset.phase = next.phase;
   if (freshSession) {
     // Resolve the bottom position before revealing a reused overlay.
@@ -219,7 +220,7 @@ async function poll() {
 }
 requestAnimationFrame(frame);
 if (invoke) {
-  window.pulseDictationStart = (sessionId, bottom) => render({ id: sessionId, bottom, phase: "listening", text: "", level: 0 });
+  window.pulseDictationStart = (sessionId, bottom, mode = "live") => render({ id: sessionId, bottom, mode, phase: "listening", text: "", level: 0 });
   poll();
 }
 // Browser-only visual fixture. Native sessions never accept URL-driven state.

@@ -8,6 +8,7 @@ body[data-phase="done"] #dictation { transition: opacity .22s ease .1s, transfor
 /* A conventional text box grows upward while the pill stays in place. */
 #transcript { position: absolute; bottom: calc(100% + 10px); width: 100%; padding: 12px 14px; color: var(--ink); background: var(--paper); border: 1px solid var(--panel-border); border-radius: 14px; box-shadow: 0 5px 18px rgba(0,0,0,.12); opacity: 0; overflow: hidden; transform: translateY(4px); transition: opacity .28s ease, transform .32s cubic-bezier(.22,.8,.25,1); }
 body[data-expanded="true"]:is([data-phase="listening"],[data-phase="finalizing"],[data-phase="sending"]) #transcript { opacity: 1; transform: none; }
+body[data-mode="default"] #transcript { visibility: hidden; opacity: 0; }
 #text-viewport { position: relative; height: 0; max-height: 100px; overflow: clip; overflow-anchor: none; }
 #words { margin: 0; font-size: 13px; line-height: 20px; font-weight: 500; letter-spacing: -.1px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .word { display: inline-block; max-width: 100%; vertical-align: top; }

@@ -4,7 +4,7 @@
 
 - `src-tauri/src/dictation/shortcut.rs` interprets physical Right Option/Right Alt events as tap-to-toggle or hold-to-record. Other input does not stop hands-free recording; Windows preserves AltGr.
 - `mod.rs` owns one recording session, bounded audio buffering, the OpenAI connection, final delivery, and overlay commands. Session IDs prevent old network/UI callbacks from completing a newer recording.
-- `protocol.rs` configures PCM16 mono at 24 kHz, `gpt-live-transcribe`, high delay, and explicit commit on stop. Partial text is display-only; final text is delivered once.
+- `protocol.rs` configures PCM16 mono at 24 kHz and explicit commit on stop. Default uses `gpt-transcribe` after the commit and keeps the transcript box hidden; Live uses `gpt-live-transcribe` with high delay and shows partial words. Final text is delivered once in either mode.
 - `native.m` and `windows.cpp` provide platform shortcuts, capture, current editable-field detection, Unicode input, clipboard fallback, and window behavior.
 - `src/dictation.js` and `src/dictation.css` render the passive bottom-center overlay. A shared height spring grows the box to five lines and scrolls older text; the waveform uses only the current microphone level.
 
