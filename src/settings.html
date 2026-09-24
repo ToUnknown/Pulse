@@ -28,11 +28,10 @@
           <h2 id="general-heading">General</h2>
           <div class="setting-row">
             <span class="setting-copy">
-              <span class="setting-feature-icon setting-feature-icon-login" aria-hidden="true">
-                <svg viewBox="0 0 32 32">
-                  <circle cx="16" cy="16" r="13"></circle>
-                  <path d="M16 8.5v7"></path>
-                  <path d="M9.87 10.86A8 8 0 1 0 22.13 10.86"></path>
+              <span class="setting-feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 5.5v11"></path>
+                  <path d="M9.2 8.8a10 10 0 1 0 13.6 0"></path>
                 </svg>
               </span>
               <span class="setting-text">
@@ -50,7 +49,7 @@
           <div class="extractor-settings-card">
             <div class="setting-row extractor-toggle-row">
               <span class="setting-copy">
-                <span class="setting-feature-icon dictation-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><g fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="13" y="7" width="6" height="12" rx="3"/><path d="M9.5 15.5v1a6.5 6.5 0 0 0 13 0v-1M16 23v3m-3 0h6"/></g></svg></span>
+                <span class="setting-feature-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="13" y="5" width="6" height="14" rx="3"/><path d="M9 15.5v1a7 7 0 0 0 14 0v-1M16 23.5V27m-4 0h8"/></svg></span>
                 <span class="setting-text"><strong id="dictation-toggle-label">Tap or hold to dictate</strong><small id="dictation-description" hidden>Add your OpenAI API key below to enable Dictation.</small></span>
               </span>
               <input id="dictation-enabled" type="checkbox" role="switch" aria-labelledby="dictation-toggle-label" aria-describedby="dictation-description" disabled />
@@ -79,7 +78,7 @@
           <div class="extractor-settings-card">
             <div class="setting-row extractor-toggle-row">
               <span class="setting-copy">
-                <span class="setting-feature-icon extractor-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><path d="M10 12V9h12v3M16 9v14m-3 0h6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <span class="setting-feature-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11V7h16v4M16 7v18m-4 0h8"/></svg></span>
                 <span class="setting-text"><strong id="extractor-toggle-label">Extract text from your screen</strong><small id="extractor-description" hidden></small></span>
               </span>
               <input id="text-extractor-enabled" type="checkbox" role="switch" aria-labelledby="extractor-toggle-label" disabled />
@@ -129,7 +128,10 @@
           <div class="api-key-card">
             <form id="openai-key-form" class="api-key-form">
               <div class="api-key-heading">
-                <img class="api-key-icon" src="translation-icons/key-icon-yellow.svg" alt="" aria-hidden="true" />
+                <svg class="api-key-icon" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="16" cy="11" r="6" />
+                  <path d="M16 17v10l3-2.5-3-2.5 3-2.5-3-2.5" />
+                </svg>
                 <div class="api-key-copy">
                   <label for="openai-api-key">OpenAI API key</label>
                   <small id="extractor-key-status" role="status" aria-live="polite">Loading…</small>
@@ -162,17 +164,9 @@
           <div class="setting-row schedule-row">
             <span class="setting-copy">
               <span class="setting-feature-icon" aria-hidden="true">
-                <svg viewBox="0 0 32 32">
-                  <circle cx="16" cy="16" r="13" fill="#00A6A6"></circle>
-                  <circle cx="16" cy="16" r="7" fill="none" stroke="#FFF" stroke-width="2.4"></circle>
-                  <path
-                    d="M16 11.5V16l3.2 2.2"
-                    fill="none"
-                    stroke="#FFF"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2.4"
-                  ></path>
+                <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="16" cy="16" r="11"></circle>
+                  <path d="M16 10v6l4 2.5"></path>
                 </svg>
               </span>
               <span class="setting-text">
@@ -214,15 +208,11 @@
           <div class="setting-row">
             <span class="setting-copy">
               <span class="setting-feature-icon" aria-hidden="true">
-                <svg viewBox="0 0 32 32">
-                  <circle cx="16" cy="16" r="13" fill="#FF9500"></circle>
-                  <path
-                    d="M16.1 7.2c-5.25 0-9.35 3.7-9.35 8.65 0 4.85 3.9 8.65 8.75 8.95 1.65.1 2.55-1.45 1.8-2.7-.55-.9.1-2.05 1.15-2.05h1.35c3.15 0 5.7-2.45 5.7-5.5 0-4.15-4.05-7.35-9.4-7.35Z"
-                    fill="#FFF"
-                  ></path>
-                  <circle cx="11.3" cy="13.2" r="1.35" fill="#FF9500"></circle>
-                  <circle cx="15.7" cy="10.9" r="1.35" fill="#FF9500"></circle>
-                  <circle cx="20.4" cy="12.65" r="1.35" fill="#FF9500"></circle>
+                <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 5.5C9.7 5.5 5 10.1 5 16c0 6.1 4.8 10.5 10.8 10.5h1.6c1.7 0 2.7-1.8 1.8-3.2-.6-.9 0-2.1 1.1-2.1h1.8c3.5 0 6-2.9 6-6.4C27 10 22.4 5.5 16 5.5Z"></path>
+                  <circle cx="10.8" cy="15" r="1" fill="currentColor" stroke="none"></circle>
+                  <circle cx="15" cy="11" r="1" fill="currentColor" stroke="none"></circle>
+                  <circle cx="20" cy="12.5" r="1" fill="currentColor" stroke="none"></circle>
                 </svg>
               </span>
               <span class="setting-text">

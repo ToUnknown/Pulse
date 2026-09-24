@@ -76,12 +76,15 @@ main {
 }
 
 h2 {
-  margin: 0 0 8px 4px;
-  color: var(--secondary-text);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .settings-group {
@@ -127,26 +130,6 @@ h2 {
   display: block;
   width: 100%;
   height: 100%;
-}
-
-.setting-feature-icon-login {
-  color: #ff3b30;
-  transition: color 120ms ease;
-}
-
-.setting-feature-icon-login circle {
-  fill: currentColor;
-}
-
-.setting-feature-icon-login path {
-  fill: none;
-  stroke: #fff;
-  stroke-linecap: round;
-  stroke-width: 2.8;
-}
-
-.setting-row:has(#start-at-login:checked) .setting-feature-icon-login {
-  color: #34c759;
 }
 
 .setting-row strong {
@@ -276,7 +259,6 @@ input:focus-visible,
   height: 28px;
   flex: none;
   place-items: center;
-  border-radius: 50%;
 }
 
 .time-icon svg {
@@ -287,21 +269,6 @@ input:focus-visible,
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
-}
-
-.time-icon-light {
-  color: #a96500;
-  background: #fff0c9;
-}
-
-.time-icon-dark {
-  color: #536cd6;
-  background: #e5e9ff;
-}
-
-.time-icon-dark svg {
-  fill: currentColor;
-  stroke: none;
 }
 
 .schedule-controls select {
@@ -492,22 +459,6 @@ input:focus-visible,
   mask: var(--tray-icon-mask) center / contain no-repeat;
 }
 
-.tray-glyph-red {
-  color: #ff1f2d;
-}
-
-@media (prefers-color-scheme: dark) {
-  .time-icon-light {
-    color: #ffc45f;
-    background: #4d3a19;
-  }
-
-  .time-icon-dark {
-    color: #aab7ff;
-    background: #30395f;
-  }
-}
-
 #error {
   margin: -4px 4px 0;
   color: var(--error);
@@ -540,8 +491,6 @@ body::-webkit-scrollbar { display: none; }
 [hidden] { display: none !important; }
 .extractor-settings-card { border: 1px solid var(--border); border-radius: var(--card-radius); background: var(--surface); overflow: hidden; }
 .extractor-toggle-row { border: 0; border-radius: 0; }
-.extractor-icon { color: #637cf1; }
-.dictation-icon { color: #ff3b30; }
 .dictation-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 12px 0 14px; border-top: 1px solid var(--border); font-size: 12px; }
 .extractor-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 11px 0; border-top: 1px solid var(--border); font-size: 12px; }
 .dictation-mode-row > span, .extractor-detail-row > span { font-size: 14px; font-weight: 600; }
@@ -577,7 +526,7 @@ main { max-width: 720px; margin: 0 auto; }
 .settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: var(--card-radius); }
 .api-key-card { display: grid; gap: 14px; border: 1px solid var(--border); border-radius: var(--card-radius); padding: 16px; background: var(--surface); }
 .api-key-heading { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
-.api-key-icon { width: 36px; height: 36px; flex: none; padding: 2px; }
+.api-key-icon { width: 32px; height: 32px; flex: none; }
 .api-key-copy { display: grid; gap: 4px; min-width: 0; }
 .api-key-card label { font-size: 13px; font-weight: 600; }
 .api-key-card small { color: var(--secondary-text); font-size: 11px; line-height: 1.5; }

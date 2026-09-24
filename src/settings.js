@@ -25,9 +25,9 @@ function addHourOptions(select) {
   }
 }
 
-function addTrayGlyph(element, value) {
+function addTrayGlyph(element) {
   const glyph = document.createElement("span");
-  glyph.className = `tray-glyph${value === "red" ? " tray-glyph-red" : ""}`;
+  glyph.className = "tray-glyph";
   glyph.setAttribute("aria-hidden", "true");
   element.append(glyph);
 }
@@ -55,7 +55,7 @@ function enhanceSelect(select) {
   function fillOption(element, option) {
     element.replaceChildren();
     if (kind === "icon") {
-      addTrayGlyph(element, option.value);
+      addTrayGlyph(element);
     }
     const text = document.createElement("span");
     text.textContent = option.textContent;
