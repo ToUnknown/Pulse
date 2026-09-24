@@ -26,7 +26,7 @@
       <div id="page-general" class="settings-page" role="tabpanel" aria-labelledby="tab-general" tabindex="0">
         <section class="settings-group" aria-labelledby="general-heading">
           <h2 id="general-heading">General</h2>
-          <label class="setting-row">
+          <div class="setting-row">
             <span class="setting-copy">
               <span class="setting-feature-icon setting-feature-icon-login" aria-hidden="true">
                 <svg viewBox="0 0 32 32">
@@ -36,25 +36,25 @@
                 </svg>
               </span>
               <span class="setting-text">
-                <strong>Start at login</strong>
+                <strong id="start-at-login-label">Start at login</strong>
                 <small>Launch Pulse when you sign in.</small>
               </span>
             </span>
-            <input id="start-at-login" type="checkbox" />
-          </label>
+            <input id="start-at-login" type="checkbox" role="switch" aria-labelledby="start-at-login-label" />
+          </div>
         </section>
       </div>
       <div id="page-advanced" class="settings-page" role="tabpanel" aria-labelledby="tab-advanced" tabindex="0" hidden>
         <section id="dictation-section" class="settings-group" aria-labelledby="dictation-heading" hidden>
           <h2 id="dictation-heading">Dictation</h2>
           <div class="extractor-settings-card">
-            <label class="setting-row extractor-toggle-row">
+            <div class="setting-row extractor-toggle-row">
               <span class="setting-copy">
                 <span class="setting-feature-icon dictation-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><g fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="13" y="7" width="6" height="12" rx="3"/><path d="M9.5 15.5v1a6.5 6.5 0 0 0 13 0v-1M16 23v3m-3 0h6"/></g></svg></span>
-                <span class="setting-text"><strong>Tap or hold to dictate</strong><small id="dictation-description" hidden>Add your OpenAI API key below to enable Dictation.</small></span>
+                <span class="setting-text"><strong id="dictation-toggle-label">Tap or hold to dictate</strong><small id="dictation-description" hidden>Add your OpenAI API key below to enable Dictation.</small></span>
               </span>
-              <input id="dictation-enabled" type="checkbox" aria-describedby="dictation-description" disabled />
-            </label>
+              <input id="dictation-enabled" type="checkbox" role="switch" aria-labelledby="dictation-toggle-label" aria-describedby="dictation-description" disabled />
+            </div>
             <div id="dictation-modes" class="extractor-shortcuts" data-expanded="false" inert>
               <div class="extractor-shortcuts-inner">
                 <div class="dictation-mode-row">
@@ -77,13 +77,13 @@
         <section id="text-extractor-section" class="settings-group" aria-labelledby="extractor-heading" hidden>
           <h2 id="extractor-heading">Text Extractor</h2>
           <div class="extractor-settings-card">
-            <label class="setting-row extractor-toggle-row">
+            <div class="setting-row extractor-toggle-row">
               <span class="setting-copy">
                 <span class="setting-feature-icon extractor-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="currentColor"/><path d="M10 12V9h12v3M16 9v14m-3 0h6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                <span class="setting-text"><strong>Extract text from your screen</strong><small id="extractor-description" hidden></small></span>
+                <span class="setting-text"><strong id="extractor-toggle-label">Extract text from your screen</strong><small id="extractor-description" hidden></small></span>
               </span>
-              <input id="text-extractor-enabled" type="checkbox" disabled />
-            </label>
+              <input id="text-extractor-enabled" type="checkbox" role="switch" aria-labelledby="extractor-toggle-label" disabled />
+            </div>
             <div id="extractor-shortcuts" class="extractor-shortcuts" data-expanded="false" inert>
               <div class="extractor-shortcuts-inner">
                 <div class="extractor-detail-row">

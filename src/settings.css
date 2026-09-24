@@ -165,30 +165,30 @@ select {
 }
 
 input[type="checkbox"] {
-  display: grid;
-  width: 22px;
-  height: 22px;
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 26px;
   margin: 0;
-  place-items: center;
   appearance: none;
   -webkit-appearance: none;
   border: 1px solid var(--control-border);
-  border-radius: 50%;
+  border-radius: 999px;
   background: var(--control-background);
-  color: var(--settings-pill-text);
   cursor: pointer;
-  transition: background-color 160ms ease, border-color 160ms ease;
+  transition: background-color 220ms ease, border-color 220ms ease;
 }
 
 input[type="checkbox"]::before {
-  width: 6px;
-  height: 10px;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--settings-pill);
   content: "";
-  opacity: 0;
-  transform: translateY(-1px) rotate(45deg) scale(.7);
-  transition: opacity 160ms ease, transform 160ms ease;
+  transition: background-color 220ms ease, transform 260ms cubic-bezier(.2,.8,.2,1);
 }
 
 input[type="checkbox"]:checked {
@@ -197,13 +197,18 @@ input[type="checkbox"]:checked {
 }
 
 input[type="checkbox"]:checked::before {
-  opacity: 1;
-  transform: translateY(-1px) rotate(45deg) scale(1);
+  background: var(--settings-pill-text);
+  transform: translateX(18px);
 }
 
 input[type="checkbox"]:disabled {
   opacity: .5;
   cursor: default;
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
 }
 
 select {
@@ -539,6 +544,7 @@ body::-webkit-scrollbar { display: none; }
 .dictation-icon { color: #ff3b30; }
 .dictation-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 12px 0 14px; border-top: 1px solid var(--border); font-size: 12px; }
 .extractor-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 11px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.dictation-mode-row > span, .extractor-detail-row > span { font-size: 14px; font-weight: 600; }
 .extractor-detail-row + .extractor-detail-row { border-top: 0; padding-top: 0; }
 .settings-button { min-height: 36px; padding: 8px 15px; border: 1px solid var(--control-border); border-radius: 999px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
 .settings-button:hover { background: var(--control-hover); }
@@ -593,7 +599,9 @@ main { max-width: 720px; margin: 0 auto; }
   .settings-tab-highlight { color: HighlightText; }
   .settings-tabs button { color: CanvasText; }
   input[type="checkbox"] { border-color: CanvasText; background: Canvas; forced-color-adjust: none; }
+  input[type="checkbox"]::before { background: CanvasText; }
   input[type="checkbox"]:checked { border-color: Highlight; background: Highlight; color: HighlightText; }
+  input[type="checkbox"]:checked::before { background: HighlightText; }
 }
 
 .setting-row,
@@ -679,7 +687,7 @@ select,
 .extractor-shortcuts { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 280ms cubic-bezier(.2,.8,.2,1), opacity 200ms ease; }
 .extractor-shortcuts[data-expanded="true"] { grid-template-rows: 1fr; opacity: 1; }
 .extractor-shortcuts-inner { min-height: 0; overflow: hidden; }
-.extractor-detail-row { border-top: 0; gap: 10px; }
+.extractor-detail-row { gap: 10px; }
 .shortcut-controls { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .shortcut-button { width: 174px; max-width: 174px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .shortcut-mode { isolation: isolate; position: relative; display: grid; grid-template-columns: 1fr 1fr; flex: none; width: 144px; height: 34px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; corner-shape: var(--pill-corner-style); background: var(--control-hover); font-size: 10px; font-weight: 550; --mode-motion: 240ms cubic-bezier(.2,.8,.2,1); }
