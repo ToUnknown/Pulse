@@ -537,9 +537,7 @@ body::-webkit-scrollbar { display: none; }
 .extractor-toggle-row { border: 0; border-radius: 0; }
 .extractor-icon { color: #637cf1; }
 .dictation-icon { color: #ff3b30; }
-.dictation-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 12px 0 4px; border-top: 1px solid var(--border); font-size: 12px; }
-.dictation-mode-row select { min-width: 112px; }
-.dictation-mode-description { margin: 0; padding: 0 16px 14px; color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
+.dictation-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 12px 0 14px; border-top: 1px solid var(--border); font-size: 12px; }
 .extractor-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 11px 0; border-top: 1px solid var(--border); font-size: 12px; }
 .extractor-detail-row + .extractor-detail-row { border-top: 0; padding-top: 0; }
 .settings-button { min-height: 36px; padding: 8px 15px; border: 1px solid var(--control-border); border-radius: 999px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
