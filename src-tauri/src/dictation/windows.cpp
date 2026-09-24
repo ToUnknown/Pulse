@@ -186,7 +186,8 @@ static bool modifiersDown() {
     return ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|
         GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0;
 }
-extern "C" bool pulse_dictation_copy(const char *utf8);
+enum class ClipboardWrite { Failed, Changed, Written };
+static ClipboardWrite writeClipboardText(const char *utf8, const DWORD *expectedSequence, DWORD *writtenSequence);
 static ComPtr<IDataObject> previousClipboard;
 static DWORD temporarySequence;
 static bool pastePending;
@@ -224,17 +225,21 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
 
     HRESULT init=OleInitialize(nullptr);
     if (FAILED(init)) return -1;
+    DWORD before=GetClipboardSequenceNumber();
+    if (!before) { OleUninitialize(); return -1; }
     ComPtr<IDataObject> previous;
     if (FAILED(OleGetClipboard(previous.GetAddressOf()))) { OleUninitialize(); return -1; }
-    DWORD before=GetClipboardSequenceNumber();
+    // The data object and sequence must describe the same clipboard contents.
+    if (GetClipboardSequenceNumber()!=before) { OleUninitialize(); return 0; }
     if (modifiersDown() || GetForegroundWindow()!=foreground) { OleUninitialize(); return 0; }
-    if (!pulse_dictation_copy(utf8)) {
-        if (GetClipboardSequenceNumber()!=before) OleSetClipboard(previous.Get());
+    DWORD temporary=0;
+    ClipboardWrite written=writeClipboardText(utf8,&before,&temporary);
+    if (written==ClipboardWrite::Changed) { OleUninitialize(); return 0; }
+    if (written==ClipboardWrite::Failed) {
+        if (temporary && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
         OleUninitialize();
         return -1;
     }
-    DWORD temporary=GetClipboardSequenceNumber();
-    if (temporary==before) { OleSetClipboard(previous.Get()); OleUninitialize(); return -1; }
     if (modifiersDown() || GetForegroundWindow()!=foreground) {
         if (GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
         OleUninitialize();
@@ -252,6 +257,23 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
         OleUninitialize();
         return -1;
     }
+    if (sent<4) {
+        // A prefix may have pressed Ctrl (and V) without releasing them. The
+        // paste may already have fired, so never submit the transcript again.
+        INPUT releases[2]{};
+        UINT count=0;
+        if (sent==2) {
+            releases[count].type=INPUT_KEYBOARD;
+            releases[count].ki.wVk='V';
+            releases[count++].ki.dwFlags=KEYEVENTF_KEYUP;
+        }
+        releases[count].type=INPUT_KEYBOARD;
+        releases[count].ki.wVk=VK_CONTROL;
+        releases[count++].ki.dwFlags=KEYEVENTF_KEYUP;
+        for (UINT released=0, attempts=0; released<count && attempts<3; attempts++) {
+            released+=SendInput(count-released,releases+released,sizeof(INPUT));
+        }
+    }
     previousClipboard=previous;
     temporarySequence=temporary;
     pastePending=true;
@@ -263,22 +285,31 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
     }
     return 1;
 }
-extern "C" bool pulse_dictation_copy(const char *utf8) {
-    std::wstring text=utf16(utf8); if(text.empty()) return false;
+static ClipboardWrite writeClipboardText(const char *utf8, const DWORD *expectedSequence, DWORD *writtenSequence) {
+    std::wstring text=utf16(utf8); if(text.empty()) return ClipboardWrite::Failed;
     HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,(text.size()+1)*sizeof(wchar_t));
-    if (!memory) return false;
-    void *data=GlobalLock(memory); if(!data) { GlobalFree(memory); return false; }
+    if (!memory) return ClipboardWrite::Failed;
+    void *data=GlobalLock(memory); if(!data) { GlobalFree(memory); return ClipboardWrite::Failed; }
     memcpy(data,text.c_str(),(text.size()+1)*sizeof(wchar_t)); GlobalUnlock(memory);
-    bool copied=false;
+    ClipboardWrite result=ClipboardWrite::Failed;
     if (IsWindow(overlayWindow)) for (int attempt=0;attempt<5;attempt++) {
         if (OpenClipboard(overlayWindow)) {
-            if (EmptyClipboard()) copied=SetClipboardData(CF_UNICODETEXT,memory)!=nullptr;
+            // OpenClipboard excludes other writers until the transaction ends.
+            if (expectedSequence && GetClipboardSequenceNumber()!=*expectedSequence) {
+                result=ClipboardWrite::Changed;
+            } else if (EmptyClipboard()) {
+                if (SetClipboardData(CF_UNICODETEXT,memory)) result=ClipboardWrite::Written;
+                if (writtenSequence) *writtenSequence=GetClipboardSequenceNumber();
+            }
             CloseClipboard(); break;
         }
         Sleep(10);
     }
-    if (!copied) GlobalFree(memory);
-    return copied;
+    if (result!=ClipboardWrite::Written) GlobalFree(memory);
+    return result;
+}
+extern "C" bool pulse_dictation_copy(const char *utf8) {
+    return writeClipboardText(utf8,nullptr,nullptr)==ClipboardWrite::Written;
 }
 extern "C" void pulse_dictation_position(void *pointer,double *bottom) {
     HWND window=static_cast<HWND>(pointer);
