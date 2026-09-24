@@ -18,7 +18,7 @@ const element = () => ({
   scrollTo({top}){this.scrollTop=top;},
   getBoundingClientRect(){return {x:400,y:600,width:64,height:28};},
 });
-const body = element(), nodes = Object.fromEntries(['#transcript-backdrop','#waveform-backdrop','#words','#transcript','#text-viewport','#waveform','#waveform-shell','#dictation'].map(id=>[id,element()]));
+const body = element(), nodes = Object.fromEntries(['#transcript-backdrop','#waveform-backdrop','#words','#transcript','#text-viewport','#waveform','#waveform-shell','#dictation','#delivery-error'].map(id=>[id,element()]));
 const bars=[];
 let barStart;
 const drawing={setTransform(){},clearRect(){bars.length=0;},beginPath(){},moveTo(x,y){barStart=y;},lineTo(x,y){this.amplitude=y-barStart;},stroke(){bars.push({height:this.amplitude,alpha:this.globalAlpha});}};
@@ -67,8 +67,9 @@ for (const phase of ['listening','finalizing','sending']) {
   assert.equal(body.dataset.inline,undefined,'transcript remains visible above the pill');
   assert.equal(body.style['--anchor-x'],undefined,'input geometry is ignored');
 }
-sandbox.render({id:5,phase:'error',message:'Do not show this',text:''});
-console.log('PASS: bottom-center recording and delivery, visible transcript, silent errors');
+sandbox.render({id:5,phase:'error',message:'Could not copy the transcript to the clipboard.',text:''});
+assert.equal(nodes['#delivery-error'].textContent,'Could not copy the transcript to the clipboard.');
+console.log('PASS: bottom-center recording and delivery, visible clipboard error');
 
 sandbox.render({id:6,phase:'listening',samples:1,level:.12});
 sandbox.drawWave(100);

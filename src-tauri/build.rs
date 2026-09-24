@@ -18,6 +18,7 @@ fn main() {
             "CoreText",
             "AVFoundation",
             "ApplicationServices",
+            "Carbon",
         ] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }

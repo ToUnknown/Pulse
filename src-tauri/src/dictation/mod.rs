@@ -122,8 +122,20 @@ impl TranscriptionMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinalDelivery {
     Pending,
+    RetryCopy,
     // Clipboard contains the transcript and one Paste shortcut was attempted.
     Complete,
+    Failed,
+}
+impl FinalDelivery {
+    fn after_native_step(self, result: i32) -> Self {
+        match result {
+            0 => self,
+            1 => Self::Complete,
+            _ if self == Self::Pending => Self::RetryCopy,
+            _ => Self::Failed,
+        }
+    }
 }
 
 struct Dictation {
@@ -456,7 +468,7 @@ pub fn dictation_snapshot(app: tauri::AppHandle, window: WebviewWindow) -> Resul
     let guard = state.session.lock().unwrap();
     Ok(match guard.as_ref() {
         Some(s) => {
-            json!({"id":s.id,"mode":s.mode,"phase":s.phase,"text":s.text,"level":s.level,"samples":s.samples,"bottom":s.bottom})
+            json!({"id":s.id,"mode":s.mode,"phase":s.phase,"text":s.text,"message":if s.phase == "error" { s.error.as_deref() } else { None },"level":s.level,"samples":s.samples,"bottom":s.bottom})
         }
         None => json!({"phase":"idle"}),
     })
@@ -499,16 +511,21 @@ fn delivery_tick(app: &tauri::AppHandle, id: u64) {
         s.id == id
             && s.phase == "sending"
             && !s.cancel.is_cancelled()
-            && s.delivery == FinalDelivery::Pending
+            && matches!(
+                s.delivery,
+                FinalDelivery::Pending | FinalDelivery::RetryCopy
+            )
     }) else {
         return;
     };
     let text = CString::new(s.text.replace('\0', "")).unwrap();
-    s.delivery = match unsafe { pulse_dictation_final_step(text.as_ptr()) } {
-        0 => FinalDelivery::Pending,
-        1 => FinalDelivery::Complete,
-        _ => FinalDelivery::Pending,
-    };
+    s.delivery = s
+        .delivery
+        .after_native_step(unsafe { pulse_dictation_final_step(text.as_ptr()) });
+    if s.delivery == FinalDelivery::Failed {
+        s.error = Some("Could not copy the transcript to the clipboard.".into());
+        s.phase = "error";
+    }
 }
 
 extern "C" fn capture_ready(context: *mut c_void, started: bool) {
@@ -837,17 +854,32 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
                 };
                 if s.cancel.is_cancelled() {
                     s.phase = "done";
-                } else if s.delivery == FinalDelivery::Pending && !expired {
+                } else if s.delivery == FinalDelivery::Failed {
+                    return Ok(true);
+                } else if matches!(
+                    s.delivery,
+                    FinalDelivery::Pending | FinalDelivery::RetryCopy
+                ) && !expired
+                {
                     return Ok(false);
-                } else if s.delivery == FinalDelivery::Pending {
+                } else if matches!(
+                    s.delivery,
+                    FinalDelivery::Pending | FinalDelivery::RetryCopy
+                ) {
                     // A held modifier can outlive the dispatch window. Keep the
                     // transcript available even when Paste cannot be sent.
                     let text = CString::new(s.text.replace('\0', "")).unwrap();
-                    if !unsafe { pulse_dictation_copy(text.as_ptr()) } {
-                        *state.startup_error.lock().unwrap() =
-                            Some("Could not copy the transcript to the clipboard.".into());
+                    let attempts = if s.delivery == FinalDelivery::RetryCopy {
+                        1
+                    } else {
+                        2
+                    };
+                    if !(0..attempts).any(|_| unsafe { pulse_dictation_copy(text.as_ptr()) }) {
+                        s.error = Some("Could not copy the transcript to the clipboard.".into());
+                        s.phase = "error";
+                    } else {
+                        s.phase = "done";
                     }
-                    s.phase = "done";
                 } else {
                     s.phase = "done";
                 }
@@ -868,7 +900,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         .lock()
         .unwrap()
         .as_ref()
-        .map(|_| 400)
+        .map(|s| if s.phase == "error" { 2400 } else { 400 })
         .unwrap_or(0);
     tokio::time::sleep(Duration::from_millis(wait)).await;
     let handle = app.clone();
@@ -891,6 +923,15 @@ mod tests {
     use super::*;
 
     use tokio::net::TcpListener;
+
+    #[test]
+    fn clipboard_failure_gets_one_retry_then_stops() {
+        let retry = FinalDelivery::Pending.after_native_step(-1);
+        assert_eq!(retry, FinalDelivery::RetryCopy);
+        assert_eq!(retry.after_native_step(0), retry);
+        assert_eq!(retry.after_native_step(-1), FinalDelivery::Failed);
+        assert_eq!(retry.after_native_step(1), FinalDelivery::Complete);
+    }
 
     #[tokio::test]
     async fn release_during_connection_drains_audio_before_one_commit_and_final_replaces_partial() {

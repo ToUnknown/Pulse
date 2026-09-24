@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -188,16 +189,47 @@ bool pulse_dictation_copy(const char *utf8) {
     [board clearContents];
     return [board setString:text forType:NSPasteboardTypeString];
 }
+// Translate Command-V through the active input source. A fixed ANSI V key
+// position is not the Paste shortcut on every keyboard layout.
+static CGKeyCode PulseDictationPasteKeyForSource(TISInputSourceRef source) {
+    if (!source) return UINT16_MAX;
+    CFDataRef data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+    if (!data) return UINT16_MAX;
+    const UCKeyboardLayout *layout = (const UCKeyboardLayout *)CFDataGetBytePtr(data);
+    for (size_t i = 0; i < 2; i++) {
+        UInt32 modifiers = i == 0 ? (cmdKey >> 8) : 0;
+        for (UInt16 key = 0; key < 128; key++) {
+            UInt32 dead = 0;
+            UniChar chars[4] = {0};
+            UniCharCount length = 0;
+            OSStatus status = UCKeyTranslate(layout, key, kUCKeyActionDown, modifiers,
+                LMGetKbdType(), kUCKeyTranslateNoDeadKeysBit, &dead, 4, &length, chars);
+            if (status == noErr && length == 1 && (chars[0] == 'v' || chars[0] == 'V')) return key;
+        }
+    }
+    return UINT16_MAX;
+}
+static CGKeyCode PulseDictationPasteKey(void) {
+    TISInputSourceRef source = TISCopyCurrentKeyboardLayoutInputSource();
+    CGKeyCode key = PulseDictationPasteKeyForSource(source);
+    if (source) CFRelease(source);
+    if (key != UINT16_MAX) return key;
+    source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+    key = PulseDictationPasteKeyForSource(source);
+    if (source) CFRelease(source);
+    return key == UINT16_MAX ? 0x09 : key;
+}
 // 0 = wait for physical modifiers; 1 = copied and paste attempted; -1 = copy failed.
 int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
     if (!pulse_dictation_copy(utf8)) return -1;
 
+    CGKeyCode pasteKey = PulseDictationPasteKey();
     CGEventSourceRef source=CGEventSourceCreate(kCGEventSourceStatePrivate);
     CGEventRef events[4]={
         source ? CGEventCreateKeyboardEvent(source,0x37,true) : NULL,  // Command down
-        source ? CGEventCreateKeyboardEvent(source,0x09,true) : NULL,  // V down
-        source ? CGEventCreateKeyboardEvent(source,0x09,false) : NULL, // V up
+        source ? CGEventCreateKeyboardEvent(source,pasteKey,true) : NULL,
+        source ? CGEventCreateKeyboardEvent(source,pasteKey,false) : NULL,
         source ? CGEventCreateKeyboardEvent(source,0x37,false) : NULL  // Command up
     };
     bool ready=true;

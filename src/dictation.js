@@ -4,6 +4,7 @@ const words = document.querySelector("#words");
 const canvas = document.querySelector("#waveform");
 const shell = document.querySelector("#waveform-shell");
 const overlay = document.querySelector("#dictation");
+const deliveryError = document.querySelector("#delivery-error");
 const transcript = document.querySelector("#transcript");
 const textViewport = document.querySelector("#text-viewport");
 const transcriptBackdrop = document.querySelector("#transcript-backdrop");
@@ -150,6 +151,7 @@ export function render(next) {
     body.dataset.expanded = "false"; voice = 0;
   }
   snapshot = next;
+  deliveryError.textContent = next.phase === "error" ? next.message || "Could not copy the transcript." : "";
   body.dataset.mode = next.mode || (freshSession ? "live" : body.dataset.mode || "live");
   body.style.setProperty("--bottom", `${next.bottom || 28}px`);
   // All recording and delivery states stay in the same bottom-center overlay.
