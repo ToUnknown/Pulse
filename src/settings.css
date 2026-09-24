@@ -531,7 +531,7 @@ main { max-width: 720px; margin: 0 auto; }
 .settings-page { outline: none; animation: settings-page-in 220ms ease-out; }
 .settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: var(--card-radius); }
 .api-key-card { display: grid; gap: 14px; border: 1px solid var(--border); border-radius: var(--card-radius); padding: 16px; background: var(--surface); }
-.api-key-heading { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.api-key-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .api-key-icon { width: 32px; height: 32px; flex: none; }
 .api-key-copy { display: grid; gap: 4px; min-width: 0; }
 .api-key-card label { font-size: 13px; font-weight: 600; }

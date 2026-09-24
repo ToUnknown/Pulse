@@ -1,6 +1,7 @@
 const invoke = window.__TAURI__?.core.invoke;
 const section = document.querySelector("#dictation-section");
 const enabled = document.querySelector("#dictation-enabled");
+const toggleLabel = document.querySelector("#dictation-toggle-label");
 const modeDetails = document.querySelector("#dictation-modes");
 const mode = document.querySelector("#dictation-mode");
 const modeButtons = [...mode.querySelectorAll("button")];
@@ -36,6 +37,9 @@ async function refresh() {
     if (currentAccess !== accessState) actionError = "";
     accessState = currentAccess;
     configured = state.apiKeyConfigured;
+    toggleLabel.textContent = state.shortcut === "Right Alt"
+      ? "Tap or hold right Alt key to dictate"
+      : "Tap or hold right Option key to dictate";
     section.hidden = false;
     enabled.disabled = !state.apiKeyConfigured;
     const checked = state.enabled && state.apiKeyConfigured;

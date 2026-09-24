@@ -19,7 +19,7 @@ const deferred = () => {
 };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(overrides = {}) {
-  const ids = ['section','enabled','modes','mode','error','description','microphone','accessibility'];
+  const ids = ['section','enabled','toggle-label','modes','mode','error','description','microphone','accessibility'];
   const nodes = Object.fromEntries(ids.map(id => [id, {
     hidden:true, disabled:false, checked:false, value:'', textContent:'', dataset:{}, listeners:{}, attributes:{},
     addEventListener(name, listener) { this.listeners[name] = listener; },
@@ -68,6 +68,7 @@ async function fixture(overrides = {}) {
 }
 
 const modes = await fixture({enabled:true});
+assert.equal(modes.nodes['toggle-label'].textContent, 'Tap or hold right Option key to dictate');
 assert.equal(modes.nodes.modes.dataset.expanded,'true');
 assert.equal(modes.nodes.modes.inert,false);
 assert.equal(modes.nodes.description.hidden,true,'configured Dictation omits the generic description');
@@ -81,6 +82,8 @@ modes.state.mode='default';
 await modes.refresh();
 assert.equal(modes.selectedMode(),'default','model selection refreshes from persisted state');
 assert.equal(modes.nodes.mode.style['--mode-index'],0);
+const windows = await fixture({shortcut:'Right Alt'});
+assert.equal(windows.nodes['toggle-label'].textContent, 'Tap or hold right Alt key to dictate');
 modes.key('ArrowRight'); await settle();
 assert.equal(modes.selectedMode(),'live','keyboard navigation selects the second mode');
 const rejectedMode = await fixture({enabled:true});
