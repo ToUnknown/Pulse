@@ -18,7 +18,7 @@ const element = () => ({
   scrollTo({top}){this.scrollTop=top;},
   getBoundingClientRect(){return {x:400,y:600,width:64,height:28};},
 });
-const body = element(), nodes = Object.fromEntries(['#copy-label','#transcript-backdrop','#waveform-backdrop','#words','#transcript','#text-viewport','#waveform','#waveform-shell','#dictation'].map(id=>[id,element()]));
+const body = element(), nodes = Object.fromEntries(['#transcript-backdrop','#waveform-backdrop','#words','#transcript','#text-viewport','#waveform','#waveform-shell','#dictation'].map(id=>[id,element()]));
 const bars=[];
 let barStart;
 const drawing={setTransform(){},clearRect(){bars.length=0;},beginPath(){},moveTo(x,y){barStart=y;},lineTo(x,y){this.amplitude=y-barStart;},stroke(){bars.push({height:this.amplitude,alpha:this.globalAlpha});}};
@@ -49,12 +49,10 @@ await new Promise(resolve=>setImmediate(resolve));
 await Promise.resolve();
 assert.equal(body.dataset.phase,'listening','late old completion must not replace new recording');
 assert.equal(nodes['#words'].textContent,'');
-assert.equal(nodes['#copy-label'].textContent,'');
 assert.equal(body.dataset.nativeGlass,'true','native glass replaces CSS only after successful acknowledgement');
 assert.ok(calls.findIndex(c=>c.name==='dictation_glass') < calls.findIndex(c=>c.name==='dictation_overlay_ready'),'native glass is positioned before revealing the window');
 assert.deepEqual(calls.filter(c=>c.name==='dictation_overlay_ready').map(c=>c.args.sessionId),[2], 'hidden overlay must reset and request show without waiting for rAF');
 sandbox.render({id:2,phase:'done',text:'Final words',message:'Inserted'});
-assert.equal(nodes['#copy-label'].textContent,'','completion has no success tip');
 sandbox.window.pulseDictationStart(3,28);
 assert.equal(body.dataset.expanded,'false');
 assert.equal(nodes['#words'].textContent,'');
@@ -70,7 +68,6 @@ for (const phase of ['listening','finalizing','sending']) {
   assert.equal(body.style['--anchor-x'],undefined,'input geometry is ignored');
 }
 sandbox.render({id:5,phase:'error',message:'Do not show this',text:''});
-assert.equal(nodes['#copy-label'].textContent,'','errors never appear in the overlay');
 console.log('PASS: bottom-center recording and delivery, visible transcript, silent errors');
 
 sandbox.render({id:6,phase:'listening',samples:1,level:.12});
@@ -164,21 +161,13 @@ assert.equal(nodes['#waveform-backdrop'].style.opacity,'0');
 assert.equal(nodes['#transcript-backdrop'].style.opacity,'0');
 console.log('PASS: 24px backdrop padding and synchronized disappearance');
 
-// Clipboard feedback is a native-glass pill state, not an insertion success tip.
-sandbox.render({id:20,phase:'sending',text:'Fallback words'});
-sandbox.render({id:20,phase:'copied',text:'Fallback words'});
-assert.equal(body.dataset.copied,'true');
-assert.equal(nodes['#copy-label'].textContent,'Copied to clipboard');
-overlayOpacity='1';
-await sandbox.syncGlass();
-assert.equal(calls.at(-1).args.frame.opacity,1,'glass and backdrop stay visible throughout the copy morph');
-sandbox.render({id:20,phase:'done',text:'Fallback words'});
-assert.equal(body.dataset.copied,'true','confirmation shape survives the final fade');
+// Completion stays silent; the next session starts with a clean pill.
+sandbox.render({id:20,phase:'sending',text:'Final words'});
+sandbox.render({id:20,phase:'done',text:'Final words'});
+assert.equal(body.dataset.phase,'done');
 sandbox.window.pulseDictationStart(21,28);
-assert.equal(body.dataset.copied,'false');
-assert.equal(nodes['#copy-label'].textContent,'','new recording never flashes the previous clipboard message');
-sandbox.render({id:20,phase:'copied',text:'Old fallback'});
-assert.equal(body.dataset.phase,'listening','old clipboard completion cannot replace a new recording');
-sandbox.render({id:21,phase:'done',text:'Inserted words'});
-assert.equal(nodes['#copy-label'].textContent,'','successful field insertion remains silent');
-console.log('PASS: clipboard-only confirmation, native-glass visibility, fade shape and new-session reset');
+assert.equal(body.dataset.phase,'listening');
+assert.equal(nodes['#words'].textContent,'');
+sandbox.render({id:20,phase:'done',text:'Old words'});
+assert.equal(body.dataset.phase,'listening','old completion cannot replace a new recording');
+console.log('PASS: silent completion and new-session reset');

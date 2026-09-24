@@ -33,14 +33,7 @@ fn main() {
             .flag_if_supported("/utf-8")
             .compile("pulse_dictation_windows");
         println!("cargo:rerun-if-changed=src/dictation/windows.cpp");
-        for library in [
-            "ole32",
-            "oleaut32",
-            "uiautomationcore",
-            "user32",
-            "shell32",
-            "advapi32",
-        ] {
+        for library in ["ole32", "user32", "shell32", "advapi32"] {
             println!("cargo:rustc-link-lib={library}");
         }
     }

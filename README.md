@@ -39,7 +39,7 @@ Add your OpenAI API key and enable **Tap or hold to dictate** in Settings → Ad
 
 Recording shows a small voice-reactive pill and a transcript box with up to five visible lines at the bottom center. Hands-free recording continues while you type, click, or switch apps. No input field is tracked or edited during recording. Audio streams to OpenAI's `gpt-live-transcribe` with high delay; release/stop commits the recording and waits for the final text.
 
-Pulse pastes the completed transcript into the currently selected supported input. It briefly borrows the clipboard, then restores its previous contents if the clipboard has not changed meanwhile. If no suitable input is found or paste cannot be sent, Pulse leaves the transcript on the clipboard and briefly shows **Copied to clipboard**. Paste submission is not a universal insertion guarantee: some editors or Windows apps running with higher privileges may reject it. Clipboard history tools may also retain the temporary transcript.
+When dictation finishes, Pulse copies the completed transcript to the clipboard and sends one Paste shortcut to the active app. The transcript stays on the clipboard whether or not the app accepts Paste, replacing the previous clipboard contents. Some editors or Windows apps running with higher privileges may reject the shortcut.
 
 The macOS pill uses native clear glass on macOS 26 or a system material on older versions. Its outer blur uses optional private compositor APIs and has no tinted fallback when unavailable. Windows uses CSS styling; it does not currently blur other desktop windows behind the overlay. Both themes keep contrasting text and waveform colors.
 

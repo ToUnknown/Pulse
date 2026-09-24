@@ -2,9 +2,7 @@
 // state. No microphone, target field, or clipboard is touched while idle.
 #define NOMINMAX
 #include <windows.h>
-#include <uiautomation.h>
 #include <mmdeviceapi.h>
-#include <ole2.h>
 #include <audioclient.h>
 #include <shellapi.h>
 #include <wrl/client.h>
@@ -139,114 +137,23 @@ extern "C" void pulse_dictation_start_async(uint64_t id, Audio callback, void(*r
     });
 }
 
-static ComPtr<IUIAutomation> automation;
 static HWND overlayWindow;
 static std::wstring utf16(const char *text) {
+    if (!text) return {};
     int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,nullptr,0);
     if (!n) return {};
     std::wstring result(n,L'\0'); MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,result.data(),n);
     result.resize(n-1); return result;
 }
-static bool initAutomation() {
-    if (automation) return true;
-    HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-    if (FAILED(init) && init!=RPC_E_CHANGED_MODE) return false;
-    HRESULT hr=CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation));
-    if (SUCCEEDED(hr) && automation) {
-        ComPtr<IUIAutomation2> limits;
-        if (SUCCEEDED(automation.As(&limits)) && limits) { limits->put_ConnectionTimeout(250); limits->put_TransactionTimeout(250); }
-    }
-    return SUCCEEDED(hr) && automation;
-}
-enum class TextInput { Unknown, Rejected, Editable };
-static TextInput focusedTextInput() {
-    ComPtr<IUIAutomationElement> element;
-    if (!initAutomation() || FAILED(automation->GetFocusedElement(&element)) || !element) return TextInput::Unknown;
-    BOOL password=FALSE, enabled=TRUE;
-    if ((SUCCEEDED(element->get_CurrentIsPassword(&password)) && password) ||
-        (SUCCEEDED(element->get_CurrentIsEnabled(&enabled)) && !enabled)) return TextInput::Rejected;
-    ComPtr<IUIAutomationValuePattern> value;
-    BOOL readOnly=TRUE;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&value))) && value &&
-        SUCCEEDED(value->get_CurrentIsReadOnly(&readOnly))) return readOnly ? TextInput::Rejected : TextInput::Editable;
-    ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) && text &&
-        SUCCEEDED(text->get_DocumentRange(&document)) && document) {
-        VARIANT attribute; VariantInit(&attribute);
-        bool known=SUCCEEDED(document->GetAttributeValue(UIA_IsReadOnlyAttributeId,&attribute)) && attribute.vt==VT_BOOL;
-        bool writable=known && attribute.boolVal==VARIANT_FALSE;
-        VariantClear(&attribute);
-        if (known) return writable ? TextInput::Editable : TextInput::Rejected;
-    }
-    CONTROLTYPEID type=0;
-    return SUCCEEDED(element->get_CurrentControlType(&type)) && type==UIA_EditControlTypeId
-        ? TextInput::Editable : TextInput::Unknown;
-}
 static bool modifiersDown() {
     return ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|
         GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0;
 }
-enum class ClipboardWrite { Failed, Changed, Written };
-static ClipboardWrite writeClipboardText(const char *utf8, const DWORD *expectedSequence, DWORD *writtenSequence);
-static ComPtr<IDataObject> previousClipboard;
-static DWORD temporarySequence;
-static bool pastePending;
-static void restoreClipboard() {
-    if (previousClipboard && temporarySequence && GetClipboardSequenceNumber()==temporarySequence) {
-        // If the user copied something newer, their clipboard always wins.
-        OleSetClipboard(previousClipboard.Get());
-    }
-    previousClipboard.Reset();
-    temporarySequence=0;
-    pastePending=false;
-    OleUninitialize();
-}
-static VOID CALLBACK finishPaste(HWND window, UINT message, UINT_PTR timer, DWORD time) {
-    (void)window; (void)message; (void)time;
-    KillTimer(nullptr,timer);
-    restoreClipboard();
-}
-// 0 = wait for physical modifiers; 1 = paste submitted; -1 = copy instead.
+extern "C" bool pulse_dictation_copy(const char *utf8);
+// 0 = wait for physical modifiers; 1 = copied and paste attempted; -1 = copy failed.
 extern "C" int pulse_dictation_final_step(const char *utf8) {
-    if (modifiersDown() || pastePending) return 0;
-    if (!utf8 || !*utf8) return -1;
-    HWND foreground=GetForegroundWindow();
-    if (!foreground) return -1;
-    TextInput inputKind=focusedTextInput();
-    GUITHREADINFO info{sizeof(info)};
-    DWORD thread=GetWindowThreadProcessId(foreground,nullptr);
-    bool haveInfo=thread && GetGUIThreadInfo(thread,&info);
-    if (GetForegroundWindow()!=foreground) return 0;
-    if (inputKind==TextInput::Rejected) return -1;
-    if (haveInfo && (info.flags&(GUI_INMENUMODE|GUI_INMOVESIZE))) return -1;
-    bool caret=haveInfo && info.hwndFocus && info.hwndCaret &&
-        (info.hwndFocus==info.hwndCaret || IsChild(info.hwndFocus,info.hwndCaret));
-    if (inputKind!=TextInput::Editable && !caret) return -1;
-
-    HRESULT init=OleInitialize(nullptr);
-    if (FAILED(init)) return -1;
-    DWORD before=GetClipboardSequenceNumber();
-    if (!before) { OleUninitialize(); return -1; }
-    ComPtr<IDataObject> previous;
-    // An empty or unavailable clipboard is not a reason to skip a focused
-    // editor. Paste once, but leave the transcript if nothing can be restored.
-    if (FAILED(OleGetClipboard(previous.GetAddressOf()))) previous.Reset();
-    // The data object and sequence must describe the same clipboard contents.
-    if (GetClipboardSequenceNumber()!=before) { OleUninitialize(); return 0; }
-    if (modifiersDown() || GetForegroundWindow()!=foreground) { OleUninitialize(); return 0; }
-    DWORD temporary=0;
-    ClipboardWrite written=writeClipboardText(utf8,&before,&temporary);
-    if (written==ClipboardWrite::Changed) { OleUninitialize(); return 0; }
-    if (written==ClipboardWrite::Failed) {
-        if (previous && temporary && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
-        OleUninitialize();
-        return -1;
-    }
-    if (modifiersDown() || GetForegroundWindow()!=foreground) {
-        if (previous && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
-        OleUninitialize();
-        return 0;
-    }
+    if (modifiersDown()) return 0;
+    if (!pulse_dictation_copy(utf8)) return -1;
 
     INPUT keys[4]{};
     keys[0].type=keys[1].type=keys[2].type=keys[3].type=INPUT_KEYBOARD;
@@ -254,12 +161,7 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
     keys[1].ki.wVk=keys[2].ki.wVk='V';
     keys[2].ki.dwFlags=keys[3].ki.dwFlags=KEYEVENTF_KEYUP;
     UINT sent=SendInput(4,keys,sizeof(INPUT));
-    if (!sent) {
-        if (previous && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
-        OleUninitialize();
-        return -1;
-    }
-    if (sent<4) {
+    if (sent>0 && sent<4) {
         // A prefix may have pressed Ctrl (and V) without releasing them. The
         // paste may already have fired, so never submit the transcript again.
         INPUT releases[2]{};
@@ -276,42 +178,25 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
             released+=SendInput(count-released,releases+released,sizeof(INPUT));
         }
     }
-    previousClipboard=previous;
-    temporarySequence=temporary;
-    pastePending=true;
-    if (!SetTimer(nullptr,0,250,finishPaste)) {
-        // Timers normally run on this UI thread. Keep restoration safe if one
-        // cannot be installed, at the cost of a brief finalization pause.
-        Sleep(250);
-        restoreClipboard();
-    }
     return 1;
 }
-static ClipboardWrite writeClipboardText(const char *utf8, const DWORD *expectedSequence, DWORD *writtenSequence) {
-    std::wstring text=utf16(utf8); if(text.empty()) return ClipboardWrite::Failed;
+extern "C" bool pulse_dictation_copy(const char *utf8) {
+    if (!utf8) return false;
+    std::wstring text=utf16(utf8); if(text.empty()) return false;
     HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,(text.size()+1)*sizeof(wchar_t));
-    if (!memory) return ClipboardWrite::Failed;
-    void *data=GlobalLock(memory); if(!data) { GlobalFree(memory); return ClipboardWrite::Failed; }
+    if (!memory) return false;
+    void *data=GlobalLock(memory); if(!data) { GlobalFree(memory); return false; }
     memcpy(data,text.c_str(),(text.size()+1)*sizeof(wchar_t)); GlobalUnlock(memory);
-    ClipboardWrite result=ClipboardWrite::Failed;
+    bool written=false;
     if (IsWindow(overlayWindow)) for (int attempt=0;attempt<5;attempt++) {
         if (OpenClipboard(overlayWindow)) {
-            // OpenClipboard excludes other writers until the transaction ends.
-            if (expectedSequence && GetClipboardSequenceNumber()!=*expectedSequence) {
-                result=ClipboardWrite::Changed;
-            } else if (EmptyClipboard()) {
-                if (SetClipboardData(CF_UNICODETEXT,memory)) result=ClipboardWrite::Written;
-                if (writtenSequence) *writtenSequence=GetClipboardSequenceNumber();
-            }
+            if (EmptyClipboard()) written=SetClipboardData(CF_UNICODETEXT,memory)!=nullptr;
             CloseClipboard(); break;
         }
         Sleep(10);
     }
-    if (result!=ClipboardWrite::Written) GlobalFree(memory);
-    return result;
-}
-extern "C" bool pulse_dictation_copy(const char *utf8) {
-    return writeClipboardText(utf8,nullptr,nullptr)==ClipboardWrite::Written;
+    if (!written) GlobalFree(memory);
+    return written;
 }
 extern "C" void pulse_dictation_position(void *pointer,double *bottom) {
     HWND window=static_cast<HWND>(pointer);

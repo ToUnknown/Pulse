@@ -176,76 +176,22 @@ void pulse_dictation_stop(void) {
     // lifecycle code may synchronously wait for AppKit from this queue.
     dispatch_sync(PulseDictationAudioQueue(), ^{ PulseDictationStopAudio(); });
 }
-static CFTypeRef attribute(AXUIElementRef element, CFStringRef name) {
-    CFTypeRef result = NULL;
-    AXUIElementCopyAttributeValue(element, name, &result);
-    return result;
-}
-static AXUIElementRef focusedElement(void) {
-    if (!AXIsProcessTrusted()) return NULL;
-    // System panels and webview helpers need not share the frontmost app's PID.
-    AXUIElementRef root=AXUIElementCreateSystemWide();
-    AXUIElementSetMessagingTimeout(root,0.25);
-    CFTypeRef value=attribute(root,kAXFocusedUIElementAttribute);
-    CFRelease(root);
-    if (value && CFGetTypeID(value)==AXUIElementGetTypeID()) return (AXUIElementRef)value;
-    if (value) CFRelease(value);
-    return NULL;
-}
-static bool editable(AXUIElementRef element) {
-    CFTypeRef role = attribute(element, kAXRoleAttribute);
-    CFTypeRef subrole = attribute(element, kAXSubroleAttribute);
-    CFTypeRef enabled = attribute(element, kAXEnabledAttribute);
-    CFTypeRef readOnly = attribute(element, CFSTR("AXEditable"));
-    Boolean selectedSettable = false;
-    AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute, &selectedSettable);
-    bool textRole = role && (CFEqual(role, kAXTextFieldRole) || CFEqual(role, kAXTextAreaRole) || CFEqual(role, kAXComboBoxRole));
-    bool valid = (textRole || selectedSettable || (readOnly && CFEqual(readOnly, kCFBooleanTrue)))
-        && !(subrole && CFEqual(subrole, kAXSecureTextFieldSubrole))
-        && !(enabled && CFEqual(enabled, kCFBooleanFalse))
-        && !(readOnly && CFEqual(readOnly, kCFBooleanFalse));
-    if (role) CFRelease(role);
-    if (subrole) CFRelease(subrole);
-    if (enabled) CFRelease(enabled);
-    if (readOnly) CFRelease(readOnly);
-    return valid;
-}
 static bool modifiersDown(void) {
     CGEventFlags flags=CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
     return (flags & (kCGEventFlagMaskAlternate | kCGEventFlagMaskCommand |
                      kCGEventFlagMaskControl | kCGEventFlagMaskShift)) != 0;
 }
-// Pasteboard items become stale when their owner changes. Copy each format's
-// bytes now, so a temporary transcript cannot erase the user's rich content.
-static NSArray<NSPasteboardItem *> *clipboardSnapshot(NSPasteboard *board) {
-    NSMutableArray<NSPasteboardItem *> *copies=[NSMutableArray array];
-    NSArray<NSPasteboardItem *> *items=board.pasteboardItems;
-    if (!items && board.types.count) return nil;
-    for (NSPasteboardItem *item in items ?: @[]) {
-        NSPasteboardItem *copy=[NSPasteboardItem new];
-        for (NSPasteboardType type in item.types) {
-            NSData *data=[item dataForType:type];
-            if (!data || ![copy setData:data forType:type]) return nil;
-        }
-        [copies addObject:copy];
-    }
-    return copies;
-}
-static void restoreClipboard(NSPasteboard *board, NSArray<NSPasteboardItem *> *items, NSInteger expectedChange) {
-    if (board.changeCount!=expectedChange) return; // The user copied something newer.
+bool pulse_dictation_copy(const char *utf8) {
+    NSString *text=[NSString stringWithUTF8String:utf8];
+    if (!text.length) return false;
+    NSPasteboard *board=NSPasteboard.generalPasteboard;
     [board clearContents];
-    if (items.count) [board writeObjects:items];
+    return [board setString:text forType:NSPasteboardTypeString];
 }
-// 0 = wait for physical modifiers/focus change; 1 = paste submitted; -1 = copy instead.
+// 0 = wait for physical modifiers; 1 = copied and paste attempted; -1 = copy failed.
 int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
-    NSString *text=[NSString stringWithUTF8String:utf8];
-    if (!text.length) return -1;
-    AXUIElementRef element=focusedElement();
-    if (!element) return -1;
-    bool input=editable(element);
-    CFRelease(element);
-    if (!input) return -1;
+    if (!pulse_dictation_copy(utf8)) return -1;
 
     CGEventSourceRef source=CGEventSourceCreate(kCGEventSourceStatePrivate);
     CGEventRef events[4]={
@@ -259,48 +205,17 @@ int pulse_dictation_final_step(const char *utf8) {
     if (!ready) {
         for (int i=0;i<4;i++) if (events[i]) CFRelease(events[i]);
         if (source) CFRelease(source);
-        return -1;
+        return 1; // The transcript remains available for manual paste.
     }
     for (int i=0;i<4;i++) {
         CGEventSetIntegerValueField(events[i],kCGEventSourceUserData,PulseDictationEventTag);
         CGEventSetFlags(events[i],i<3 ? kCGEventFlagMaskCommand : 0);
     }
 
-    NSPasteboard *board=NSPasteboard.generalPasteboard;
-    NSInteger previousChange=board.changeCount;
-    NSArray<NSPasteboardItem *> *previous=clipboardSnapshot(board);
-    AXUIElementRef current=focusedElement();
-    bool currentInput=current && editable(current);
-    if (current) CFRelease(current);
-    int result=0;
-    if (!currentInput) result=-1;
-    else if (!modifiersDown() && board.changeCount==previousChange) {
-        [board clearContents];
-        if ([board setString:text forType:NSPasteboardTypeString]) {
-            NSInteger temporaryChange=board.changeCount;
-            for (int i=0;i<4;i++) CGEventPost(kCGHIDEventTap,events[i]);
-            // Some clipboard formats cannot be materialized. Still paste into
-            // the focused field; restore only when the old contents were saved.
-            if (previous) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,250*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
-                restoreClipboard(board,previous,temporaryChange);
-            });
-            result=1;
-        } else {
-            if (previous) restoreClipboard(board,previous,board.changeCount);
-            result=-1;
-        }
-    }
+    for (int i=0;i<4;i++) CGEventPost(kCGHIDEventTap,events[i]);
     for (int i=0;i<4;i++) CFRelease(events[i]);
     CFRelease(source);
-    return result;
-}
-// Without a usable input, leave the transcript available for manual paste.
-bool pulse_dictation_copy(const char *utf8) {
-    NSString *text=[NSString stringWithUTF8String:utf8];
-    if (!text.length) return false;
-    NSPasteboard *board=NSPasteboard.generalPasteboard;
-    [board clearContents];
-    return [board setString:text forType:NSPasteboardTypeString];
+    return 1;
 }
 
 // A click-through overlay stays above normal windows and follows Spaces.
