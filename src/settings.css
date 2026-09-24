@@ -543,6 +543,9 @@ body::-webkit-scrollbar { display: none; }
 .settings-button { min-height: 36px; padding: 8px 15px; border: 1px solid var(--control-border); border-radius: 999px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
 .settings-button:hover { background: var(--control-hover); }
 .settings-button:disabled { opacity: .5; cursor: default; }
+/* Keep a feature card visually steady while a mode save temporarily locks its controls. */
+.settings-group[data-saving-mode="true"] input[type="checkbox"]:disabled,
+.settings-group[data-saving-mode="true"] .settings-button:disabled { opacity: 1; }
 .settings-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .shortcut-button { font-size: 11px; font-weight: 600; }
 .shortcut-button[aria-pressed="true"] { border-color: var(--focus); color: var(--focus); }

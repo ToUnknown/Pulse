@@ -11,15 +11,23 @@ const source = await (await fetch('../../../src/settings.html')).text();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function openFixture(configured=false) {
   const setup = `
-    let configured=${configured}, dictationEnabled=false;
+    let configured=${configured}, dictationEnabled=false, dictationMode='default';
+    let extractorEnabled=false, quickMode='basic', editorMode='basic';
     window.__TAURI__={core:{invoke:async(name,args)=>{
       if(name==='settings_state')return {platform:'macos',trayIcon:null,autoSchedule:null};
-      if(name==='dictation_settings')return {enabled:dictationEnabled,apiKeyConfigured:configured,microphone:true,accessibility:true};
+      if(name==='dictation_settings')return {enabled:dictationEnabled,mode:dictationMode,shortcut:'Right Option',apiKeyConfigured:configured,microphone:true,accessibility:true};
       if(name==='set_dictation_enabled'){if(args.enabled&&!configured)throw new Error('API key required');dictationEnabled=args.enabled;return;}
+      if(name==='set_dictation_mode')return new Promise(resolve=>{window.releaseDictationMode=()=>{dictationMode=args.mode;resolve();};});
       if(name==='save_openai_api_key'){configured=true;return;}
       if(name==='clear_openai_api_key'){configured=false;dictationEnabled=false;return;}
+      if(name==='set_text_extractor'){
+        const apply=()=>{extractorEnabled=args.enabled;quickMode=args.quickMode;editorMode=args.editorMode;};
+        if(args.enabled===extractorEnabled&&(args.quickMode!==quickMode||args.editorMode!==editorMode))
+          return new Promise(resolve=>{window.releaseExtractorMode=()=>{apply();resolve();};});
+        apply();return;
+      }
       if(name==='text_extractor_state')return {
-        enabled:false,shortcut:'Alt+Shift+T',quickShortcut:'Control+Alt+Shift+T',
+        enabled:extractorEnabled,quickMode,editorMode,shortcut:'Alt+Shift+T',quickShortcut:'Control+Alt+Shift+T',
         apiKeyConfigured:configured,advancedAvailable:configured,localOcr:{phase:'ready'},
         captureAccess:{supported:true,granted:true}
       };
@@ -39,18 +47,36 @@ document.querySelector('#run').onclick=async()=>{
   const checks=[], check=(ok,message)=>checks.push(`${ok?'PASS':'FAIL'}: ${message}`);
   let doc=await openFixture(false);
   check(doc.querySelector('#openai-key-section').hidden===false,'API key controls remain available');
-  check([...doc.querySelectorAll('.shortcut-mode')].every(mode=>mode.hidden),'Advanced modes require an API key');
+  check([...doc.querySelectorAll('.shortcut-mode[data-field]')].every(mode=>mode.hidden),'Advanced modes require an API key');
   const dictation=doc.querySelector('#dictation-enabled');
   check(dictation.disabled && !dictation.checked,'Dictation remains disabled without an API key');
   doc.querySelector('#openai-api-key').value='fixture-key';
   doc.querySelector('#openai-key-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await wait(80);
-  check([...doc.querySelectorAll('.shortcut-mode')].every(mode=>!mode.hidden),'saving a key enables Advanced modes');
+  check([...doc.querySelectorAll('.shortcut-mode[data-field]')].every(mode=>!mode.hidden),'saving a key enables Advanced modes');
   check(!dictation.disabled && !dictation.checked,'saving a key unlocks dictation without enabling it');
   dictation.click();await wait(80);
   check(dictation.checked,'dictation can be enabled with a saved key');
   doc.querySelector('#openai-key-remove').click();await wait(80);
   check(dictation.disabled && !dictation.checked,'removing the key disables dictation immediately');
-  check([...doc.querySelectorAll('.shortcut-mode')].every(mode=>mode.hidden),'removing a key disables Advanced modes');
+  check([...doc.querySelectorAll('.shortcut-mode[data-field]')].every(mode=>mode.hidden),'removing a key disables Advanced modes');
+  doc=await openFixture(true);
+  const frameWindow=frame.contentWindow;
+  const dictationToggle=doc.querySelector('#dictation-enabled');
+  const dictationOpacity=frameWindow.getComputedStyle(dictationToggle).opacity;
+  doc.querySelector('#dictation-mode [data-mode="live"]').click();await wait(20);
+  check(dictationToggle.disabled&&frameWindow.getComputedStyle(dictationToggle).opacity===dictationOpacity,'Dictation switch stays visually steady while mode saves');
+  frameWindow.releaseDictationMode();await wait(80);
+  check(!dictationToggle.disabled&&frameWindow.getComputedStyle(dictationToggle).opacity===dictationOpacity,'Dictation switch stays steady after saving');
+  const extractorToggle=doc.querySelector('#text-extractor-enabled');
+  extractorToggle.click();await wait(350);
+  const extractorOpacity=frameWindow.getComputedStyle(extractorToggle).opacity;
+  const shortcutButton=doc.querySelector('#extractor-quick-shortcut');
+  const shortcutOpacity=frameWindow.getComputedStyle(shortcutButton).opacity;
+  doc.querySelector('.shortcut-mode[data-field="quickMode"] [data-mode="advanced"]').click();await wait(20);
+  check(extractorToggle.disabled&&frameWindow.getComputedStyle(extractorToggle).opacity===extractorOpacity,'Text Extractor switch stays visually steady while mode saves');
+  check(shortcutButton.disabled&&frameWindow.getComputedStyle(shortcutButton).opacity===shortcutOpacity,'Text Extractor shortcut stays visually steady while mode saves');
+  frameWindow.releaseExtractorMode();await wait(80);
+  check(!extractorToggle.disabled&&frameWindow.getComputedStyle(extractorToggle).opacity===extractorOpacity,'Text Extractor switch stays steady after saving');
   output.textContent=checks.join('\n');
 };
 await openFixture();

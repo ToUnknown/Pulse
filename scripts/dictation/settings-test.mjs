@@ -6,8 +6,10 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../src/dictation-settings.js', import.meta.url), 'utf8');
 const markup = readFileSync(new URL('../../src/settings.html', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../../src/settings.css', import.meta.url), 'utf8');
 assert.match(markup, /id="dictation-mode" class="shortcut-mode" role="radiogroup"/, 'dictation uses the shared mode slider');
 assert.doesNotMatch(markup, /Default transcribes after you finish speaking/, 'the extra mode explanation is removed');
+assert.match(styles, /\.settings-group\[data-saving-mode="true"\] input\[type="checkbox"\]:disabled[^}]*opacity:\s*1/, 'mode saves keep disabled switches visually steady');
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -17,7 +19,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(overrides = {}) {
   const ids = ['section','enabled','mode','error','description','microphone','accessibility'];
   const nodes = Object.fromEntries(ids.map(id => [id, {
-    hidden:true, disabled:false, checked:false, value:'', textContent:'', listeners:{},
+    hidden:true, disabled:false, checked:false, value:'', textContent:'', dataset:{}, listeners:{},
     addEventListener(name, listener) { this.listeners[name] = listener; },
   }]));
   const modeButtons = ['default', 'live'].map(value => ({
@@ -80,6 +82,15 @@ rejectedMode.handle((name) => {
 });
 await rejectedMode.click('mode');
 assert.equal(rejectedMode.selectedMode(),'default','failed model changes return the slider to the saved mode');
+const savingMode = await fixture();
+const pendingMode = deferred();
+savingMode.handle(name => name === 'dictation_settings' ? {...savingMode.state} : pendingMode.promise);
+const modeSave = savingMode.click('mode');
+assert.equal(savingMode.nodes.section.dataset.savingMode,'true','mode save marks the card before disabling the switch');
+assert.equal(savingMode.nodes.enabled.disabled,true,'mode save still blocks overlapping toggle input');
+pendingMode.resolve(); await modeSave;
+assert.equal(savingMode.nodes.section.dataset.savingMode,'false');
+assert.equal(savingMode.nodes.enabled.disabled,false);
 assert.equal(f.nodes.error.hidden,false);
 assert.equal(f.nodes.accessibility.hidden,false);
 f.state.accessibility=true; f.state.error=null;

@@ -33,12 +33,15 @@ async function refresh() {
     configured = state.apiKeyConfigured;
     section.hidden = false;
     enabled.disabled = !state.apiKeyConfigured;
-    enabled.checked = state.enabled && state.apiKeyConfigured;
+    const checked = state.enabled && state.apiKeyConfigured;
+    if (enabled.checked !== checked) enabled.checked = checked;
     renderMode(state.mode);
     for (const button of modeButtons) button.disabled = false;
-    document.querySelector("#dictation-description").textContent = state.apiKeyConfigured
+    const description = document.querySelector("#dictation-description");
+    const copy = state.apiKeyConfigured
       ? `Turn your voice into text. Tap ${state.shortcut} to start or stop, or hold it while speaking.`
       : "Add your OpenAI API key below to enable Dictation.";
+    if (description.textContent !== copy) description.textContent = copy;
     microphone.hidden = state.microphone;
     accessibility.hidden = state.accessibility;
     microphone.disabled = accessibility.disabled = false;
@@ -48,6 +51,7 @@ async function refresh() {
 async function act(command, args) {
   if (!invoke || busy) return;
   busy = true; revision++; actionError = "";
+  section.dataset.savingMode = String(command === "set_dictation_mode" && configured);
   enabled.disabled = microphone.disabled = accessibility.disabled = true;
   for (const button of modeButtons) button.disabled = true;
   showError("");
@@ -58,6 +62,7 @@ async function act(command, args) {
     enabled.disabled = !configured;
     for (const button of modeButtons) button.disabled = false;
     microphone.disabled = accessibility.disabled = false;
+    section.dataset.savingMode = "false";
     await refresh();
   }
 }
