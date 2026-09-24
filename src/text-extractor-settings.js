@@ -61,10 +61,10 @@ function render() {
   if (enabled.checked !== state.enabled) enabled.checked = state.enabled;
   const access = state.captureAccess;
   $("#capture-access").hidden = platform !== "macos" || !state.enabled || access?.granted;
-  const description = platform === "macos"
-    ? (access?.supported === false ? "Requires macOS 14 or later." : "Offline. Uses built-in Apple text recognition.")
-    : "Offline. Downloads a small model on first use.";
-  if ($("#extractor-description").textContent !== description) $("#extractor-description").textContent = description;
+  const description = platform === "macos" && access?.supported === false ? "Requires macOS 14 or later." : "";
+  const extractorDescription = $("#extractor-description");
+  if (extractorDescription.textContent !== description) extractorDescription.textContent = description;
+  extractorDescription.hidden = !description;
   setExpanded(state.enabled);
   renderOcrStatus(state.localOcr);
   renderModes();
@@ -73,9 +73,8 @@ function render() {
     if (button.textContent !== label) button.textContent = label;
     button.title = label;
   }
-  keyStatus.textContent = state.apiKeyConfigured
-    ? "Key saved. For Dictation and LLM features."
-    : "For Dictation and LLM features.";
+  keyStatus.textContent = "";
+  keyStatus.hidden = true;
   delete keyStatus.dataset.tone;
   keyInput.removeAttribute("aria-invalid");
   keyInput.dataset.configured = String(state.apiKeyConfigured);
@@ -176,6 +175,7 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
   lock(true);
   keyError.hidden = true;
   keyStatus.textContent = "Checking key…";
+  keyStatus.hidden = false;
   delete keyStatus.dataset.tone;
   try {
     await invoke("save_openai_api_key", { apiKey: keyInput.value });
@@ -184,6 +184,7 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
     await load();
   } catch (reason) {
     keyStatus.textContent = String(reason);
+    keyStatus.hidden = false;
     keyStatus.dataset.tone = "error";
     keyInput.setAttribute("aria-invalid", "true");
   } finally { checkingKey = false; lock(false); }

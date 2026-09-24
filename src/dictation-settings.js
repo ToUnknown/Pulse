@@ -44,10 +44,11 @@ async function refresh() {
     renderMode(state.mode);
     for (const button of modeButtons) button.disabled = false;
     const description = document.querySelector("#dictation-description");
-    const copy = state.apiKeyConfigured
-      ? `Turn your voice into text. Tap ${state.shortcut} to start or stop, or hold it while speaking.`
-      : "Add your OpenAI API key below to enable Dictation.";
+    const copy = state.apiKeyConfigured ? "" : "Add your OpenAI API key below to enable Dictation.";
     if (description.textContent !== copy) description.textContent = copy;
+    description.hidden = !copy;
+    if (copy) enabled.setAttribute("aria-describedby", "dictation-description");
+    else enabled.removeAttribute("aria-describedby");
     microphone.hidden = state.microphone;
     accessibility.hidden = state.accessibility;
     microphone.disabled = accessibility.disabled = false;

@@ -21,8 +21,10 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(overrides = {}) {
   const ids = ['section','enabled','modes','mode','error','description','microphone','accessibility'];
   const nodes = Object.fromEntries(ids.map(id => [id, {
-    hidden:true, disabled:false, checked:false, value:'', textContent:'', dataset:{}, listeners:{},
+    hidden:true, disabled:false, checked:false, value:'', textContent:'', dataset:{}, listeners:{}, attributes:{},
     addEventListener(name, listener) { this.listeners[name] = listener; },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    removeAttribute(name) { delete this.attributes[name]; },
   }]));
   const modeButtons = ['default', 'live'].map(value => ({
     dataset:{mode:value}, disabled:false, tabIndex:-1, attributes:{},
@@ -68,6 +70,7 @@ async function fixture(overrides = {}) {
 const modes = await fixture({enabled:true});
 assert.equal(modes.nodes.modes.dataset.expanded,'true');
 assert.equal(modes.nodes.modes.inert,false);
+assert.equal(modes.nodes.description.hidden,true,'configured Dictation omits the generic description');
 assert.equal(modes.selectedMode(),'default');
 await modes.click('mode');
 assert.equal(modes.state.mode,'live','model selection is saved');
@@ -186,6 +189,8 @@ console.log('PASS: reversed refresh responses, in-flight action race, duplicate 
 // No key means unavailable, including after a request whose refresh fails.
 const gated=await fixture({apiKeyConfigured:false});
 assert.equal(gated.nodes.enabled.disabled,true);
+assert.equal(gated.nodes.description.hidden,false,'the missing-key explanation remains available');
+assert.equal(gated.nodes.enabled.attributes['aria-describedby'],'dictation-description');
 gated.handle(name=>{if(name==='dictation_settings')throw new Error('offline');});
 await gated.click('microphone');
 assert.equal(gated.nodes.enabled.disabled,true);
