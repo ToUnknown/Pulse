@@ -35,9 +35,9 @@ Text Extractor’s **Translate** uses Google Translate’s unofficial web endpoi
 
 ## Dictation
 
-Add your OpenAI API key and enable **Tap or hold to dictate** in Settings → Advanced. Dictation requires microphone access; macOS also requires Accessibility access.
+Add your OpenAI API key and enable **Tap or hold to dictate** in Settings → Advanced. Choose a **Transcription model** there: **Default** uses `gpt-transcribe` and is selected when no preference has been saved; **Live** uses `gpt-live-transcribe`. The choice is saved for future recordings. Dictation requires microphone access; macOS also requires Accessibility access.
 
-Recording shows a small voice-reactive pill and a transcript box with up to five visible lines at the bottom center. Hands-free recording continues while you type, click, or switch apps. No input field is tracked or edited during recording. Audio streams to OpenAI's `gpt-live-transcribe` with high delay; release/stop commits the recording and waits for the final text.
+Recording always shows a small voice-reactive pill at the bottom center. **Default** keeps the transcript box hidden while you speak and transcribes after you release or stop the recording. **Live** shows incoming words in a box above the pill, with up to five visible lines, and uses high delay for transcription. Both modes stream audio to OpenAI and commit the recording on release or stop before delivering the final text. Hands-free recording continues while you type, click, or switch apps. No input field is tracked or edited during recording.
 
 Pulse sends the completed transcript to the currently selected supported input using Unicode input events, without reading or changing the clipboard. If no suitable input is found or no text can be dispatched, Pulse copies the transcript and briefly shows **Copied to clipboard**. Once input events have been submitted, Pulse does not retry or overwrite the clipboard based on an unreliable editor readback. Some custom editors and Windows apps running with higher privileges may reject synthetic input; submission is not a universal insertion guarantee.
 

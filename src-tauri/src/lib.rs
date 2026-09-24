@@ -1658,6 +1658,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         settings_state,
         dictation::dictation_settings,
+        dictation::set_dictation_mode,
         dictation::set_dictation_enabled,
         dictation::request_dictation_access,
         dictation::dictation_snapshot,

@@ -12,12 +12,12 @@ const deferred = () => {
 };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(overrides = {}) {
-  const ids = ['section','enabled','error','description','microphone','accessibility'];
+  const ids = ['section','enabled','mode','error','description','microphone','accessibility'];
   const nodes = Object.fromEntries(ids.map(id => [id, {
-    hidden:true, disabled:false, checked:false, textContent:'', listeners:{},
+    hidden:true, disabled:false, checked:false, value:'', textContent:'', listeners:{},
     addEventListener(name, listener) { this.listeners[name] = listener; },
   }]));
-  const state = {enabled:false, apiKeyConfigured:true, microphone:false,
+  const state = {enabled:false, mode:'default', apiKeyConfigured:true, microphone:false,
     accessibility:false, shortcut:'Right Option', error:null, ...overrides};
   const calls = [], events = {}, documentEvents = {};
   let handler;
@@ -33,6 +33,7 @@ async function fixture(overrides = {}) {
       if(handler) return handler(name,args);
       if(name==='dictation_settings') return {...state};
       if(name==='set_dictation_enabled') state.enabled=args.enabled;
+      if(name==='set_dictation_mode') state.mode=args.mode;
     }}},
   }});
   vm.runInContext(source, context);
@@ -40,12 +41,21 @@ async function fixture(overrides = {}) {
   return {nodes,state,calls,events,document,documentEvents,
     handle(value) { handler=value; },
     refresh:()=>vm.runInContext('refresh()', context),
-    click:id=>nodes[id].listeners[id==='enabled'?'change':'click'](),
+    click:id=>nodes[id].listeners[['enabled','mode'].includes(id)?'change':'click'](),
   };
 }
 
 // A successful refresh must clear stale DOM text as well as hide the warning.
 const f = await fixture({error:'Allow Accessibility'});
+assert.equal(f.nodes.mode.value,'default');
+f.nodes.mode.value='live';
+await f.click('mode');
+assert.equal(f.state.mode,'live','model selection is saved');
+assert.equal(f.nodes.mode.value,'live');
+assert.equal(f.calls.at(-2).name,'set_dictation_mode');
+f.state.mode='default';
+await f.refresh();
+assert.equal(f.nodes.mode.value,'default','model selection refreshes from persisted state');
 assert.equal(f.nodes.error.hidden,false);
 assert.equal(f.nodes.accessibility.hidden,false);
 f.state.accessibility=true; f.state.error=null;
