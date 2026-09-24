@@ -448,7 +448,7 @@ input:focus-visible,
 
 .custom-select--icon .custom-select-menu {
   width: 154px;
-  border-radius: 999px;
+  border-radius: 23px;
   corner-shape: var(--pill-corner-style);
 }
 
