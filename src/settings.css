@@ -621,7 +621,7 @@ select,
 #openai-api-key[aria-invalid="true"] { border-color: var(--error); box-shadow: inset 0 0 0 1px var(--error); }
 
 /* The floating panel owns its chrome; transparent margins leave room for its shadow. */
-.settings-header, .settings-footer { display: none; }
+.settings-header, .settings-footer, .settings-top-blur { display: none; }
 :root[data-floating="true"], :root[data-floating="true"] body { background: transparent; overflow: hidden; }
 :root[data-floating="true"] body { padding: 12px; }
 :root[data-floating="true"] .settings-shell {
@@ -646,12 +646,13 @@ select,
   background: color-mix(in srgb, var(--control-hover) 72%, transparent);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
 }
-:root[data-floating="true"] .settings-tabs::before {
-  content: ""; position: absolute; z-index: -1; top: 0; left: -24px; right: -24px; height: 80px;
+:root[data-floating="true"] .settings-top-blur {
+  grid-row: 2; grid-column: 1; z-index: 1; align-self: start; display: block;
+  height: 96px; margin: 0 -23px;
   background: color-mix(in srgb, var(--settings-background) 12%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
-  -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
-  mask-image: linear-gradient(to bottom, #000, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000, transparent 70%);
+  mask-image: linear-gradient(to bottom, #000, transparent 70%);
   pointer-events: none;
 }
 :root[data-floating="true"] .settings-tab-slider { background: color-mix(in srgb, var(--settings-pill) 90%, transparent); }
