@@ -273,19 +273,20 @@ int pulse_dictation_final_step(const char *utf8) {
     bool currentInput=current && editable(current);
     if (current) CFRelease(current);
     int result=0;
-    if (!previous || !currentInput) result=-1;
+    if (!currentInput) result=-1;
     else if (!modifiersDown() && board.changeCount==previousChange) {
         [board clearContents];
         if ([board setString:text forType:NSPasteboardTypeString]) {
             NSInteger temporaryChange=board.changeCount;
             for (int i=0;i<4;i++) CGEventPost(kCGHIDEventTap,events[i]);
-            // Let the target consume Paste, then restore only if this is still ours.
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,250*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
+            // Some clipboard formats cannot be materialized. Still paste into
+            // the focused field; restore only when the old contents were saved.
+            if (previous) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,250*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
                 restoreClipboard(board,previous,temporaryChange);
             });
             result=1;
         } else {
-            restoreClipboard(board,previous,board.changeCount);
+            if (previous) restoreClipboard(board,previous,board.changeCount);
             result=-1;
         }
     }

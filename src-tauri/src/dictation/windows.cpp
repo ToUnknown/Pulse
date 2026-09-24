@@ -192,7 +192,7 @@ static ComPtr<IDataObject> previousClipboard;
 static DWORD temporarySequence;
 static bool pastePending;
 static void restoreClipboard() {
-    if (temporarySequence && GetClipboardSequenceNumber()==temporarySequence) {
+    if (previousClipboard && temporarySequence && GetClipboardSequenceNumber()==temporarySequence) {
         // If the user copied something newer, their clipboard always wins.
         OleSetClipboard(previousClipboard.Get());
     }
@@ -228,7 +228,9 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
     DWORD before=GetClipboardSequenceNumber();
     if (!before) { OleUninitialize(); return -1; }
     ComPtr<IDataObject> previous;
-    if (FAILED(OleGetClipboard(previous.GetAddressOf()))) { OleUninitialize(); return -1; }
+    // An empty or unavailable clipboard is not a reason to skip a focused
+    // editor. Paste once, but leave the transcript if nothing can be restored.
+    if (FAILED(OleGetClipboard(previous.GetAddressOf()))) previous.Reset();
     // The data object and sequence must describe the same clipboard contents.
     if (GetClipboardSequenceNumber()!=before) { OleUninitialize(); return 0; }
     if (modifiersDown() || GetForegroundWindow()!=foreground) { OleUninitialize(); return 0; }
@@ -236,12 +238,12 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
     ClipboardWrite written=writeClipboardText(utf8,&before,&temporary);
     if (written==ClipboardWrite::Changed) { OleUninitialize(); return 0; }
     if (written==ClipboardWrite::Failed) {
-        if (temporary && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
+        if (previous && temporary && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
         OleUninitialize();
         return -1;
     }
     if (modifiersDown() || GetForegroundWindow()!=foreground) {
-        if (GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
+        if (previous && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
         OleUninitialize();
         return 0;
     }
@@ -253,7 +255,7 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
     keys[2].ki.dwFlags=keys[3].ki.dwFlags=KEYEVENTF_KEYUP;
     UINT sent=SendInput(4,keys,sizeof(INPUT));
     if (!sent) {
-        if (GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
+        if (previous && GetClipboardSequenceNumber()==temporary) OleSetClipboard(previous.Get());
         OleUninitialize();
         return -1;
     }

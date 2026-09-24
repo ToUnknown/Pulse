@@ -23,7 +23,7 @@ These are available checks, not a claim that the current branch passed them:
 | Shortcut semantics | Rust unit tests in `shortcut.rs`; macOS adapter harness `shortcut-native-test.m` |
 | Protocol and session completion | Rust tests in `protocol.rs` and `mod.rs`, including local WebSocket failure scenarios |
 | Async microphone startup | `capture-startup-test.m`, using a simulated engine without opening the microphone |
-| macOS clipboard transaction | `clipboard-native-test.m` uses a private pasteboard to check rich-format restoration, changed-clipboard protection, and an empty starting clipboard |
+| macOS clipboard transaction | `clipboard-native-test.m` checks rich-format restoration, changed-clipboard protection, and an empty starting clipboard; `focused-paste-native-test.m` checks that an unavailable old clipboard format does not turn a focused-field paste into clipboard fallback |
 | Renderer state and growth | `overlay-test.mjs`, using the real renderer with a minimal DOM; `overlay-layout.html` is a browser layout fixture |
 | Native blur geometry | `backdrop-native-test.m`, using an unshown macOS window; explicitly skips when private backdrop support is absent |
 | Settings access | `settings-test.mjs` covers grant/denial, stale messages, action errors, overlapping refreshes, repeated requests, and the API-key gate using simulated IPC; `../text-extractor/qa/settings-access.html` covers the shared Advanced Access UI |
