@@ -653,8 +653,8 @@ select,
   border-radius: 35px 35px 0 0; corner-shape: var(--corner-style);
   background: color-mix(in srgb, var(--settings-background) 12%, transparent);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
-  -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent 86%);
-  mask-image: linear-gradient(to bottom, #000 50%, transparent 86%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent 89%);
+  mask-image: linear-gradient(to bottom, #000 50%, transparent 89%);
   pointer-events: none;
 }
 :root[data-floating="true"] .settings-tab-slider { background: color-mix(in srgb, var(--settings-pill) 90%, transparent); }
