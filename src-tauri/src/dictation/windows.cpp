@@ -2,7 +2,6 @@
 // state. No microphone, target field, or clipboard is touched while idle.
 #define NOMINMAX
 #include <windows.h>
-#include <uiautomation.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <shellapi.h>
@@ -18,7 +17,6 @@
 using Microsoft::WRL::ComPtr;
 using Shortcut = void(*)(bool,bool,bool,double);
 using Audio = void(*)(uint64_t,const uint8_t*,size_t,float);
-static constexpr ULONG_PTR EventTag = 0x50554c53;
 static std::atomic<Shortcut> shortcutCallback{nullptr};
 static std::thread hookThread;
 static DWORD hookThreadId;
@@ -139,102 +137,77 @@ extern "C" void pulse_dictation_start_async(uint64_t id, Audio callback, void(*r
     });
 }
 
-static ComPtr<IUIAutomation> automation;
 static HWND overlayWindow;
 static std::wstring utf16(const char *text) {
+    if (!text) return {};
     int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,nullptr,0);
     if (!n) return {};
     std::wstring result(n,L'\0'); MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,result.data(),n);
     result.resize(n-1); return result;
 }
-static bool initAutomation() {
-    if (automation) return true;
-    HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-    if (FAILED(init) && init!=RPC_E_CHANGED_MODE) return false;
-    HRESULT hr=CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation));
-    if (SUCCEEDED(hr) && automation) {
-        ComPtr<IUIAutomation2> limits;
-        if (SUCCEEDED(automation.As(&limits)) && limits) { limits->put_ConnectionTimeout(250); limits->put_TransactionTimeout(250); }
-    }
-    return SUCCEEDED(hr) && automation;
-}
-enum class TextInput { Unknown, Rejected, Editable };
-static TextInput focusedTextInput() {
-    ComPtr<IUIAutomationElement> element;
-    if (!initAutomation() || FAILED(automation->GetFocusedElement(&element)) || !element) return TextInput::Unknown;
-    BOOL password=FALSE, enabled=TRUE;
-    if ((SUCCEEDED(element->get_CurrentIsPassword(&password)) && password) ||
-        (SUCCEEDED(element->get_CurrentIsEnabled(&enabled)) && !enabled)) return TextInput::Rejected;
-    ComPtr<IUIAutomationValuePattern> value;
-    BOOL readOnly=TRUE;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId,IID_PPV_ARGS(&value))) && value &&
-        SUCCEEDED(value->get_CurrentIsReadOnly(&readOnly))) return readOnly ? TextInput::Rejected : TextInput::Editable;
-    ComPtr<IUIAutomationTextPattern> text; ComPtr<IUIAutomationTextRange> document;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&text))) && text &&
-        SUCCEEDED(text->get_DocumentRange(&document)) && document) {
-        VARIANT attribute; VariantInit(&attribute);
-        bool known=SUCCEEDED(document->GetAttributeValue(UIA_IsReadOnlyAttributeId,&attribute)) && attribute.vt==VT_BOOL;
-        bool writable=known && attribute.boolVal==VARIANT_FALSE;
-        VariantClear(&attribute);
-        if (known) return writable ? TextInput::Editable : TextInput::Rejected;
-    }
-    CONTROLTYPEID type=0;
-    return SUCCEEDED(element->get_CurrentControlType(&type)) && type==UIA_EditControlTypeId
-        ? TextInput::Editable : TextInput::Unknown;
-}
 static bool modifiersDown() {
     return ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|
         GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0;
 }
-// 0 = wait for physical modifiers; 1 = submitted once; -1 = copy instead.
-// The OS routes one batch to the current caret. No saved field, document reads,
-// text replacement, or asynchronous accessibility acknowledgment is involved.
+static bool copyTranscript(const char *utf8,DWORD *sequence);
+extern "C" bool pulse_dictation_copy(const char *utf8) { return copyTranscript(utf8,nullptr); }
+// 0 = wait for physical modifiers; 1 = copied (Paste if still safe); -1 = copy failed.
 extern "C" int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
-    std::wstring text=utf16(utf8);
-    if (text.empty()) return -1;
-    HWND foreground=GetForegroundWindow();
-    if (!foreground) return -1;
-    TextInput inputKind=focusedTextInput();
-    GUITHREADINFO info{sizeof(info)};
-    DWORD thread=GetWindowThreadProcessId(foreground,nullptr);
-    bool haveInfo=thread && GetGUIThreadInfo(thread,&info);
-    if (GetForegroundWindow()!=foreground) return 0;
-    if (inputKind==TextInput::Rejected) return -1;
-    if (haveInfo && (info.flags&(GUI_INMENUMODE|GUI_INMOVESIZE))) return -1;
-    // Native caret presence covers editors with incomplete UI Automation data.
-    bool caret=haveInfo && info.hwndFocus && info.hwndCaret &&
-        (info.hwndFocus==info.hwndCaret || IsChild(info.hwndFocus,info.hwndCaret));
-    if (inputKind!=TextInput::Editable && !caret) return -1;
-    std::vector<INPUT> events(text.size()*2);
-    for (size_t i=0;i<text.size();i++) {
-        events[2*i].type=events[2*i+1].type=INPUT_KEYBOARD;
-        events[2*i].ki.wScan=events[2*i+1].ki.wScan=text[i];
-        events[2*i].ki.dwFlags=KEYEVENTF_UNICODE;
-        events[2*i+1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
-        events[2*i].ki.dwExtraInfo=events[2*i+1].ki.dwExtraInfo=EventTag;
+    HWND target=GetForegroundWindow();
+    DWORD sequence=0;
+    if (!copyTranscript(utf8,&sequence)) return -1;
+    // The user may switch windows or press another modifier while the
+    // clipboard is busy. A newer clipboard write must never be pasted either.
+    if (!target || GetForegroundWindow()!=target || modifiersDown() ||
+        !sequence || GetClipboardSequenceNumber()!=sequence || GetClipboardOwner()!=overlayWindow) return 1;
+
+    INPUT keys[4]{};
+    keys[0].type=keys[1].type=keys[2].type=keys[3].type=INPUT_KEYBOARD;
+    keys[0].ki.wVk=keys[3].ki.wVk=VK_CONTROL;
+    keys[1].ki.wVk=keys[2].ki.wVk='V';
+    keys[2].ki.dwFlags=keys[3].ki.dwFlags=KEYEVENTF_KEYUP;
+    UINT sent=SendInput(4,keys,sizeof(INPUT));
+    if (sent>0 && sent<4) {
+        // A prefix may have pressed Ctrl (and V) without releasing them. The
+        // paste may already have fired, so never submit the transcript again.
+        INPUT releases[2]{};
+        UINT count=0;
+        if (sent==2) {
+            releases[count].type=INPUT_KEYBOARD;
+            releases[count].ki.wVk='V';
+            releases[count++].ki.dwFlags=KEYEVENTF_KEYUP;
+        }
+        releases[count].type=INPUT_KEYBOARD;
+        releases[count].ki.wVk=VK_CONTROL;
+        releases[count++].ki.dwFlags=KEYEVENTF_KEYUP;
+        for (UINT released=0, attempts=0; released<count && attempts<3; attempts++) {
+            released+=SendInput(count-released,releases+released,sizeof(INPUT));
+        }
     }
-    if (modifiersDown() || GetForegroundWindow()!=foreground) return 0;
-    UINT sent=SendInput(static_cast<UINT>(events.size()),events.data(),sizeof(INPUT));
-    // Even a partial dispatch must never be replayed or copied a second time.
-    return sent ? 1 : -1;
+    return 1;
 }
-extern "C" bool pulse_dictation_copy(const char *utf8) {
+static bool copyTranscript(const char *utf8,DWORD *sequence) {
+    if (!utf8) return false;
     std::wstring text=utf16(utf8); if(text.empty()) return false;
     HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,(text.size()+1)*sizeof(wchar_t));
     if (!memory) return false;
     void *data=GlobalLock(memory); if(!data) { GlobalFree(memory); return false; }
     memcpy(data,text.c_str(),(text.size()+1)*sizeof(wchar_t)); GlobalUnlock(memory);
-    bool copied=false;
+    bool written=false;
     if (IsWindow(overlayWindow)) for (int attempt=0;attempt<5;attempt++) {
         if (OpenClipboard(overlayWindow)) {
-            if (EmptyClipboard()) copied=SetClipboardData(CF_UNICODETEXT,memory)!=nullptr;
+            if (EmptyClipboard()) written=SetClipboardData(CF_UNICODETEXT,memory)!=nullptr;
             CloseClipboard(); break;
         }
         Sleep(10);
     }
-    if (!copied) GlobalFree(memory);
-    return copied;
+    if (written && sequence) {
+        DWORD version=GetClipboardSequenceNumber();
+        *sequence=GetClipboardOwner()==overlayWindow ? version : 0;
+    }
+    if (!written) GlobalFree(memory);
+    return written;
 }
 extern "C" void pulse_dictation_position(void *pointer,double *bottom) {
     HWND window=static_cast<HWND>(pointer);

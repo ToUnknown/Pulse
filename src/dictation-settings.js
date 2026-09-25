@@ -1,11 +1,28 @@
 const invoke = window.__TAURI__?.core.invoke;
 const section = document.querySelector("#dictation-section");
 const enabled = document.querySelector("#dictation-enabled");
+const toggleLabel = document.querySelector("#dictation-toggle-label");
+const modeDetails = document.querySelector("#dictation-modes");
 const mode = document.querySelector("#dictation-mode");
+const modeButtons = [...mode.querySelectorAll("button")];
 const error = document.querySelector("#dictation-error");
 const microphone = document.querySelector("#dictation-microphone");
 const accessibility = document.querySelector("#dictation-accessibility");
 let busy = false, revision = 0, accessState, actionError = "", configured = false;
+let selectedMode = "default";
+function setModeExpanded(value) {
+  if (modeDetails.dataset.expanded !== String(value)) modeDetails.dataset.expanded = String(value);
+  if (modeDetails.inert !== !value) modeDetails.inert = !value;
+}
+function renderMode(value) {
+  selectedMode = value === "live" ? "live" : "default";
+  mode.style.setProperty("--mode-index", selectedMode === "live" ? 1 : 0);
+  for (const button of modeButtons) {
+    const selected = button.dataset.mode === selectedMode;
+    button.setAttribute("aria-checked", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  }
+}
 function showError(message) {
   if (error.textContent !== message) error.textContent = message;
   error.hidden = !message;
@@ -20,14 +37,22 @@ async function refresh() {
     if (currentAccess !== accessState) actionError = "";
     accessState = currentAccess;
     configured = state.apiKeyConfigured;
+    toggleLabel.textContent = state.shortcut === "Right Alt"
+      ? "Tap or hold right Alt key to dictate"
+      : "Tap or hold right Option key to dictate";
     section.hidden = false;
     enabled.disabled = !state.apiKeyConfigured;
-    enabled.checked = state.enabled && state.apiKeyConfigured;
-    mode.value = state.mode || "default";
-    mode.disabled = false;
-    document.querySelector("#dictation-description").textContent = state.apiKeyConfigured
-      ? `Turn your voice into text. Tap ${state.shortcut} to start or stop, or hold it while speaking.`
-      : "Add your OpenAI API key below to enable Dictation.";
+    const checked = state.enabled && state.apiKeyConfigured;
+    if (enabled.checked !== checked) enabled.checked = checked;
+    setModeExpanded(checked);
+    renderMode(state.mode);
+    for (const button of modeButtons) button.disabled = false;
+    const description = document.querySelector("#dictation-description");
+    const copy = state.apiKeyConfigured ? "" : "Add your OpenAI API key below to enable Dictation.";
+    if (description.textContent !== copy) description.textContent = copy;
+    description.hidden = !copy;
+    if (copy) enabled.setAttribute("aria-describedby", "dictation-description");
+    else enabled.removeAttribute("aria-describedby");
     microphone.hidden = state.microphone;
     accessibility.hidden = state.accessibility;
     microphone.disabled = accessibility.disabled = false;
@@ -37,20 +62,43 @@ async function refresh() {
 async function act(command, args) {
   if (!invoke || busy) return;
   busy = true; revision++; actionError = "";
-  enabled.disabled = mode.disabled = microphone.disabled = accessibility.disabled = true;
+  section.dataset.savingMode = String(command === "set_dictation_mode" && configured);
+  enabled.disabled = microphone.disabled = accessibility.disabled = true;
+  for (const button of modeButtons) button.disabled = true;
   showError("");
   try { await invoke(command, args); }
   catch (reason) { actionError = String(reason); showError(actionError); }
   finally {
     busy = false;
     enabled.disabled = !configured;
-    mode.disabled = false;
+    for (const button of modeButtons) button.disabled = false;
     microphone.disabled = accessibility.disabled = false;
+    section.dataset.savingMode = "false";
     await refresh();
   }
 }
-enabled.addEventListener("change", () => act("set_dictation_enabled", {enabled:enabled.checked}));
-mode.addEventListener("change", () => act("set_dictation_mode", {mode:mode.value}));
+enabled.addEventListener("change", () => {
+  setModeExpanded(enabled.checked);
+  return act("set_dictation_enabled", {enabled:enabled.checked});
+});
+function selectMode(button) {
+  if (busy || !enabled.checked || !button || button.dataset.mode === selectedMode) return;
+  renderMode(button.dataset.mode);
+  return act("set_dictation_mode", {mode:selectedMode});
+}
+mode.addEventListener("click", event => selectMode(event.target.closest("button")));
+mode.addEventListener("keydown", event => {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  if (busy) return;
+  const current = modeButtons.findIndex(button => button.dataset.mode === selectedMode);
+  const previous = ["ArrowLeft", "ArrowUp"].includes(event.key);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? modeButtons.length - 1
+    : (current + (previous ? -1 : 1) + modeButtons.length) % modeButtons.length;
+  const button = modeButtons[next];
+  button.focus();
+  selectMode(button);
+});
 microphone.addEventListener("click", () => act("request_dictation_access", {microphone:true}));
 accessibility.addEventListener("click", () => act("request_dictation_access", {microphone:false}));
 refresh();

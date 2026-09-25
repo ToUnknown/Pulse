@@ -27,15 +27,14 @@ body[data-native-glass="true"] #waveform-shell { background: var(--pill-tint); b
 body:is([data-phase="finalizing"],[data-phase="sending"],[data-phase="done"]) #waveform-shell { width: 28px; height: 28px; border-radius: 50%; }
 body:not([data-phase="listening"]) #waveform { opacity: 0; }
 body:is([data-phase="finalizing"],[data-phase="sending"]) #spinner { opacity: 1; }
-#copy-status { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; gap: 7px; color: var(--ink); font-size: 11px; font-weight: 500; white-space: nowrap; opacity: 0; transform: translateY(3px); filter: blur(2px); transition: opacity .22s ease, transform .32s cubic-bezier(.22,.8,.25,1), filter .28s ease; }
-#copy-status svg { flex: none; }
-/* Keep the confirmation shape through the final fade, instead of contracting
-   into a spinner again. The next session resets it before showing the pill. */
-body[data-copied="true"]:is([data-phase="copied"],[data-phase="done"]) #waveform-shell { width: 164px; border-radius: 16px; }
-body[data-copied="true"]:is([data-phase="copied"],[data-phase="done"]) #copy-status { opacity: 1; transform: none; filter: blur(0); transition-delay: .1s; }
 body[data-phase="error"] #waveform-shell { display: none; }
+#delivery-error { display: none; margin: 0; max-width: 320px; padding: 9px 13px; border: 1px solid var(--panel-border); border-radius: 14px; color: var(--ink); background: var(--paper); font-size: 12px; line-height: 16px; text-align: center; box-shadow: 0 5px 18px rgba(0,0,0,.12); }
+body[data-phase="error"] #dictation { opacity: 1; transform: translateX(-50%); }
+body[data-phase="error"] #delivery-error { display: block; animation: error-toast 2.4s ease both; }
+@keyframes error-toast { 0% { opacity: 0; transform: translateY(5px); } 8%, 85% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(5px); } }
 @media (prefers-color-scheme: dark) { :root { --ink: #101012; --paper: rgba(253,253,253,.96); --surface: #fdfdfd; --pill-tint: rgba(253,253,253,.84); --panel-border: rgba(0,0,0,.24); --line: rgba(0,0,0,.24); --wave: #101012; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; transition-delay: 0ms !important; } }
+@media (prefers-reduced-motion: reduce) { body[data-phase="error"] #delivery-error { animation: none !important; } }
 
 body[data-placing="true"] #dictation, body[data-placing="true"] #transcript, body[data-placing="true"] #text-viewport { transition: none; }
 body[data-placing="true"] #waveform-shell { animation: none; transition: none; }

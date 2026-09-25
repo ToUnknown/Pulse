@@ -9,7 +9,7 @@ createServer(async (req, res) => {
   try {
     const path = new URL(req.url, `http://localhost:${port}`).pathname;
     const name = path === '/' ? 'text-extractor.html' : path.slice(1);
-    if (!/^[a-z0-9-]+\.(html|css|js)$/.test(name) && !['translation-icons/translate-icon.svg', 'translation-icons/key-icon-yellow.svg'].includes(name)) { res.writeHead(404).end(); return; }
+    if (!/^[a-z0-9-]+\.(html|css|js)$/.test(name) && name !== 'translation-icons/translate-icon.svg') { res.writeHead(404).end(); return; }
     let body = await readFile(name === 'preview-bridge.js' ? fixture : `${source}${name}`, 'utf8');
     if (name.endsWith('.html')) body = body.replace('<head>', '<head><script src="/preview-bridge.js"></script>');
     res.setHeader('Content-Type', name.endsWith('.html') ? 'text/html' : name.endsWith('.css') ? 'text/css' : name.endsWith('.svg') ? 'image/svg+xml' : 'text/javascript');

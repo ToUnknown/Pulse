@@ -76,12 +76,15 @@ main {
 }
 
 h2 {
-  margin: 0 0 8px 4px;
-  color: var(--secondary-text);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .settings-group {
@@ -129,26 +132,6 @@ h2 {
   height: 100%;
 }
 
-.setting-feature-icon-login {
-  color: #ff3b30;
-  transition: color 120ms ease;
-}
-
-.setting-feature-icon-login circle {
-  fill: currentColor;
-}
-
-.setting-feature-icon-login path {
-  fill: none;
-  stroke: #fff;
-  stroke-linecap: round;
-  stroke-width: 2.8;
-}
-
-.setting-row:has(#start-at-login:checked) .setting-feature-icon-login {
-  color: #34c759;
-}
-
 .setting-row strong {
   font-weight: 600;
 }
@@ -165,30 +148,30 @@ select {
 }
 
 input[type="checkbox"] {
-  display: grid;
-  width: 22px;
-  height: 22px;
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 26px;
   margin: 0;
-  place-items: center;
   appearance: none;
   -webkit-appearance: none;
   border: 1px solid var(--control-border);
-  border-radius: 50%;
+  border-radius: 999px;
   background: var(--control-background);
-  color: var(--settings-pill-text);
   cursor: pointer;
-  transition: background-color 160ms ease, border-color 160ms ease;
+  transition: background-color 220ms ease, border-color 220ms ease;
 }
 
 input[type="checkbox"]::before {
-  width: 6px;
-  height: 10px;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--settings-pill);
   content: "";
-  opacity: 0;
-  transform: translateY(-1px) rotate(45deg) scale(.7);
-  transition: opacity 160ms ease, transform 160ms ease;
+  transition: background-color 220ms ease, transform 260ms cubic-bezier(.2,.8,.2,1);
 }
 
 input[type="checkbox"]:checked {
@@ -197,13 +180,18 @@ input[type="checkbox"]:checked {
 }
 
 input[type="checkbox"]:checked::before {
-  opacity: 1;
-  transform: translateY(-1px) rotate(45deg) scale(1);
+  background: var(--settings-pill-text);
+  transform: translateX(18px);
 }
 
 input[type="checkbox"]:disabled {
   opacity: .5;
   cursor: default;
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
 }
 
 select {
@@ -271,7 +259,6 @@ input:focus-visible,
   height: 28px;
   flex: none;
   place-items: center;
-  border-radius: 50%;
 }
 
 .time-icon svg {
@@ -282,21 +269,6 @@ input:focus-visible,
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
-}
-
-.time-icon-light {
-  color: #a96500;
-  background: #fff0c9;
-}
-
-.time-icon-dark {
-  color: #536cd6;
-  background: #e5e9ff;
-}
-
-.time-icon-dark svg {
-  fill: currentColor;
-  stroke: none;
 }
 
 .schedule-controls select {
@@ -476,6 +448,8 @@ input:focus-visible,
 
 .custom-select--icon .custom-select-menu {
   width: 154px;
+  border-radius: 23px;
+  corner-shape: var(--pill-corner-style);
 }
 
 .tray-glyph {
@@ -489,18 +463,6 @@ input:focus-visible,
 
 .tray-glyph-red {
   color: #ff1f2d;
-}
-
-@media (prefers-color-scheme: dark) {
-  .time-icon-light {
-    color: #ffc45f;
-    background: #4d3a19;
-  }
-
-  .time-icon-dark {
-    color: #aab7ff;
-    background: #30395f;
-  }
 }
 
 #error {
@@ -535,16 +497,16 @@ body::-webkit-scrollbar { display: none; }
 [hidden] { display: none !important; }
 .extractor-settings-card { border: 1px solid var(--border); border-radius: var(--card-radius); background: var(--surface); overflow: hidden; }
 .extractor-toggle-row { border: 0; border-radius: 0; }
-.extractor-icon { color: #637cf1; }
-.dictation-icon { color: #ff3b30; }
-.dictation-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 12px 0 4px; border-top: 1px solid var(--border); font-size: 12px; }
-.dictation-mode-row select { min-width: 112px; }
-.dictation-mode-description { margin: 0; padding: 0 16px 14px; color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
+.dictation-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 12px 0 14px; border-top: 1px solid var(--border); font-size: 12px; }
 .extractor-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px; padding: 11px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.dictation-mode-row > span, .extractor-detail-row > span { font-size: 14px; font-weight: 600; }
 .extractor-detail-row + .extractor-detail-row { border-top: 0; padding-top: 0; }
 .settings-button { min-height: 36px; padding: 8px 15px; border: 1px solid var(--control-border); border-radius: 999px; background: var(--control-background); color: inherit; font: inherit; font-size: 12px; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
 .settings-button:hover { background: var(--control-hover); }
 .settings-button:disabled { opacity: .5; cursor: default; }
+/* Keep a feature card visually steady while a mode save temporarily locks its controls. */
+.settings-group[data-saving-mode="true"] input[type="checkbox"]:disabled,
+.settings-group[data-saving-mode="true"] .settings-button:disabled { opacity: 1; }
 .settings-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .shortcut-button { font-size: 11px; font-weight: 600; }
 .shortcut-button[aria-pressed="true"] { border-color: var(--focus); color: var(--focus); }
@@ -569,8 +531,8 @@ main { max-width: 720px; margin: 0 auto; }
 .settings-page { outline: none; animation: settings-page-in 220ms ease-out; }
 .settings-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: var(--card-radius); }
 .api-key-card { display: grid; gap: 14px; border: 1px solid var(--border); border-radius: var(--card-radius); padding: 16px; background: var(--surface); }
-.api-key-heading { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
-.api-key-icon { width: 36px; height: 36px; flex: none; padding: 2px; }
+.api-key-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.api-key-icon { width: 32px; height: 32px; flex: none; }
 .api-key-copy { display: grid; gap: 4px; min-width: 0; }
 .api-key-card label { font-size: 13px; font-weight: 600; }
 .api-key-card small { color: var(--secondary-text); font-size: 11px; line-height: 1.5; }
@@ -592,7 +554,9 @@ main { max-width: 720px; margin: 0 auto; }
   .settings-tab-highlight { color: HighlightText; }
   .settings-tabs button { color: CanvasText; }
   input[type="checkbox"] { border-color: CanvasText; background: Canvas; forced-color-adjust: none; }
+  input[type="checkbox"]::before { background: CanvasText; }
   input[type="checkbox"]:checked { border-color: Highlight; background: Highlight; color: HighlightText; }
+  input[type="checkbox"]:checked::before { background: HighlightText; }
 }
 
 .setting-row,
@@ -620,30 +584,65 @@ select,
 #openai-api-key[aria-invalid="true"] { border-color: var(--error); box-shadow: inset 0 0 0 1px var(--error); }
 
 /* The floating panel owns its chrome; transparent margins leave room for its shadow. */
-.settings-header, .settings-footer { display: none; }
+.settings-header, .settings-footer, .settings-top-blur { display: none; }
 :root[data-floating="true"], :root[data-floating="true"] body { background: transparent; overflow: hidden; }
 :root[data-floating="true"] body { padding: 12px; }
 :root[data-floating="true"] .settings-shell {
-  display: flex; flex-direction: column; height: calc(100vh - 24px); padding: 24px;
-  border: 1px solid var(--border); border-radius: 36px; corner-shape: var(--corner-style);
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: calc(100vh - 24px); padding: 24px;
+  border: 1px solid var(--border); border-radius: 36px; corner-shape: var(--corner-style); overflow: clip;
   background: var(--settings-background); box-shadow: 0 4px 12px #00000024;
+  /* Backdrop layers should sample Settings content, not the moving desktop. */
+  will-change: opacity;
   animation: settings-panel-in 240ms cubic-bezier(.2,.8,.2,1);
 }
-:root[data-floating="true"] .settings-header { display: flex; flex: none; align-items: center; justify-content: center; margin: -24px -24px 0; padding: 24px 24px 20px; cursor: default; user-select: none; }
+:root[data-floating="true"] .settings-shell::after {
+  content: ""; position: absolute; z-index: 1; inset: auto 1px 1px; height: 68px;
+  border-radius: 0 0 35px 35px;
+  background: color-mix(in srgb, var(--settings-background) 12%, transparent);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 25%, #000 85%);
+  mask-image: linear-gradient(to bottom, transparent 25%, #000 85%);
+  pointer-events: none;
+}
+:root[data-floating="true"] .settings-header { grid-row: 1; z-index: 3; display: flex; align-items: center; justify-content: center; margin: -24px -24px 0; padding: 24px 24px 20px; cursor: default; user-select: none; }
 .settings-header h1 { margin: 0; font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.02em; }
-:root[data-floating="true"] .settings-tabs { flex: none; margin-bottom: 20px; }
-:root[data-floating="true"] .settings-content { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+:root[data-floating="true"] .settings-tabs {
+  grid-row: 2; grid-column: 1; z-index: 2; align-self: start; height: 46px; margin-bottom: 0;
+  background: color-mix(in srgb, var(--control-hover) 72%, transparent);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+:root[data-floating="true"] .settings-top-blur {
+  position: absolute; z-index: 1; inset: 1px 1px auto; display: block; height: 104px;
+  border-radius: 35px 35px 0 0; corner-shape: var(--corner-style);
+  background: color-mix(in srgb, var(--settings-background) 12%, transparent);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent 76%);
+  mask-image: linear-gradient(to bottom, #000 40%, transparent 76%);
+  pointer-events: none;
+}
+:root[data-floating="true"] .settings-tab-slider { background: color-mix(in srgb, var(--settings-pill) 90%, transparent); }
+/* Scroll behind the title and tabs; keep the first row in its original position. */
+:root[data-floating="true"] .settings-content { position: absolute; inset: 1px 24px 24px; overflow-y: auto; padding: 133px 0 80px; scrollbar-width: none; }
 /* Page entrance transforms may briefly overflow. Keep scrolling available without
    a scrollbar taking width away from the controls during that transition. */
 :root[data-floating="true"] .settings-content::-webkit-scrollbar { display: none; }
-:root[data-floating="true"] .settings-footer { display: flex; flex: none; justify-content: center; padding-top: 20px; }
+:root[data-floating="true"] .settings-footer { position: absolute; z-index: 2; left: 50%; bottom: 24px; display: flex; transform: translateX(-50%); }
+:root[data-floating="true"] .settings-footer::before {
+  content: ""; position: absolute; z-index: 0; inset: -16px -30px;
+  border-radius: 999px; background: color-mix(in srgb, var(--settings-background) 24%, transparent);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 38%, transparent 78%);
+  mask-image: radial-gradient(ellipse at center, #000 38%, transparent 78%);
+  pointer-events: none;
+}
+:root[data-floating="true"] .settings-footer #settings-done { position: relative; z-index: 1; }
 #settings-done { min-width: 112px; border-color: transparent; background: var(--settings-pill); color: var(--settings-pill-text); }
 #settings-done:hover { opacity: .85; }
 :root[data-closing="true"] .settings-shell { opacity: 0; transform: translateY(8px) scale(.985); transition: opacity 160ms ease, transform 160ms ease; pointer-events: none; }
 .extractor-shortcuts { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 280ms cubic-bezier(.2,.8,.2,1), opacity 200ms ease; }
 .extractor-shortcuts[data-expanded="true"] { grid-template-rows: 1fr; opacity: 1; }
 .extractor-shortcuts-inner { min-height: 0; overflow: hidden; }
-.extractor-detail-row { border-top: 0; gap: 10px; }
+.extractor-detail-row { gap: 10px; }
 .shortcut-controls { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .shortcut-button { width: 174px; max-width: 174px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .shortcut-mode { isolation: isolate; position: relative; display: grid; grid-template-columns: 1fr 1fr; flex: none; width: 144px; height: 34px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; corner-shape: var(--pill-corner-style); background: var(--control-hover); font-size: 10px; font-weight: 550; --mode-motion: 240ms cubic-bezier(.2,.8,.2,1); }

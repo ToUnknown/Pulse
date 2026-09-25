@@ -30,7 +30,8 @@ function displayShortcut(value) {
   }).join(" + ");
 }
 function error(reason) { settingsError.textContent = String(reason); settingsError.hidden = false; $("#tab-advanced").click(); }
-function lock(value) {
+function lock(value, savingMode = false) {
+  if (value) section.dataset.savingMode = String(savingMode);
   busy = value;
   enabled.disabled = value || (state?.captureAccess?.supported === false && !state?.enabled);
   for (const button of Object.values(shortcutButtons)) button.disabled = value;
@@ -38,10 +39,11 @@ function lock(value) {
   keyRemove.disabled = value;
   for (const group of modeControls) for (const button of group.querySelectorAll("button")) button.disabled = value;
   renderKeyControls();
+  if (!value) section.dataset.savingMode = "false";
 }
 function setExpanded(value) {
-  shortcutRows.dataset.expanded = String(value);
-  shortcutRows.inert = !value;
+  if (shortcutRows.dataset.expanded !== String(value)) shortcutRows.dataset.expanded = String(value);
+  if (shortcutRows.inert !== !value) shortcutRows.inert = !value;
 }
 function renderModes() {
   for (const group of modeControls) {
@@ -56,19 +58,25 @@ function renderModes() {
   }
 }
 function render() {
-  enabled.checked = state.enabled;
+  if (enabled.checked !== state.enabled) enabled.checked = state.enabled;
   const access = state.captureAccess;
   $("#capture-access").hidden = platform !== "macos" || !state.enabled || access?.granted;
-  $("#extractor-description").textContent = platform === "macos"
-    ? (access?.supported === false ? "Requires macOS 14 or later." : "Offline. Uses built-in Apple text recognition.")
-    : "Offline. Downloads a small model on first use.";
+  const description = platform === "macos" && access?.supported === false ? "Requires macOS 14 or later." : "";
+  const extractorDescription = $("#extractor-description");
+  if (extractorDescription.textContent !== description) extractorDescription.textContent = description;
+  extractorDescription.hidden = !description;
+  if (description) enabled.setAttribute("aria-describedby", "extractor-description");
+  else enabled.removeAttribute("aria-describedby");
   setExpanded(state.enabled);
   renderOcrStatus(state.localOcr);
   renderModes();
-  for (const [field, button] of Object.entries(shortcutButtons)) { button.textContent = displayShortcut(state[field]); button.title = button.textContent; }
-  keyStatus.textContent = state.apiKeyConfigured
-    ? "Key saved. For Dictation and LLM features."
-    : "For Dictation and LLM features.";
+  for (const [field, button] of Object.entries(shortcutButtons)) {
+    const label = displayShortcut(state[field]);
+    if (button.textContent !== label) button.textContent = label;
+    button.title = label;
+  }
+  keyStatus.textContent = "";
+  keyStatus.hidden = true;
   delete keyStatus.dataset.tone;
   keyInput.removeAttribute("aria-invalid");
   keyInput.dataset.configured = String(state.apiKeyConfigured);
@@ -115,7 +123,7 @@ window.addEventListener("pagehide", () => {
   window.clearTimeout(ocrPoll);
 });
 async function save(nextEnabled, nextShortcut = state.shortcut, nextQuickShortcut = state.quickShortcut, nextModes = {}) {
-  lock(true);
+  lock(true, Object.keys(nextModes).length > 0);
   settingsError.hidden = true;
   setExpanded(nextEnabled);
   try { await invoke("set_text_extractor", { enabled: nextEnabled, shortcutValue: nextShortcut, quickShortcutValue: nextQuickShortcut, editorMode: nextModes.editorMode || state.editorMode || "basic", quickMode: nextModes.quickMode || state.quickMode || "basic" }); await load(); }
@@ -169,6 +177,7 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
   lock(true);
   keyError.hidden = true;
   keyStatus.textContent = "Checking key…";
+  keyStatus.hidden = false;
   delete keyStatus.dataset.tone;
   try {
     await invoke("save_openai_api_key", { apiKey: keyInput.value });
@@ -177,6 +186,7 @@ $("#openai-key-form").addEventListener("submit", async (event) => {
     await load();
   } catch (reason) {
     keyStatus.textContent = String(reason);
+    keyStatus.hidden = false;
     keyStatus.dataset.tone = "error";
     keyInput.setAttribute("aria-invalid", "true");
   } finally { checkingKey = false; lock(false); }

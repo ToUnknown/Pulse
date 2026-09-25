@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -176,106 +177,93 @@ void pulse_dictation_stop(void) {
     // lifecycle code may synchronously wait for AppKit from this queue.
     dispatch_sync(PulseDictationAudioQueue(), ^{ PulseDictationStopAudio(); });
 }
-static CFTypeRef attribute(AXUIElementRef element, CFStringRef name) {
-    CFTypeRef result = NULL;
-    AXUIElementCopyAttributeValue(element, name, &result);
-    return result;
-}
-static AXUIElementRef focusedElement(void) {
-    if (!AXIsProcessTrusted()) return NULL;
-    // Prefer the active app's current focus over a stale system-wide element.
-    pid_t pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
-    if (pid<=0) return NULL;
-    for (int attempt=0; attempt<2; attempt++) {
-        AXUIElementRef root=attempt ? AXUIElementCreateSystemWide() : AXUIElementCreateApplication(pid);
-        AXUIElementSetMessagingTimeout(root,0.25);
-        CFTypeRef value=attribute(root,kAXFocusedUIElementAttribute);
-        CFRelease(root);
-        pid_t owner=0;
-        if (value && CFGetTypeID(value)==AXUIElementGetTypeID() &&
-            AXUIElementGetPid((AXUIElementRef)value,&owner)==kAXErrorSuccess && owner==pid &&
-            NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier==pid) return (AXUIElementRef)value;
-        if (value) CFRelease(value);
-    }
-    return NULL;
-}
-static bool editable(AXUIElementRef element) {
-    CFTypeRef role = attribute(element, kAXRoleAttribute);
-    CFTypeRef subrole = attribute(element, kAXSubroleAttribute);
-    CFTypeRef enabled = attribute(element, kAXEnabledAttribute);
-    CFTypeRef readOnly = attribute(element, CFSTR("AXEditable"));
-    Boolean selectedSettable = false;
-    AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute, &selectedSettable);
-    bool textRole = role && (CFEqual(role, kAXTextFieldRole) || CFEqual(role, kAXTextAreaRole) || CFEqual(role, kAXComboBoxRole));
-    bool valid = (textRole || selectedSettable || (readOnly && CFEqual(readOnly, kCFBooleanTrue)))
-        && !(subrole && CFEqual(subrole, kAXSecureTextFieldSubrole))
-        && !(enabled && CFEqual(enabled, kCFBooleanFalse))
-        && !(readOnly && CFEqual(readOnly, kCFBooleanFalse));
-    if (role) CFRelease(role);
-    if (subrole) CFRelease(subrole);
-    if (enabled) CFRelease(enabled);
-    if (readOnly) CFRelease(readOnly);
-    return valid;
-}
 static bool modifiersDown(void) {
     CGEventFlags flags=CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
     return (flags & (kCGEventFlagMaskAlternate | kCGEventFlagMaskCommand |
                      kCGEventFlagMaskControl | kCGEventFlagMaskShift)) != 0;
 }
-// 0 = wait for physical modifiers; 1 = submitted once; -1 = copy instead.
-int pulse_dictation_final_step(const char *utf8) {
-    if (modifiersDown()) return 0;
-    NSString *text=[NSString stringWithUTF8String:utf8];
-    if (!text.length) return -1;
-    pid_t pid=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
-    AXUIElementRef element=focusedElement();
-    if (!element) return -1;
-    AXUIElementSetMessagingTimeout(element,0.08);
-    bool input=editable(element);
-    CFRelease(element);
-    if (pid!=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) return 0;
-    if (!input || pid<=0) return -1;
-    CGEventSourceRef source=CGEventSourceCreate(kCGEventSourceStatePrivate);
-    CGEventRef down=source ? CGEventCreateKeyboardEvent(source,0,true) : NULL;
-    CGEventRef up=source ? CGEventCreateKeyboardEvent(source,0,false) : NULL;
-    if (!down || !up) {
-        if (down) CFRelease(down);
-        if (up) CFRelease(up);
-        if (source) CFRelease(source);
-        return -1;
-    }
-    CGEventSetFlags(down,0); CGEventSetFlags(up,0);
-    CGEventSetIntegerValueField(down,kCGEventSourceUserData,PulseDictationEventTag);
-    CGEventSetIntegerValueField(up,kCGEventSourceUserData,PulseDictationEventTag);
-    int result=0;
-    if (!modifiersDown() && pid==NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) {
-        // Small UTF-16 packets avoid Quartz's long-string truncation. Submit
-        // immediately, without paced typing, and never split a surrogate pair.
-        for (NSUInteger offset=0; offset<text.length;) {
-            UniChar characters[20];
-            NSUInteger length=MIN((NSUInteger)20,text.length-offset);
-            // Keep line separators inside a packet rather than at its start.
-            while (length>1 && offset+length<text.length &&
-                   [[NSCharacterSet newlineCharacterSet] characterIsMember:[text characterAtIndex:offset+length]]) length--;
-            [text getCharacters:characters range:NSMakeRange(offset,length)];
-            if (offset+length<text.length && (characters[length-1]&0xfc00)==0xd800) length--;
-            CGEventKeyboardSetUnicodeString(down,length,characters);
-            CGEventKeyboardSetUnicodeString(up,length,characters);
-            CGEventPost(kCGHIDEventTap,down); CGEventPost(kCGHIDEventTap,up);
-            offset+=length;
-        }
-        result=1;
-    }
-    CFRelease(down); CFRelease(up); CFRelease(source);
-    return result;
-}
-// The input path never accesses the clipboard. Only fallback writes here.
-bool pulse_dictation_copy(const char *utf8) {
+static bool PulseDictationCopy(const char *utf8, NSInteger *changeCount) {
     NSString *text=[NSString stringWithUTF8String:utf8];
     if (!text.length) return false;
     NSPasteboard *board=NSPasteboard.generalPasteboard;
-    [board clearContents];
-    return [board setString:text forType:NSPasteboardTypeString];
+    NSInteger version=[board clearContents];
+    if (![board setString:text forType:NSPasteboardTypeString]) return false;
+    if (changeCount) *changeCount=version;
+    return true;
+}
+bool pulse_dictation_copy(const char *utf8) {
+    return PulseDictationCopy(utf8, NULL);
+}
+// Translate Command-V through the active input source. A fixed ANSI V key
+// position is not the Paste shortcut on every keyboard layout.
+static CGKeyCode PulseDictationPasteKeyForSource(TISInputSourceRef source) {
+    if (!source) return UINT16_MAX;
+    CFDataRef data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+    if (!data) return UINT16_MAX;
+    const UCKeyboardLayout *layout = (const UCKeyboardLayout *)CFDataGetBytePtr(data);
+    for (size_t i = 0; i < 2; i++) {
+        UInt32 modifiers = i == 0 ? (cmdKey >> 8) : 0;
+        for (UInt16 key = 0; key < 128; key++) {
+            UInt32 dead = 0;
+            UniChar chars[4] = {0};
+            UniCharCount length = 0;
+            OSStatus status = UCKeyTranslate(layout, key, kUCKeyActionDown, modifiers,
+                LMGetKbdType(), kUCKeyTranslateNoDeadKeysBit, &dead, 4, &length, chars);
+            if (status == noErr && length == 1 && (chars[0] == 'v' || chars[0] == 'V')) return key;
+        }
+    }
+    return UINT16_MAX;
+}
+static CGKeyCode PulseDictationPasteKey(void) {
+    TISInputSourceRef source = TISCopyCurrentKeyboardLayoutInputSource();
+    CGKeyCode key = PulseDictationPasteKeyForSource(source);
+    if (source) CFRelease(source);
+    if (key != UINT16_MAX) return key;
+    source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+    key = PulseDictationPasteKeyForSource(source);
+    if (source) CFRelease(source);
+    return key == UINT16_MAX ? 0x09 : key;
+}
+// 0 = wait for physical modifiers; 1 = copied (Paste if still safe); -1 = copy failed.
+int pulse_dictation_final_step(const char *utf8) {
+    if (modifiersDown()) return 0;
+    pid_t targetPID=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+    NSInteger clipboardVersion=0;
+    if (!PulseDictationCopy(utf8, &clipboardVersion)) return -1;
+
+    CGKeyCode pasteKey = PulseDictationPasteKey();
+    CGEventSourceRef source=CGEventSourceCreate(kCGEventSourceStatePrivate);
+    CGEventRef events[4]={
+        source ? CGEventCreateKeyboardEvent(source,0x37,true) : NULL,  // Command down
+        source ? CGEventCreateKeyboardEvent(source,pasteKey,true) : NULL,
+        source ? CGEventCreateKeyboardEvent(source,pasteKey,false) : NULL,
+        source ? CGEventCreateKeyboardEvent(source,0x37,false) : NULL  // Command up
+    };
+    bool ready=true;
+    for (int i=0;i<4;i++) if (!events[i]) ready=false;
+    if (!ready) {
+        for (int i=0;i<4;i++) if (events[i]) CFRelease(events[i]);
+        if (source) CFRelease(source);
+        return 1; // The transcript remains available for manual paste.
+    }
+    for (int i=0;i<4;i++) {
+        CGEventSetIntegerValueField(events[i],kCGEventSourceUserData,PulseDictationEventTag);
+        CGEventSetFlags(events[i],i<3 ? kCGEventFlagMaskCommand : 0);
+    }
+
+    // Copy may take long enough for focus or physical modifiers to change.
+    // Never send Paste to the newly active app or with an extra modifier.
+    if (!targetPID || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier!=targetPID ||
+        NSPasteboard.generalPasteboard.changeCount!=clipboardVersion || modifiersDown()) {
+        for (int i=0;i<4;i++) CFRelease(events[i]);
+        CFRelease(source);
+        return 1;
+    }
+
+    for (int i=0;i<4;i++) CGEventPost(kCGHIDEventTap,events[i]);
+    for (int i=0;i<4;i++) CFRelease(events[i]);
+    CFRelease(source);
+    return 1;
 }
 
 // A click-through overlay stays above normal windows and follows Spaces.

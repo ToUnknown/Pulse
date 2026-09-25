@@ -122,19 +122,18 @@ impl TranscriptionMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinalDelivery {
     Pending,
-    // Input events were submitted; apps do not provide a universal receipt.
-    Submitted,
-    Clipboard,
-    Discard,
+    RetryCopy,
+    // Clipboard contains the transcript; Paste was sent only if still safe.
+    Complete,
+    Failed,
 }
-impl Session {
-    fn final_delivery(&self, expired: bool) -> FinalDelivery {
-        if self.cancel.is_cancelled() {
-            FinalDelivery::Discard
-        } else if expired && self.delivery == FinalDelivery::Pending {
-            FinalDelivery::Clipboard
-        } else {
-            self.delivery
+impl FinalDelivery {
+    fn after_native_step(self, result: i32) -> Self {
+        match result {
+            0 => self,
+            1 => Self::Complete,
+            _ if self == Self::Pending => Self::RetryCopy,
+            _ => Self::Failed,
         }
     }
 }
@@ -397,7 +396,6 @@ pub async fn dictation_glass(
     if window.label() != WINDOW {
         return Err("This is only available to the dictation overlay.".into());
     }
-    // Clipboard confirmation expands the pill beyond waveform width.
     if !frame.valid(180.0, 40.0) {
         return Err("Invalid glass frame.".into());
     }
@@ -470,7 +468,7 @@ pub fn dictation_snapshot(app: tauri::AppHandle, window: WebviewWindow) -> Resul
     let guard = state.session.lock().unwrap();
     Ok(match guard.as_ref() {
         Some(s) => {
-            json!({"id":s.id,"mode":s.mode,"phase":s.phase,"text":s.text,"level":s.level,"samples":s.samples,"bottom":s.bottom})
+            json!({"id":s.id,"mode":s.mode,"phase":s.phase,"text":s.text,"message":if s.phase == "error" { s.error.as_deref() } else { None },"level":s.level,"samples":s.samples,"bottom":s.bottom})
         }
         None => json!({"phase":"idle"}),
     })
@@ -504,7 +502,7 @@ extern "C" fn audio_callback(id: u64, bytes: *const u8, length: usize, level: f3
     s.samples += (length / 2) as u64;
     s.level = level;
 }
-// Resolve the current input only at dispatch, after physical modifiers rise.
+// Copy the completed transcript and send Paste after physical modifiers rise.
 // Recording never reads, locks, or edits a field.
 fn delivery_tick(app: &tauri::AppHandle, id: u64) {
     let state = app.state::<Dictation>();
@@ -513,16 +511,21 @@ fn delivery_tick(app: &tauri::AppHandle, id: u64) {
         s.id == id
             && s.phase == "sending"
             && !s.cancel.is_cancelled()
-            && s.delivery == FinalDelivery::Pending
+            && matches!(
+                s.delivery,
+                FinalDelivery::Pending | FinalDelivery::RetryCopy
+            )
     }) else {
         return;
     };
     let text = CString::new(s.text.replace('\0', "")).unwrap();
-    s.delivery = match unsafe { pulse_dictation_final_step(text.as_ptr()) } {
-        0 => FinalDelivery::Pending,
-        1 => FinalDelivery::Submitted,
-        _ => FinalDelivery::Clipboard,
-    };
+    s.delivery = s
+        .delivery
+        .after_native_step(unsafe { pulse_dictation_final_step(text.as_ptr()) });
+    if s.delivery == FinalDelivery::Failed {
+        s.error = Some("Could not copy the transcript to the clipboard.".into());
+        s.phase = "error";
+    }
 }
 
 extern "C" fn capture_ready(context: *mut c_void, started: bool) {
@@ -541,7 +544,7 @@ fn start(app: &tauri::AppHandle) {
         let mut guard = state.session.lock().unwrap();
         if guard
             .as_ref()
-            .is_some_and(|s| !matches!(s.phase, "idle" | "done" | "copied" | "error"))
+            .is_some_and(|s| !matches!(s.phase, "idle" | "done" | "error"))
         {
             state.hold_shortcut.lock().unwrap().interrupt();
             return;
@@ -829,7 +832,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         }
         s.text = text.clone();
         s.phase = "sending";
-        // Resolve the selected input at dispatch, never at recording start.
+        // Copy and paste once at dispatch, never while recording.
         s.delivery = FinalDelivery::Pending;
         // Capture failures may cancel the network but should still deliver the
         // partial words. Explicit cancellation never delivers anything.
@@ -843,27 +846,43 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             let expired = Instant::now() >= deadline;
             let handle = app.clone();
             let complete = on_main(&app, move || {
-                // A completed dispatch never becomes a clipboard fallback.
                 delivery_tick(&handle, id);
                 let state = handle.state::<Dictation>();
                 let mut guard = state.session.lock().unwrap();
                 let Some(s) = guard.as_mut().filter(|s| s.id == id) else {
                     return Ok(true);
                 };
-                s.phase = match s.final_delivery(expired) {
-                    FinalDelivery::Pending => return Ok(false),
-                    FinalDelivery::Clipboard => {
-                        let text = CString::new(s.text.replace('\0', "")).unwrap();
-                        if unsafe { pulse_dictation_copy(text.as_ptr()) } {
-                            "copied"
-                        } else {
-                            *state.startup_error.lock().unwrap() =
-                                Some("Could not copy the transcript to the clipboard.".into());
-                            "done"
-                        }
+                if s.cancel.is_cancelled() {
+                    s.phase = "done";
+                } else if s.delivery == FinalDelivery::Failed {
+                    return Ok(true);
+                } else if matches!(
+                    s.delivery,
+                    FinalDelivery::Pending | FinalDelivery::RetryCopy
+                ) && !expired
+                {
+                    return Ok(false);
+                } else if matches!(
+                    s.delivery,
+                    FinalDelivery::Pending | FinalDelivery::RetryCopy
+                ) {
+                    // A held modifier can outlive the dispatch window. Keep the
+                    // transcript available even when Paste cannot be sent.
+                    let text = CString::new(s.text.replace('\0', "")).unwrap();
+                    let attempts = if s.delivery == FinalDelivery::RetryCopy {
+                        1
+                    } else {
+                        2
+                    };
+                    if !(0..attempts).any(|_| unsafe { pulse_dictation_copy(text.as_ptr()) }) {
+                        s.error = Some("Could not copy the transcript to the clipboard.".into());
+                        s.phase = "error";
+                    } else {
+                        s.phase = "done";
                     }
-                    FinalDelivery::Submitted | FinalDelivery::Discard => "done",
-                };
+                } else {
+                    s.phase = "done";
+                }
                 Ok(true)
             })
             .await
@@ -874,28 +893,6 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
             tokio::time::sleep(Duration::from_millis(40)).await;
         }
     }
-    // Give the clipboard-only confirmation time to expand and be read. A new
-    // recording can replace it immediately; this task must not fade that session.
-    let copied = app
-        .state::<Dictation>()
-        .session
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|s| s.id == id && s.phase == "copied");
-    if copied {
-        tokio::time::sleep(Duration::from_millis(1600)).await;
-        let handle = app.clone();
-        let _ = on_main(&app, move || {
-            let state = handle.state::<Dictation>();
-            let mut guard = state.session.lock().unwrap();
-            if let Some(s) = guard.as_mut().filter(|s| s.id == id && s.phase == "copied") {
-                s.phase = "done";
-            }
-            Ok(())
-        })
-        .await;
-    }
     // Allow the lens contraction/fade plus one overlay polling interval.
     let wait = app
         .state::<Dictation>()
@@ -903,7 +900,7 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
         .lock()
         .unwrap()
         .as_ref()
-        .map(|_| 400)
+        .map(|s| if s.phase == "error" { 2400 } else { 400 })
         .unwrap_or(0);
     tokio::time::sleep(Duration::from_millis(wait)).await;
     let handle = app.clone();
@@ -925,38 +922,16 @@ async fn finish(app: tauri::AppHandle, id: u64, result: Result<String, String>) 
 mod tests {
     use super::*;
 
-    fn test_session() -> Session {
-        let (tx, _) = mpsc::channel(1);
-        Session {
-            id: 1,
-            mode: TranscriptionMode::Default,
-            audio: Some(tx),
-            cancel: CancellationToken::new(),
-            error: None,
-            phase: "listening",
-            text: "Keep these words".into(),
-            level: 0.1,
-            samples: 10,
-            bottom: 28.0,
-            delivery: FinalDelivery::Pending,
-        }
-    }
+    use tokio::net::TcpListener;
 
     #[test]
-    fn final_delivery_waits_for_dispatch_or_copies_once() {
-        let mut session = test_session();
-        assert_eq!(session.final_delivery(false), FinalDelivery::Pending);
-        session.delivery = FinalDelivery::Submitted;
-        assert_eq!(session.final_delivery(false), FinalDelivery::Submitted);
-        session.delivery = FinalDelivery::Clipboard;
-        assert_eq!(session.final_delivery(false), FinalDelivery::Clipboard);
-        session.delivery = FinalDelivery::Pending;
-        assert_eq!(session.final_delivery(true), FinalDelivery::Clipboard);
-        session.cancel.cancel();
-        assert_eq!(session.final_delivery(false), FinalDelivery::Discard);
+    fn clipboard_failure_gets_one_retry_then_stops() {
+        let retry = FinalDelivery::Pending.after_native_step(-1);
+        assert_eq!(retry, FinalDelivery::RetryCopy);
+        assert_eq!(retry.after_native_step(0), retry);
+        assert_eq!(retry.after_native_step(-1), FinalDelivery::Failed);
+        assert_eq!(retry.after_native_step(1), FinalDelivery::Complete);
     }
-
-    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn release_during_connection_drains_audio_before_one_commit_and_final_replaces_partial() {
