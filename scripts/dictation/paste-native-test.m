@@ -5,7 +5,7 @@
 #import <objc/runtime.h>
 static CGEventFlags flags;
 static pid_t activePID=1;
-static bool changeFlagsOnCopy, changeAppOnCopy;
+static bool changeFlagsOnCopy, changeAppOnCopy, changeClipboardOnCopy;
 @interface TestFrontmostApp : NSObject
 - (pid_t)processIdentifier;
 @end
@@ -14,13 +14,16 @@ static bool changeFlagsOnCopy, changeAppOnCopy;
 @end
 @interface TestPasteboard : NSObject
 @property (nonatomic, copy) NSString *text;
+@property (nonatomic) NSInteger count;
 @end
 @implementation TestPasteboard
-- (NSInteger)clearContents { self.text=nil; return 1; }
+- (NSInteger)clearContents { self.text=nil; return ++self.count; }
+- (NSInteger)changeCount { return self.count; }
 - (BOOL)setString:(NSString *)text forType:(NSPasteboardType)type {
     (void)type; self.text=text;
     if (changeFlagsOnCopy) flags=kCGEventFlagMaskShift;
     if (changeAppOnCopy) activePID=2;
+    if (changeClipboardOnCopy) { self.text=@"someone else's copy"; self.count++; }
     return YES;
 }
 - (NSString *)stringForType:(NSPasteboardType)type { (void)type; return self.text; }
@@ -62,8 +65,12 @@ int main(void) { @autoreleasepool {
     posted=0; activePID=1; changeAppOnCopy=true;
     int changedApp=pulse_dictation_final_step("window changed");
     bool appSkipped=changedApp==1 && posted==0 && [testBoard.text isEqualToString:@"window changed"];
+    changeAppOnCopy=false; activePID=1;
+    posted=0; changeClipboardOnCopy=true;
+    int changedClipboard=pulse_dictation_final_step("clipboard changed");
+    bool clipboardSkipped=changedClipboard==1 && posted==0 && [testBoard.text isEqualToString:@"someone else's copy"];
     method_setImplementation(frontMethod,originalFront);
     method_setImplementation(method,original);
-    printf("waited=%d copied=%d one_paste=%d modifier_skipped=%d app_skipped=%d\n",waiting==0 && untouched,copied,onePaste && sent==1,modifierSkipped,appSkipped);
-    return waiting==0 && untouched && copied && onePaste && sent==1 && modifierSkipped && appSkipped ? 0 : 1;
+    printf("waited=%d copied=%d one_paste=%d modifier_skipped=%d app_skipped=%d clipboard_skipped=%d\n",waiting==0 && untouched,copied,onePaste && sent==1,modifierSkipped,appSkipped,clipboardSkipped);
+    return waiting==0 && untouched && copied && onePaste && sent==1 && modifierSkipped && appSkipped && clipboardSkipped ? 0 : 1;
 } }

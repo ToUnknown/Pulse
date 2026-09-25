@@ -149,15 +149,18 @@ static bool modifiersDown() {
     return ((GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_SHIFT)|
         GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0;
 }
-extern "C" bool pulse_dictation_copy(const char *utf8);
+static bool copyTranscript(const char *utf8,DWORD *sequence);
+extern "C" bool pulse_dictation_copy(const char *utf8) { return copyTranscript(utf8,nullptr); }
 // 0 = wait for physical modifiers; 1 = copied (Paste if still safe); -1 = copy failed.
 extern "C" int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
     HWND target=GetForegroundWindow();
-    if (!pulse_dictation_copy(utf8)) return -1;
+    DWORD sequence=0;
+    if (!copyTranscript(utf8,&sequence)) return -1;
     // The user may switch windows or press another modifier while the
-    // clipboard is busy. In either case, keep the text for manual paste.
-    if (!target || GetForegroundWindow()!=target || modifiersDown()) return 1;
+    // clipboard is busy. A newer clipboard write must never be pasted either.
+    if (!target || GetForegroundWindow()!=target || modifiersDown() ||
+        !sequence || GetClipboardSequenceNumber()!=sequence || GetClipboardOwner()!=overlayWindow) return 1;
 
     INPUT keys[4]{};
     keys[0].type=keys[1].type=keys[2].type=keys[3].type=INPUT_KEYBOARD;
@@ -184,7 +187,7 @@ extern "C" int pulse_dictation_final_step(const char *utf8) {
     }
     return 1;
 }
-extern "C" bool pulse_dictation_copy(const char *utf8) {
+static bool copyTranscript(const char *utf8,DWORD *sequence) {
     if (!utf8) return false;
     std::wstring text=utf16(utf8); if(text.empty()) return false;
     HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,(text.size()+1)*sizeof(wchar_t));
@@ -198,6 +201,10 @@ extern "C" bool pulse_dictation_copy(const char *utf8) {
             CloseClipboard(); break;
         }
         Sleep(10);
+    }
+    if (written && sequence) {
+        DWORD version=GetClipboardSequenceNumber();
+        *sequence=GetClipboardOwner()==overlayWindow ? version : 0;
     }
     if (!written) GlobalFree(memory);
     return written;

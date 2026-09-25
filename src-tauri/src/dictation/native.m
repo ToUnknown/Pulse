@@ -182,12 +182,17 @@ static bool modifiersDown(void) {
     return (flags & (kCGEventFlagMaskAlternate | kCGEventFlagMaskCommand |
                      kCGEventFlagMaskControl | kCGEventFlagMaskShift)) != 0;
 }
-bool pulse_dictation_copy(const char *utf8) {
+static bool PulseDictationCopy(const char *utf8, NSInteger *changeCount) {
     NSString *text=[NSString stringWithUTF8String:utf8];
     if (!text.length) return false;
     NSPasteboard *board=NSPasteboard.generalPasteboard;
-    [board clearContents];
-    return [board setString:text forType:NSPasteboardTypeString];
+    NSInteger version=[board clearContents];
+    if (![board setString:text forType:NSPasteboardTypeString]) return false;
+    if (changeCount) *changeCount=version;
+    return true;
+}
+bool pulse_dictation_copy(const char *utf8) {
+    return PulseDictationCopy(utf8, NULL);
 }
 // Translate Command-V through the active input source. A fixed ANSI V key
 // position is not the Paste shortcut on every keyboard layout.
@@ -223,7 +228,8 @@ static CGKeyCode PulseDictationPasteKey(void) {
 int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
     pid_t targetPID=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
-    if (!pulse_dictation_copy(utf8)) return -1;
+    NSInteger clipboardVersion=0;
+    if (!PulseDictationCopy(utf8, &clipboardVersion)) return -1;
 
     CGKeyCode pasteKey = PulseDictationPasteKey();
     CGEventSourceRef source=CGEventSourceCreate(kCGEventSourceStatePrivate);
@@ -247,7 +253,8 @@ int pulse_dictation_final_step(const char *utf8) {
 
     // Copy may take long enough for focus or physical modifiers to change.
     // Never send Paste to the newly active app or with an extra modifier.
-    if (!targetPID || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier!=targetPID || modifiersDown()) {
+    if (!targetPID || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier!=targetPID ||
+        NSPasteboard.generalPasteboard.changeCount!=clipboardVersion || modifiersDown()) {
         for (int i=0;i<4;i++) CFRelease(events[i]);
         CFRelease(source);
         return 1;
