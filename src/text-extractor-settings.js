@@ -65,6 +65,8 @@ function render() {
   const extractorDescription = $("#extractor-description");
   if (extractorDescription.textContent !== description) extractorDescription.textContent = description;
   extractorDescription.hidden = !description;
+  if (description) enabled.setAttribute("aria-describedby", "extractor-description");
+  else enabled.removeAttribute("aria-describedby");
   setExpanded(state.enabled);
   renderOcrStatus(state.localOcr);
   renderModes();
