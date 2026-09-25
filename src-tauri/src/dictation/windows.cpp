@@ -150,10 +150,14 @@ static bool modifiersDown() {
         GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0;
 }
 extern "C" bool pulse_dictation_copy(const char *utf8);
-// 0 = wait for physical modifiers; 1 = copied and paste attempted; -1 = copy failed.
+// 0 = wait for physical modifiers; 1 = copied (Paste if still safe); -1 = copy failed.
 extern "C" int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
+    HWND target=GetForegroundWindow();
     if (!pulse_dictation_copy(utf8)) return -1;
+    // The user may switch windows or press another modifier while the
+    // clipboard is busy. In either case, keep the text for manual paste.
+    if (!target || GetForegroundWindow()!=target || modifiersDown()) return 1;
 
     INPUT keys[4]{};
     keys[0].type=keys[1].type=keys[2].type=keys[3].type=INPUT_KEYBOARD;

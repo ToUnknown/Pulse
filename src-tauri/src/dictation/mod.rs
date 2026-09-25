@@ -123,7 +123,7 @@ impl TranscriptionMode {
 enum FinalDelivery {
     Pending,
     RetryCopy,
-    // Clipboard contains the transcript and one Paste shortcut was attempted.
+    // Clipboard contains the transcript; Paste was sent only if still safe.
     Complete,
     Failed,
 }

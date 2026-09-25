@@ -86,6 +86,14 @@ const windows = await fixture({shortcut:'Right Alt'});
 assert.equal(windows.nodes['toggle-label'].textContent, 'Tap or hold right Alt key to dictate');
 modes.key('ArrowRight'); await settle();
 assert.equal(modes.selectedMode(),'live','keyboard navigation selects the second mode');
+modes.key('ArrowRight'); await settle();
+assert.equal(modes.selectedMode(),'default','right arrow wraps to the first mode');
+modes.key('ArrowLeft'); await settle();
+assert.equal(modes.selectedMode(),'live','left arrow wraps to the last mode');
+modes.key('ArrowUp'); await settle();
+assert.equal(modes.selectedMode(),'default','up arrow moves to the previous mode');
+modes.key('ArrowDown'); await settle();
+assert.equal(modes.selectedMode(),'live','down arrow moves to the next mode');
 const rejectedMode = await fixture({enabled:true});
 rejectedMode.handle((name) => {
   if (name === 'dictation_settings') return {...rejectedMode.state};

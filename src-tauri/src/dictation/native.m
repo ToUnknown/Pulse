@@ -219,9 +219,10 @@ static CGKeyCode PulseDictationPasteKey(void) {
     if (source) CFRelease(source);
     return key == UINT16_MAX ? 0x09 : key;
 }
-// 0 = wait for physical modifiers; 1 = copied and paste attempted; -1 = copy failed.
+// 0 = wait for physical modifiers; 1 = copied (Paste if still safe); -1 = copy failed.
 int pulse_dictation_final_step(const char *utf8) {
     if (modifiersDown()) return 0;
+    pid_t targetPID=NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
     if (!pulse_dictation_copy(utf8)) return -1;
 
     CGKeyCode pasteKey = PulseDictationPasteKey();
@@ -242,6 +243,14 @@ int pulse_dictation_final_step(const char *utf8) {
     for (int i=0;i<4;i++) {
         CGEventSetIntegerValueField(events[i],kCGEventSourceUserData,PulseDictationEventTag);
         CGEventSetFlags(events[i],i<3 ? kCGEventFlagMaskCommand : 0);
+    }
+
+    // Copy may take long enough for focus or physical modifiers to change.
+    // Never send Paste to the newly active app or with an extra modifier.
+    if (!targetPID || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier!=targetPID || modifiersDown()) {
+        for (int i=0;i<4;i++) CFRelease(events[i]);
+        CFRelease(source);
+        return 1;
     }
 
     for (int i=0;i<4;i++) CGEventPost(kCGHIDEventTap,events[i]);

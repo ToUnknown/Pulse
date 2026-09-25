@@ -88,11 +88,14 @@ function selectMode(button) {
 }
 mode.addEventListener("click", event => selectMode(event.target.closest("button")));
 mode.addEventListener("keydown", event => {
-  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
   if (busy) return;
-  const next = ["ArrowLeft", "Home"].includes(event.key) ? "default" : "live";
-  const button = modeButtons.find(button => button.dataset.mode === next);
+  const current = modeButtons.findIndex(button => button.dataset.mode === selectedMode);
+  const previous = ["ArrowLeft", "ArrowUp"].includes(event.key);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? modeButtons.length - 1
+    : (current + (previous ? -1 : 1) + modeButtons.length) % modeButtons.length;
+  const button = modeButtons[next];
   button.focus();
   selectMode(button);
 });
